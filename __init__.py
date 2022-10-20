@@ -285,9 +285,11 @@ def thumb_vpos_calc(height_px: int, line_px: int, nlines: int, top: float) -> tu
 
 def draw(context: bpy.types.Context):
     """Draw callback for suggestions box."""
-
-    instance = instance_from_space(st := context.space_data)
-    if not (items := instance.poll()):
+    st = context.space_data
+    instance = instance_from_space(st)
+    # TODO: poll should not return items - should be boolean
+    items = instance.poll()
+    if not items:
         return
 
     instance._validate_indices()
@@ -298,9 +300,9 @@ def draw(context: bpy.types.Context):
     x, y = st.region_location_from_cursor(*st.text.cursor_position)
 
     # Align the box to below the cursor.
-    y -= h - st.offsets[1] - (4 * wu_scale).__round__()
+    y -= h - st.offsets[1] - round(4 * wu_scale)
 
-    # At 1.77 scale dpi is halved and pixel_size is doubled. Don't ask why.
+    # At 1.77 scale, dpi is halved and pixel_size is doubled. Don't ask why.
     blf.size(1, instance.font_size, int(system.dpi * system.pixel_size))
 
     # Line height is computed based on glyph metrics.
@@ -309,10 +311,10 @@ def draw(context: bpy.types.Context):
     desc = blf.dimensions(1, "gpqy")[1] - x_height
 
     top = instance.top
-    top_int = top.__int__()
+    top_int = int(top)
     line_heightf = instance.line_heightf = (x_height + asc + desc) * instance.line_padding
-    line_height = instance.line_height = (line_heightf).__int__()
-    offset_px = ((top - top_int.__float__()) * line_heightf).__int__()
+    line_height = instance.line_height = int(line_heightf)
+    offset_px = int((top - top_int) * line_heightf)
     hover_width = w - 2
 
     # Draw box
