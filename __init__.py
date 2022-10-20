@@ -26,44 +26,70 @@ from dev_utils import enable_breakpoint_hook
 enable_breakpoint_hook(True)
 
 
-class SizeWidget(gl.GLPlainRect):
+class WidgetBase:
+    cursor: str
+    def on_enter(self): return None
+    def on_leave(self): return None
+    def on_hit(self): return None
 
-    def __init__(self, parent: 'Instance', cursor: str):
-        super().__init__(0.5, 0.5, 0.5, 0.0)
-        self.tag_redraw = parent.region.tag_redraw
+
+class RoundedWidget(WidgetBase, gl.GLRoundedRect):
+    def __init__(self, *colors):
+        gl.GLRoundedRect.__init__(self, *colors)
+
+
+class Scrollbar:
+    def __init__(self):
+        self.gutter = RoundedWidget(0.18, 0.18, 0.18, 0.0)
+        self.gutter.on_hit = self.on_gutter_hit
+
+        self.thumb = RoundedWidget(0.27, 0.27, 0.27, 1.0)
+        self.thumb.on_hit = self.on_thumb_hit
+
+    def on_gutter_hit(self):
+        bpy.ops.textension.suggestions_scroll(
+            'INVOKE_DEFAULT', action=self.gutter.action)
+
+    def on_thumb_hit(self):
+        bpy.ops.textension.suggestions_scrollbar('INVOKE_DEFAULT')
+
+
+class ResizeWidget(WidgetBase):
+    def __init__(self, parent: 'Instance', cursor: str, action: str = 'DEFAULT'):
+        self.action = action
         self.cursor = cursor
+        self.sizers = [self]
+        self.tag_redraw = parent.region.tag_redraw
+
+    def on_hit(self):
+        return bpy.ops.textension.suggestions_resize(
+            'INVOKE_DEFAULT', action=self.action)
+
+    def on_enter(self):
+        for resizer in self.sizers:
+            resizer.set_alpha(1.0)
+
+    def on_leave(self):
+        for resizer in self.sizers:
+            resizer.set_alpha(0.0)
+
+    def set_alpha(self, value): pass
+
+    def hit_test(self, mrx, mry): pass
+
+
+class EdgeResizeWidget(gl.GLPlainRect, ResizeWidget):
+    def __init__(self, parent: 'Instance', cursor: str, action: str):
+        ResizeWidget.__init__(self, parent, cursor, action)
+        super().__init__(0.5, 0.5, 0.5, 0.0)
 
     def set_alpha(self, value):
         if self.background[3] != value:
             self.background[3] = value
             self.tag_redraw()
 
-    def on_enter(self):
-        self.set_alpha(1.0)
 
-    def on_leave(self):
-        self.set_alpha(0.0)
-
-
-class CornerSizeWidget:
-    def __init__(self, parent, cursor: str):
-        self.cursor = cursor
-        self.box = parent.box
-        self.resizers = parent.resize_width, parent.resize_height
-
-    def hit_test(self, mrx, mry):
-        return mrx >= self.box.x2 - 8 and mry <= self.box.y + 8
-
-    def on_enter(self):
-        for resizer in self.resizers:
-            resizer.on_enter()
-
-    def on_leave(self):
-        for resizer in self.resizers:
-            resizer.on_leave()
-
-
-class EntriesWidget:
+class EntriesWidget(WidgetBase):
     def __init__(self, parent):
         self.parent = parent
     
@@ -72,8 +98,9 @@ class EntriesWidget:
             self.parent.hover_index = -1
             self.parent.region.tag_redraw()
 
-    def on_enter(self):
-        pass  # Handled elsewhere.
+    def on_hit(self):
+        bpy.ops.textension.suggestions_commit(
+            'INVOKE_DEFAULT', index=self.parent.hover_index)
 
 
 class Instance:
@@ -82,12 +109,11 @@ class Instance:
     height: int = 200               # Box height
     visible: bool = False           # Box visibility
 
+    scroll: Scrollbar
     hover: gl.GLRoundedRect         # Entry mouse hover
-    gutter: gl.GLRoundedRect        # Scrollbar gutter
-    thumb: gl.GLRoundedRect         # Scrollbar thumb
     selection: gl.GLRoundedRect     # Entry selection
-    resize_width: SizeWidget        # Width resizer
-    resize_height: SizeWidget       # Height resizer
+    resize_width: EdgeResizeWidget        # Width resizer
+    resize_height: EdgeResizeWidget       # Height resizer
     text_surface: gl.GLTexture      # Entries
 
     items: tuple = ()               # Completions
@@ -113,32 +139,23 @@ class Instance:
 
         self.box = gl.GLRoundedRect(0.2, 0.2, 0.2, 1.0)
         self.box.set_border_color(0.3, 0.3, 0.3, 1.0)
+
         self.hover = gl.GLRoundedRect(1.0, 1.0, 1.0, 0.08)
         self.hover.set_border_color(1.0, 1.0, 1.0, 0.08)
 
-        self.gutter = gl.GLRoundedRect(0.18, 0.18, 0.18, 0.0)
-        self.gutter.hit_test_func = lambda gutter=self.gutter: bpy.ops.textension.suggestions_scroll('INVOKE_DEFAULT', action=gutter.action)
-        self.gutter.on_enter = types.noop
-        self.gutter.on_leave = types.noop
-
-        self.thumb = gl.GLRoundedRect(0.27, 0.27, 0.27, 1.0)
-        self.thumb.hit_test_func = lambda: bpy.ops.textension.suggestions_scrollbar('INVOKE_DEFAULT')
-        self.thumb.on_enter = types.noop
-        self.thumb.on_leave = types.noop
+        self.scroll = Scrollbar()
 
         self.selection = gl.GLRoundedRect(0.3, 0.4, 0.8, 0.4)
 
-        self.resize_width = SizeWidget(self, 'MOVE_X')
-        self.resize_width.hit_test_func = lambda: bpy.ops.textension.suggestions_resize('INVOKE_DEFAULT', action='HORIZONTAL')
+        self.resize_width = EdgeResizeWidget(self, 'MOVE_X', 'HORIZONTAL')
+        self.resize_height = EdgeResizeWidget(self, 'MOVE_Y', 'VERTICAL')
 
-        self.resize_height = SizeWidget(self, 'MOVE_Y')
-        self.resize_height.hit_test_func = lambda: bpy.ops.textension.suggestions_resize('INVOKE_DEFAULT', action='VERTICAL')
-        
-        self.resize_corner = CornerSizeWidget(self, 'SCROLL_XY')
-        self.resize_corner.hit_test_func = lambda: bpy.ops.textension.suggestions_resize('INVOKE_DEFAULT', action='CORNER')
+        self.resize_corner = ResizeWidget(self, 'SCROLL_XY', 'CORNER')
+        self.resize_corner.sizers[:] = [self.resize_width, self.resize_height]
+        self.resize_corner.hit_test = \
+            lambda mrx, mry: mrx >= self.box.x2 - 8 and mry <= self.box.y + 8
 
         self.entries = EntriesWidget(self)
-        self.entries.hit_test_func = lambda instance=self: bpy.ops.textension.suggestions_commit('INVOKE_DEFAULT', index=instance.hover_index)
 
         self.text_surface = gl.GLTexture(self.width, self.height)
         self.text_surface_cache_key = ()
@@ -163,7 +180,7 @@ class Instance:
                 hit.on_leave()
             self.hit = new_hit
             new_hit.on_enter()
-        return new_hit.hit_test_func
+        return new_hit.on_hit
 
     def hit_test_widgets(self, mrx, mry) -> types.Callable | None:
         """Hit test box widgets: resizers, gutter, thumb and entries."""
@@ -174,15 +191,15 @@ class Instance:
                 return self.test_and_set(widget)
 
         # Gutter
-        if self.clamp_ratio != 0 and self.gutter.hit_test(mrx, mry):
+        if self.clamp_ratio != 0 and self.scroll.gutter.hit_test(mrx, mry):
             _context.window.cursor_set("DEFAULT")
 
             # Thumb
-            if self.thumb.hit_test(mrx, mry):
-                return self.test_and_set(self.thumb)
+            if self.scroll.thumb.hit_test(mrx, mry):
+                return self.test_and_set(self.scroll.thumb)
 
-            self.gutter.action = 'PAGE_DOWN' if mry < self.thumb.y else 'PAGE_UP'
-            return self.test_and_set(self.gutter)
+            self.scroll.gutter.action = 'PAGE_DOWN' if mry < self.scroll.thumb.y else 'PAGE_UP'
+            return self.test_and_set(self.scroll.gutter)
 
         # Entries
         _context.window.cursor_set("DEFAULT")
@@ -374,8 +391,8 @@ def draw(context: bpy.types.Context):
         thumb_width = instance.scrollbar_width
         thumb_x = x + w - thumb_width
         thumb_y = y + thumb_y_offset
-        instance.gutter(thumb_x, y + 1, thumb_width, h - 2)
-        instance.thumb(thumb_x, round(thumb_y), thumb_width, round(thumb_h))
+        instance.scroll.gutter(thumb_x, y + 1, thumb_width, h - 2)
+        instance.scroll.thumb(thumb_x, round(thumb_y), thumb_width, round(thumb_h))
 
     # Draw sizers even if transparent to update their hit test rectangles.
     instance.resize_width(x + w - 3, y, 3, h)
@@ -570,7 +587,7 @@ class TEXTENSION_OT_suggestions_scroll(types.TextOperator):
         if event.type == 'LEFTMOUSE':
             self.action = 'PAGE_DOWN'
 
-            if event.mouse_region_y >= instance.thumb.y:
+            if event.mouse_region_y >= instance.scroll.thumb.y:
                 self.action = 'PAGE_UP'
 
             self.scroll(event.mouse_region_y)
@@ -600,7 +617,7 @@ class TEXTENSION_OT_suggestions_scroll(types.TextOperator):
 
     def scroll(self, mry: int):
         top = self.instance.top
-        thumb = self.instance.thumb
+        thumb = self.instance.scroll.thumb
 
         if self.action == 'PAGE_DOWN' and mry < thumb.y:
             self.instance.set_top(min(self.max_top, top + self.page))
