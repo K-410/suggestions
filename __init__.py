@@ -660,6 +660,7 @@ def dismiss():
         instance.visible = False
         TEXTENSION_OT_hit_test.poll(context)
         context.region.tag_redraw()
+        context.window.cursor_set('TEXT')
         instance.set_new_hit(None)
 # from jedi.api import Interpreter2
 # from jedi import Interpreter
