@@ -1011,14 +1011,9 @@ def enable():
     TEXTENSION_OT_insert.insert_hooks.append(on_insert)
     TEXTENSION_OT_delete.delete_hooks.append(on_delete)
 
-    if 'bpy' not in jedi.settings.auto_import_modules:
-        jedi.settings.auto_import_modules.extend(("bpy", "_bpy", "numpy", "sys"))
-
-    # if 'bpy' not in jedi.settings.auto_import_modules:
-    #     jedi.settings.auto_import_modules.extend(("bpy",))
-    # for modname in sys.modules:
-    #     if modname.startswith("mathutils"):
-    #         jedi.settings.auto_import_modules.append(modname)
+    # Include module names which jedi can't infer on its own
+    jedi.settings.auto_import_modules[:] = set(
+        jedi.settings.auto_import_modules + ["bpy", "_bpy", "numpy", "sys"])
 
     utils.add_draw_hook(draw, SpaceTextEditor, (_context,))
     utils.add_hittest(test_suggestions_box)
