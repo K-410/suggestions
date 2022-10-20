@@ -248,6 +248,7 @@ def test_suggestions_box(data: types.HitTestData) -> types.Callable | None:
     return None
 
 
+def thumb_vpos_calc(height_px: int, line_px: int, nlines: int, top: float) -> tuple[int, int, float]:
     """Compute the vertical position of the scrollbar thumb.
 
     height_px: The height of the working range of the scrollbar in pixels.
@@ -262,7 +263,7 @@ def test_suggestions_box(data: types.HitTestData) -> types.Callable | None:
     visible_lines = height_px / line_px
 
     if visible_lines >= nlines:
-        return 0, 0, 0
+        return 0, 0, 0.0
 
     # Minimum thumb height before it's clamped to keep it clickable.
     min_ratio = min(30, height_px) / height_px
@@ -270,7 +271,7 @@ def test_suggestions_box(data: types.HitTestData) -> types.Callable | None:
 
     if ratio > min_ratio:
         y = height_px * (1 - (top + visible_lines) / nlines)
-        h = (height_px * (1 - top / nlines)) - y
+        h = int((height_px * (1 - top / nlines)) - y)
         clamp_ratio = 1.0
     else:
         ymax = height_px - int((height_px * (1 - (min_ratio - ratio))) * top / nlines)
