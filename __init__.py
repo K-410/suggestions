@@ -530,8 +530,8 @@ class TEXTENSION_OT_suggestions_navigate(types.TextOperator):
     @classmethod
     def register_keymaps(cls):
         from ...km_utils import kmi_new
-        kmi_new(cls, "Text", cls.bl_idname, 'UP_ARROW', 'PRESS', repeat=True).action = 'UP'
-        kmi_new(cls, "Text", cls.bl_idname, 'DOWN_ARROW', 'PRESS', repeat=True).action = 'DOWN'
+        kmi_new(cls, "Text Generic", cls.bl_idname, 'UP_ARROW', 'PRESS', repeat=True).action = 'UP'
+        kmi_new(cls, "Text Generic", cls.bl_idname, 'DOWN_ARROW', 'PRESS', repeat=True).action = 'DOWN'
 
         for action in ('PAGE_DOWN', 'PAGE_UP'):
             kmi_new(cls, "Text Generic", cls.bl_idname, action, 'PRESS', repeat=True).action = action
