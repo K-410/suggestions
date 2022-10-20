@@ -101,8 +101,9 @@ class Scrollbar(RoundedWidget):
         return self.geometry_cache
 
 
-class Resizer(Widget):
+class Resizer(RoundedWidget):
     def __init__(self, parent: 'Instance', cursor: str, action: str = 'DEFAULT'):
+        super().__init__(0.5, 0.5, 0.5, 0.0)
         self.action = action
         self.cursor = cursor
         self.sizers = [self]
@@ -118,16 +119,6 @@ class Resizer(Widget):
     def on_leave(self):
         for resizer in self.sizers:
             resizer.set_alpha(0.0)
-
-    def set_alpha(self, value): pass
-
-    def hit_test(self, x, y): pass
-
-
-class EdgeResizeWidget(gl.GLPlainRect, Resizer):
-    def __init__(self, parent: 'Instance', cursor: str, action: str):
-        Resizer.__init__(self, parent, cursor, action)
-        super().__init__(0.5, 0.5, 0.5, 0.0)
 
     def set_alpha(self, value):
         if self.background[3] != value:
@@ -159,8 +150,8 @@ class Instance(gl.GLRoundedRect):
     scroll: Scrollbar
     hover: gl.GLRoundedRect         # Entry mouse hover
     selection: gl.GLRoundedRect     # Entry selection
-    resize_width: EdgeResizeWidget        # Width resizer
-    resize_height: EdgeResizeWidget       # Height resizer
+    resize_width: Resizer        # Width resizer
+    resize_height: Resizer       # Height resizer
     corner: Resizer            # Corner resizer
     text_surface: gl.GLTexture      # Entries
 
@@ -192,11 +183,8 @@ class Instance(gl.GLRoundedRect):
 
         self.scroll = Scrollbar(self)
 
-        self.selection = gl.GLRoundedRect(0.3, 0.4, 0.8, 0.4)
-
-        self.resize_width = EdgeResizeWidget(self, 'MOVE_X', 'HORIZONTAL')
-        self.resize_height = EdgeResizeWidget(self, 'MOVE_Y', 'VERTICAL')
-
+        self.resize_width = Resizer(self, 'MOVE_X', 'HORIZONTAL')
+        self.resize_height = Resizer(self, 'MOVE_Y', 'VERTICAL')
         self.corner = Resizer(self, 'SCROLL_XY', 'CORNER')
         self.corner.sizers[:] = [self.resize_width, self.resize_height]
         self.corner.hit_test = lambda x, y: x >= self.x2 - 8 and y <= self.y + 8
@@ -374,8 +362,8 @@ def draw(context: bpy.types.Context):
     instance.scroll.draw()
 
     # Draw sizers even if transparent to update their hit test rectangles.
-    instance.resize_width(x + w - 3, y, 3, h)
-    instance.resize_height(x, y, w, 3)
+    instance.resize_width(x + w - 4, y, 5, h)
+    instance.resize_height(x, y - 1, w, 5)
 
 
 class TEXTENSION_OT_suggestions_commit(types.TextOperator):
