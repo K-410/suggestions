@@ -481,11 +481,6 @@ class TEXTENSION_OT_suggestions_resize(types.TextOperator):
 class TEXTENSION_OT_suggestions_navigate(types.TextOperator):
     bl_options = {'INTERNAL'}
 
-    # action: bpy.props.EnumProperty(
-    #     items=(('DOWN', "Down", "Navigate down"),
-    #            ('UP', "Up", "Navigate up"),
-    #            ('PAGE_DOWN', "Page Down", "Navigate Page Down"),
-    #            ('PAGE_UP', "Page Up", "Navigate Page Up")))
     action: bpy.props.EnumProperty(
         items=[(v, "", "") for v in ("DOWN", "UP", "PAGE_DOWN", "PAGE_UP")])
 
