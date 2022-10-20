@@ -142,25 +142,19 @@ class Instance:
         self.text_surface_cache_key = ()
 
     def set_top(self, new_top: float) -> None:
-        """
-        Assign a new top value.
-        """
+        """Assign a new top value."""
         if self.top != new_top:
             self.top = new_top
             self.region.tag_redraw()
 
     def _validate_indices(self) -> None :
-        """
-        If the suggestions list changes, reset top to zero.
-        """
+        """If the suggestions list changes, reset top to zero."""
         if self.hash != (_hash := hash(self.items)):
             self.top = self.active_index = 0
             self.hash = _hash
 
     def test_and_set(self, new_hit):
-        """
-        Handle the hit test result's enter/leave events.
-        """
+        """Handle the hit test result's enter/leave events."""
         if (hit := self.hit) != new_hit:
             if hit is not None:
                 hit.on_leave()
@@ -169,9 +163,7 @@ class Instance:
         return new_hit.hit_test_func
 
     def hit_test_widgets(self, mrx, mry) -> types.Callable | None:
-        """
-        Hit test widgets in the box: resizers, gutter, thumb and entries.
-        """
+        """Hit test box widgets: resizers, gutter, thumb and entries."""
         # Resizers
         for widget in (self.resize_corner, self.resize_width, self.resize_height):
             if widget.hit_test(mrx, mry):
@@ -204,8 +196,7 @@ class Instance:
         return None
 
     def poll(self):
-        """
-        When this method returns False, the box should not be drawn.
+        """When this method returns False, the box should not be drawn.
 
         Predicates include:
         - self.visible must be True
@@ -235,9 +226,7 @@ def instance_from_space(st: SpaceTextEditor, *, cache={}) -> Instance:
 
 
 def clear_instances_cache() -> None:
-    """
-    Instances are stored in the keyword defaults of 'instance_from_space'.
-    """
+    """Clear suggestions box instances cache."""
     instance_from_space.__kwdefaults__["cache"].clear()
 
 
@@ -258,9 +247,7 @@ def test_suggestions_box(data: types.HitTestData) -> types.Callable | None:
     return None
 
 
-def thumb_vpos_calc(height_px: int, line_px: int, nlines: int, top: float) -> tuple[int, int, int]:
-    """
-    Compute the vertical position of the scrollbar thumb.
+    """Compute the vertical position of the scrollbar thumb.
 
     height_px: The height of the working range of the scrollbar in pixels.
     line_px:   The line height in pixels.
@@ -707,8 +694,7 @@ completions will not show.
 
 
 def on_insert() -> None:
-    """
-    Called after TEXTENSION_OT_insert.
+    """Called after TEXTENSION_OT_insert.
 
     Completion shouldn't run when the inserted character is a token separator
     excluding period "."
@@ -734,8 +720,7 @@ def deferred_complete(st: bpy.types.SpaceTextEditor):
 
 
 def on_delete() -> None:
-    """
-    Called after backspace operator runs. Completions run and show only if
+    """Called after backspace operator runs. Completions run and show only if
     there's text leading up to the cursor and it doesn't have a trailing comma.
     """
     st = _context.space_data
@@ -1050,8 +1035,7 @@ def consts(**kw):
 
 @consts(cache=[False, 0])
 def poll_plugin():
-    """
-    Return whether parso/jedi are importable, without importing them.
+    """Return whether parso/jedi are importable, without importing them.
     Optimized to be usable in a draw function.
     """
     try:
