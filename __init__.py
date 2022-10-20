@@ -26,35 +26,83 @@ from dev_utils import enable_breakpoint_hook
 enable_breakpoint_hook(True)
 
 
-class WidgetBase:
+class Widget:
     cursor: str
     def on_enter(self): return None
     def on_leave(self): return None
     def on_hit(self): return None
 
 
-class RoundedWidget(WidgetBase, gl.GLRoundedRect):
+class RoundedWidget(gl.GLRoundedRect, Widget):
     def __init__(self, *colors):
-        gl.GLRoundedRect.__init__(self, *colors)
+        super().__init__(*colors)
 
 
-class Scrollbar:
-    def __init__(self):
-        self.gutter = RoundedWidget(0.18, 0.18, 0.18, 0.0)
-        self.gutter.on_hit = self.on_gutter_hit
+class Scrollbar(RoundedWidget):
+    action: str = 'undefined'
+    clamp_ratio: float = 0.0  # Thumb clamp ratio
+    compute_args: tuple[int, int, int, float] = (0, 0, 0, 0.0)
+    compute_cache: tuple[int, int] = (0, 0)
 
+    def __init__(self, parent: "Instance"):
+        super().__init__(0.18, 0.18, 0.18, 0.0)
+        self.parent = parent
         self.thumb = RoundedWidget(0.27, 0.27, 0.27, 1.0)
-        self.thumb.on_hit = self.on_thumb_hit
+        self.thumb.on_hit = lambda: bpy.ops.textension.suggestions_scrollbar('INVOKE_DEFAULT')
 
-    def on_gutter_hit(self):
-        bpy.ops.textension.suggestions_scroll(
-            'INVOKE_DEFAULT', action=self.gutter.action)
+    def on_hit(self):
+        bpy.ops.textension.suggestions_scroll('INVOKE_DEFAULT', action=self.action)
 
-    def on_thumb_hit(self):
-        bpy.ops.textension.suggestions_scrollbar('INVOKE_DEFAULT')
+    def hit_test(self, mrx, mry):
+        if super().hit_test(mrx, mry):
+            _context.window.cursor_set("DEFAULT")
+            self.action = 'PAGE_DOWN' if mry < self.thumb.y else 'PAGE_UP'
+            if self.thumb.hit_test(mrx, mry):
+                return self.thumb
+            return self
+
+    def draw(self):
+        parent = self.parent
+        y, h = self.compute_geometry()
+        if h != 0:
+            w = parent.scrollbar_width
+            x = parent.x + parent.width - w
+            y += parent.y
+            self(x, parent.y + 1, w, parent.height - 2)
+            self.thumb(x, y, w, h)
+
+    def compute_geometry(self):
+        """Compute the vertical position of the scrollbar thumb."""
+        parent = self.parent
+        compute_args = (parent.height, parent.line_height, len(parent.items), parent.top)
+
+        if compute_args != self.compute_args:
+            self.compute_args = compute_args
+            height, line_height, nlines, top = compute_args
+            visible_lines = height / line_height
+            if visible_lines >= nlines:
+                self.clamp_ratio = 0.0
+                self.geometry_cache = (0, 0)
+            else:
+                # Minimum thumb height before it's clamped to keep it clickable.
+                min_ratio = min(30, height) / height
+                ratio = visible_lines / nlines
+
+                if ratio > min_ratio:
+                    y = int(height * (1 - (top + visible_lines) / nlines))
+                    h = int((height * (1 - top / nlines)) - y)
+                    self.clamp_ratio = 1.0
+                else:
+                    ymax = height - int((height * (1 - (min_ratio - ratio))) * top / nlines)
+                    y = int(ymax - height * min_ratio)
+                    h = ymax - int(ymax - height * min_ratio)
+                    # The height is clamped. The ratio represents the size difference.
+                    self.clamp_ratio = min_ratio / ratio
+                self.geometry_cache = (max(0, y), h)
+        return self.geometry_cache
 
 
-class ResizeWidget(WidgetBase):
+class Resizer(Widget):
     def __init__(self, parent: 'Instance', cursor: str, action: str = 'DEFAULT'):
         self.action = action
         self.cursor = cursor
@@ -62,8 +110,7 @@ class ResizeWidget(WidgetBase):
         self.tag_redraw = parent.region.tag_redraw
 
     def on_hit(self):
-        return bpy.ops.textension.suggestions_resize(
-            'INVOKE_DEFAULT', action=self.action)
+        return bpy.ops.textension.suggestions_resize('INVOKE_DEFAULT', action=self.action)
 
     def on_enter(self):
         for resizer in self.sizers:
@@ -78,9 +125,9 @@ class ResizeWidget(WidgetBase):
     def hit_test(self, x, y): pass
 
 
-class EdgeResizeWidget(gl.GLPlainRect, ResizeWidget):
+class EdgeResizeWidget(gl.GLPlainRect, Resizer):
     def __init__(self, parent: 'Instance', cursor: str, action: str):
-        ResizeWidget.__init__(self, parent, cursor, action)
+        Resizer.__init__(self, parent, cursor, action)
         super().__init__(0.5, 0.5, 0.5, 0.0)
 
     def set_alpha(self, value):
@@ -89,7 +136,7 @@ class EdgeResizeWidget(gl.GLPlainRect, ResizeWidget):
             self.tag_redraw()
 
 
-class EntriesWidget(WidgetBase):
+class Entries(Widget):
     def __init__(self, parent):
         self.parent = parent
     
@@ -104,6 +151,8 @@ class EntriesWidget(WidgetBase):
 
 
 class Instance(gl.GLRoundedRect):
+    x: int = 0
+    y: int = 0
     width: int = 300                # Box width
     height: int = 200               # Box height
     visible: bool = False           # Box visibility
@@ -113,7 +162,7 @@ class Instance(gl.GLRoundedRect):
     selection: gl.GLRoundedRect     # Entry selection
     resize_width: EdgeResizeWidget        # Width resizer
     resize_height: EdgeResizeWidget       # Height resizer
-    corner: ResizeWidget            # Corner resizer
+    corner: Resizer            # Corner resizer
     text_surface: gl.GLTexture      # Entries
 
     items: tuple = ()               # Completions
@@ -122,7 +171,6 @@ class Instance(gl.GLRoundedRect):
     line_heightf: float = 1.0
     active_index: int = 0           # Selected entry
     hover_index: int = -1           # Hovered entry
-    clamp_ratio: float = 1.0        # Thumb clamp ratio
     hash: int = 0                   # Completions hash
 
     cursor_position: tuple[int, int] = (0, 0)
@@ -143,18 +191,18 @@ class Instance(gl.GLRoundedRect):
         self.hover = gl.GLRoundedRect(1.0, 1.0, 1.0, 0.08)
         self.hover.set_border_color(1.0, 1.0, 1.0, 0.08)
 
-        self.scroll = Scrollbar()
+        self.scroll = Scrollbar(self)
 
         self.selection = gl.GLRoundedRect(0.3, 0.4, 0.8, 0.4)
 
         self.resize_width = EdgeResizeWidget(self, 'MOVE_X', 'HORIZONTAL')
         self.resize_height = EdgeResizeWidget(self, 'MOVE_Y', 'VERTICAL')
 
-        self.corner = ResizeWidget(self, 'SCROLL_XY', 'CORNER')
+        self.corner = Resizer(self, 'SCROLL_XY', 'CORNER')
         self.corner.sizers[:] = [self.resize_width, self.resize_height]
         self.corner.hit_test = lambda x, y: x >= self.x2 - 8 and y <= self.y + 8
 
-        self.entries = EntriesWidget(self)
+        self.entries = Entries(self)
 
         self.text_surface = gl.GLTexture(self.width, self.height)
         self.text_surface_cache_key = ()
@@ -190,16 +238,10 @@ class Instance(gl.GLRoundedRect):
                 _context.window.cursor_set(widget.cursor)
                 return self.test_and_set(widget)
 
-        # Gutter
-        if self.clamp_ratio != 0 and self.scroll.gutter.hit_test(mrx, mry):
+        # Scrollbar
+        if hit := self.scroll.hit_test(mrx, mry):
             _context.window.cursor_set("DEFAULT")
-
-            # Thumb
-            if self.scroll.thumb.hit_test(mrx, mry):
-                return self.test_and_set(self.scroll.thumb)
-
-            self.scroll.gutter.action = 'PAGE_DOWN' if mry < self.scroll.thumb.y else 'PAGE_UP'
-            return self.test_and_set(self.scroll.gutter)
+            return self.test_and_set(hit)
 
         # Entries
         _context.window.cursor_set("DEFAULT")
@@ -247,41 +289,6 @@ def test_suggestions_box(data: types.HitTestData) -> types.Callable | None:
     return None
 
 
-def thumb_vpos_calc(height_px: int, line_px: int, nlines: int, top: float) -> tuple[int, int, float]:
-    """Compute the vertical position of the scrollbar thumb.
-
-    height_px: The height of the working range of the scrollbar in pixels.
-    line_px:   The line height in pixels.
-    nlines:    Total number of lines.
-    top:       Current position of the top. Can be float.
-
-    Return:    tuple of y, height and clamped ratio (1.0 if unclamped).
-
-    If the thumb height >= working range, returns 0, 0, 0.
-    """
-    visible_lines = height_px / line_px
-
-    if visible_lines >= nlines:
-        return 0, 0, 0.0
-
-    # Minimum thumb height before it's clamped to keep it clickable.
-    min_ratio = min(30, height_px) / height_px
-    ratio = visible_lines / nlines
-
-    if ratio > min_ratio:
-        y = height_px * (1 - (top + visible_lines) / nlines)
-        h = int((height_px * (1 - top / nlines)) - y)
-        clamp_ratio = 1.0
-    else:
-        ymax = height_px - int((height_px * (1 - (min_ratio - ratio))) * top / nlines)
-        y = int(ymax - height_px * min_ratio)
-        h = ymax - int(ymax - height_px * min_ratio)
-        # The height is clamped. The ratio represents the size difference.
-        clamp_ratio = min_ratio / ratio
-
-    return max(0, y), h, clamp_ratio
-
-
 def draw(context: bpy.types.Context):
     """Draw callback for suggestions box."""
     st = context.space_data
@@ -300,6 +307,8 @@ def draw(context: bpy.types.Context):
 
     # Align the box to below the cursor.
     y -= h - st.offsets[1] - round(4 * wu_scale)
+    instance.x = x
+    instance.y = y
 
     # At 1.77 scale, dpi is halved and pixel_size is doubled. Don't ask why.
     blf.size(1, instance.font_size, int(system.dpi * system.pixel_size))
@@ -364,15 +373,7 @@ def draw(context: bpy.types.Context):
 
     text_surface(x, y, w, h)
 
-    # Draw thumb
-    thumb_y_offset, thumb_h, clamp_ratio = thumb_vpos_calc(h, line_height, len(items), top)
-    instance.clamp_ratio = clamp_ratio
-    if thumb_h != 0:
-        thumb_width = instance.scrollbar_width
-        thumb_x = x + w - thumb_width
-        thumb_y = y + thumb_y_offset
-        instance.scroll.gutter(thumb_x, y + 1, thumb_width, h - 2)
-        instance.scroll.thumb(thumb_x, round(thumb_y), thumb_width, round(thumb_h))
+    instance.scroll.draw()
 
     # Draw sizers even if transparent to update their hit test rectangles.
     instance.resize_width(x + w - 3, y, 3, h)
@@ -628,7 +629,7 @@ class TEXTENSION_OT_suggestions_scrollbar(types.TextOperator):
         self.max_px = self.max_top * line_height
         self.line_height_coeff = 1 / line_height
         min_height = min(30, height)
-        self.clamp_diff_px = (min_height - (min_height / instance.clamp_ratio)) * self.px_ratio
+        self.clamp_diff_px = (min_height - (min_height / instance.scroll.clamp_ratio)) * self.px_ratio
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
