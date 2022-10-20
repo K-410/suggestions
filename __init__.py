@@ -152,8 +152,9 @@ class Instance:
     def _validate_indices(self) -> None :
         """If the suggestions list changes, reset top to zero."""
         if self.hash != (_hash := hash(self.items)):
-            self.top = self.active_index = 0
+            self.active_index = 0
             self.hash = _hash
+            self.top = 0.0
 
     def test_and_set(self, new_hit):
         """Handle the hit test result's enter/leave events."""
