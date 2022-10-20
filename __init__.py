@@ -178,6 +178,7 @@ class Instance(gl.GLRoundedRect):
         self.hit = None
         self.st = st
 
+        self.selection = gl.GLRoundedRect(0.3, 0.4, 0.8, 0.4)
         self.hover = gl.GLRoundedRect(1.0, 1.0, 1.0, 0.08)
         self.hover.set_border_color(1.0, 1.0, 1.0, 0.08)
 
@@ -200,9 +201,12 @@ class Instance(gl.GLRoundedRect):
             self.top = new_top
             self.region.tag_redraw()
 
-    def _validate_indices(self) -> None :
-        """If the suggestions list changes, reset top to zero."""
-        if self.hash != (_hash := hash(self.items)):
+    def validate(self) -> None :
+        """Perform an items hash comparison since last time. If the hash was
+        changed, we reset the view so the list starts from the top.
+        """
+        _hash = hash(self.items)
+        if self.hash != _hash:
             self.active_index = 0
             self.hash = _hash
             self.top = 0.0
@@ -219,21 +223,21 @@ class Instance(gl.GLRoundedRect):
         if not super().hit_test(mrx, mry):
             return None
 
-        # Resizers
+        # Hit test resizers
         for widget in (self.corner, self.resize_width, self.resize_height):
             if widget.hit_test(mrx, mry):
                 _context.window.cursor_set(widget.cursor)
                 return self.test_and_set(widget)
 
-        # Scrollbar
+        # Hit test scrollbar
         if hit := self.scroll.hit_test(mrx, mry):
             _context.window.cursor_set("DEFAULT")
             return self.test_and_set(hit)
 
-        # Entries
         _context.window.cursor_set("DEFAULT")
-        hit_index = int(self.top + ((self.y2 - mry) / self.line_height))
 
+        # Hit test entries
+        hit_index = int(self.top + ((self.y2 - mry) / self.line_height))
         if hit_index < len(self.items):
             if hit_index != self.hover_index:
                 self.hover_index = hit_index
@@ -275,16 +279,25 @@ def test_suggestions_box(data: types.HitTestData) -> types.Callable | None:
     return None
 
 
+def compute_entry_position(rel_index, y, h, height, offset_px):
+    ypos = y + h - height - (height * rel_index) + offset_px
+
+    if ypos <= y:  # Selection y is below box
+        height -= (y - ypos) + 1
+        ypos = y + 1
+    if ypos + height >= y + h:  # Selection y + height is above box
+        height -= (ypos + height - (y + h)) + 1
+    return ypos, height
+
+
 def draw(context: bpy.types.Context):
     """Draw callback for suggestions box."""
     st = context.space_data
     instance = instance_from_space(st)
-    # TODO: poll should not return items - should be boolean
-    items = instance.poll()
-    if not items:
+    if not instance.poll():
         return
 
-    instance._validate_indices()
+    instance.validate()
 
     # Box position and size
     wu_scale = system.wu * 0.05
@@ -308,38 +321,27 @@ def draw(context: bpy.types.Context):
     top_int = int(top)
     line_heightf = instance.line_heightf = (x_height + asc + desc) * instance.line_padding
     line_height = instance.line_height = int(line_heightf)
+
+    # The offset in pixels into the current top index
     offset_px = int((top - top_int) * line_heightf)
-    hover_width = w - 2
 
     # Draw box
     instance(x, y, w, h)
 
     # Draw selection
-    sy = y + h - line_height - (line_height * (instance.active_index - top_int)) + offset_px
-    sh = line_height
-    if sy <= y:  # Selection y is below box
-        sh = line_height - (y - sy) - 1
-        sy = y + 1
-    if sy + sh >= y + h:  # Selection y + height is above box
-        sh = line_height - ((sy + sh) - (y + h)) - 1
-
+    sy, sh = compute_entry_position(instance.active_index - top_int, y, h, line_height, offset_px)
+    hover_width = w - 2
     instance.selection(x + 1, sy, hover_width, sh)
 
     # Draw hover
-    hy = y + h - line_height - (line_height * (instance.hover_index - top_int)) + offset_px
-    hh = line_height
-    if hy <= y:
-        hh = line_height - (y - hy) - 1
-        hy = y + 1
-    if hy + hh >= y + h:
-        hh = line_height - ((hy + hh) - (y + h)) - 1
+    hy, hh = compute_entry_position(instance.hover_index - top_int, y, h, line_height, offset_px)
     instance.hover(x + 1, hy, hover_width, hh)
 
     # Draw the text entries
     blf.color(1, 0.4, 0.7, 1.0, 1)
     text_surface = instance.text_surface
 
-    # There's no built-in scissor/clip feature in 'gpu' yet as of 3.2.1, so
+    # There's no built-in scissor/clip feature in 'gpu' as of 3.2, so
     # text is drawn onto a surface and cached using a key.
     if size != text_surface.size:
         text_surface.resize(w, h)
@@ -352,9 +354,9 @@ def draw(context: bpy.types.Context):
         text_x = pad
         text_y = h + desc - line_height + offset_px + (3 * wu_scale)
         with text_surface.bind():
-            for compl in items[top_int:top_int + max_items]:
+            for item in instance.items[top_int:top_int + max_items]:
                 blf.position(1, text_x, text_y, 0)
-                blf.draw(1, compl.name)
+                blf.draw(1, item.name)
                 text_y -= line_height
 
     text_surface(x, y, w, h)
