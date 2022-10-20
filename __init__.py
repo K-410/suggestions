@@ -55,7 +55,6 @@ class Scrollbar(RoundedWidget):
 
     def hit_test(self, mrx, mry):
         if super().hit_test(mrx, mry):
-            _context.window.cursor_set("DEFAULT")
             self.action = 'PAGE_DOWN' if mry < self.thumb.y else 'PAGE_UP'
             if self.thumb.hit_test(mrx, mry):
                 return self.thumb
@@ -253,7 +252,6 @@ class Instance(gl.GLRoundedRect):
                 self.region.tag_redraw()
             return self.test_and_set(self.entries)
 
-        _context.window.cursor_set("DEFAULT")
         return types.noop
 
     def set_new_hit(self, new_hit=None):
