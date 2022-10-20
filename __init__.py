@@ -114,6 +114,7 @@ class Instance:
     selection: gl.GLRoundedRect     # Entry selection
     resize_width: EdgeResizeWidget        # Width resizer
     resize_height: EdgeResizeWidget       # Height resizer
+    corner: ResizeWidget            # Corner resizer
     text_surface: gl.GLTexture      # Entries
 
     items: tuple = ()               # Completions
@@ -150,10 +151,9 @@ class Instance:
         self.resize_width = EdgeResizeWidget(self, 'MOVE_X', 'HORIZONTAL')
         self.resize_height = EdgeResizeWidget(self, 'MOVE_Y', 'VERTICAL')
 
-        self.resize_corner = ResizeWidget(self, 'SCROLL_XY', 'CORNER')
-        self.resize_corner.sizers[:] = [self.resize_width, self.resize_height]
-        self.resize_corner.hit_test = \
-            lambda mrx, mry: mrx >= self.box.x2 - 8 and mry <= self.box.y + 8
+        self.corner = ResizeWidget(self, 'SCROLL_XY', 'CORNER')
+        self.corner.sizers[:] = [self.resize_width, self.resize_height]
+        self.corner.hit_test = lambda x, y: x >= self.x2 - 8 and y <= self.y + 8
 
         self.entries = EntriesWidget(self)
 
@@ -185,7 +185,7 @@ class Instance:
     def hit_test_widgets(self, mrx, mry) -> types.Callable | None:
         """Hit test box widgets: resizers, gutter, thumb and entries."""
         # Resizers
-        for widget in (self.resize_corner, self.resize_width, self.resize_height):
+        for widget in (self.corner, self.resize_width, self.resize_height):
             if widget.hit_test(mrx, mry):
                 _context.window.cursor_set(widget.cursor)
                 return self.test_and_set(widget)
