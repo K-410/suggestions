@@ -118,13 +118,13 @@ class Instance:
 
         self.gutter = gl.GLRoundedRect(0.18, 0.18, 0.18, 0.0)
         self.gutter.hit_test_func = lambda gutter=self.gutter: bpy.ops.textension.suggestions_scroll('INVOKE_DEFAULT', action=gutter.action)
-        self.gutter.on_enter = lambda: None
-        self.gutter.on_leave = lambda: None
+        self.gutter.on_enter = types.noop
+        self.gutter.on_leave = types.noop
 
         self.thumb = gl.GLRoundedRect(0.27, 0.27, 0.27, 1.0)
         self.thumb.hit_test_func = lambda: bpy.ops.textension.suggestions_scrollbar('INVOKE_DEFAULT')
-        self.thumb.on_enter = lambda: None
-        self.thumb.on_leave = lambda: None
+        self.thumb.on_enter = types.noop
+        self.thumb.on_leave = types.noop
 
         self.selection = gl.GLRoundedRect(0.3, 0.4, 0.8, 0.4)
 
@@ -239,7 +239,7 @@ def test_suggestions_box(data: types.HitTestData) -> types.Callable | None:
             if (hit := ins.hit_test_widgets(*pos)):
                 return hit
             _context.window.cursor_set("DEFAULT")
-            return lambda: None
+            return types.noop
 
     # If a previous hit exists, call its leave handler.
     elif ins.hit is not None:
