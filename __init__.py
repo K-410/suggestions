@@ -1022,31 +1022,22 @@ def enable():
     setup2()
 
 
-def consts(**kw):
-    def _injector(func):
-        for attr, obj in kw.items():
-            *consts, = func.__code__.co_consts
-            consts[consts.index(f"const {attr}")] = obj
-            func.__code__ = func.__code__.replace(co_consts=tuple(consts))
-            setattr(func, attr, obj)
-        return func
-    return _injector
+_poll_cache = [False, 0]
 
 
-@consts(cache=[False, 0])
 def poll_plugin():
     """Return whether parso/jedi are importable, without importing them.
     Optimized to be usable in a draw function.
     """
     try:
-        poll, timeout = "const cache"
+        poll, timeout = _poll_cache
     except:
-        poll, timeout = "const cache"[:] = (False, 0)
+        poll, timeout = _poll_cache[:] = (False, 0)
 
     if not poll and timeout < (curr_time := time.monotonic()):
         from importlib.util import find_spec
         poll = bool(find_spec("parso") and find_spec("jedi"))
-        "const cache"[:] = (poll, curr_time + 2.0)
+        _poll_cache[:] = (poll, curr_time + 2.0)
     return poll
 
 
