@@ -75,7 +75,7 @@ class ResizeWidget(WidgetBase):
 
     def set_alpha(self, value): pass
 
-    def hit_test(self, mrx, mry): pass
+    def hit_test(self, x, y): pass
 
 
 class EdgeResizeWidget(gl.GLPlainRect, ResizeWidget):
@@ -103,8 +103,7 @@ class EntriesWidget(WidgetBase):
             'INVOKE_DEFAULT', index=self.parent.hover_index)
 
 
-class Instance:
-    box: gl.GLRoundedRect           # Box
+class Instance(gl.GLRoundedRect):
     width: int = 300                # Box width
     height: int = 200               # Box height
     visible: bool = False           # Box visibility
@@ -134,12 +133,12 @@ class Instance:
     scrollbar_width: int = DEFAULT_SCROLLBAR_WIDTH
 
     def __init__(self, st: SpaceTextEditor) -> None :
+        super().__init__(0.2, 0.2, 0.2, 1.0)
+        self.set_border_color(0.3, 0.3, 0.3, 1.0)
+
         self.region = utils.region_from_space_data(st)
         self.hit = None
         self.st = st
-
-        self.box = gl.GLRoundedRect(0.2, 0.2, 0.2, 1.0)
-        self.box.set_border_color(0.3, 0.3, 0.3, 1.0)
 
         self.hover = gl.GLRoundedRect(1.0, 1.0, 1.0, 0.08)
         self.hover.set_border_color(1.0, 1.0, 1.0, 0.08)
@@ -182,8 +181,11 @@ class Instance:
             new_hit.on_enter()
         return new_hit.on_hit
 
-    def hit_test_widgets(self, mrx, mry) -> types.Callable | None:
-        """Hit test box widgets: resizers, gutter, thumb and entries."""
+
+    def hit_test(self, mrx, mry):
+        if not super().hit_test(mrx, mry):
+            return None
+
         # Resizers
         for widget in (self.corner, self.resize_width, self.resize_height):
             if widget.hit_test(mrx, mry):
@@ -203,7 +205,7 @@ class Instance:
 
         # Entries
         _context.window.cursor_set("DEFAULT")
-        hit_index = int(self.top + ((self.box.y2 - mry) / self.line_height))
+        hit_index = int(self.top + ((self.y2 - mry) / self.line_height))
 
         if hit_index < len(self.items):
             if hit_index != self.hover_index:
@@ -211,30 +213,8 @@ class Instance:
                 self.region.tag_redraw()
             return self.test_and_set(self.entries)
 
-        # No entry was hit, although we are still inside the box.
-        # This is possible when the box is taller than all the entries.
-        return None
-
-    # TODO: This method is ambiguous. "Should be drawn" != "should be hit tested".
-    def poll(self):
-        """When this method returns False, the box should not be drawn.
-
-        Predicates include:
-        - self.visible must be True
-        - The text in the bound space data must not be None
-        - The text's cursor position must be synchronized with this instance.
-            - Position is updated via the insert/delete operator hooks
-        - The instance must have items to show.
-        """
-        if self.visible and (text := self.st.text) is not None:
-            if text.cursor_position == self.cursor_position:
-                return self.items
-            else:
-                self.cursor_position = -1, -1
-        return False
-
-    def update_cursor(self):
-        self.cursor_position = self.st.text.cursor_position
+        _context.window.cursor_set("DEFAULT")
+        return types.noop
 
 
 def instance_from_space(st: SpaceTextEditor, *, cache={}) -> Instance:
@@ -253,17 +233,15 @@ def clear_instances_cache() -> None:
 
 def test_suggestions_box(data: types.HitTestData) -> types.Callable | None:
     """Hit test hook for TEXTENSION_OT_hit_test."""
-    if (ins := instance_from_space(data.space_data)).poll() and \
-        ins.box.hit_test(*(pos := data.pos)):
-            if (hit := ins.hit_test_widgets(*pos)):
-                return hit
-            _context.window.cursor_set("DEFAULT")
-            return types.noop
+    instance = instance_from_space(data.space_data)
+    if instance.poll():
+        ret = instance.hit_test(*data.pos)
 
-    # If a previous hit exists, call its leave handler.
-    elif ins.hit is not None:
-        ins.hit.on_leave()
-        ins.hit = None
+        # If a previous hit exists, call its leave handler.
+        if ret in {types.noop, None} and instance.hit is not None:
+            instance.hit.on_leave()
+            instance.hit = None
+        return ret
     return None
 
 
@@ -337,7 +315,7 @@ def draw(context: bpy.types.Context):
     hover_width = w - 2
 
     # Draw box
-    instance.box(x, y, w, h)
+    instance(x, y, w, h)
 
     # Draw selection
     sy = y + h - line_height - (line_height * (instance.active_index - top_int)) + offset_px
@@ -574,7 +552,7 @@ class TEXTENSION_OT_suggestions_scroll(types.TextOperator):
         if types.TextOperator.poll(context):
             region = context.region
             instance = instance_from_space(context.space_data)
-            return instance.visible and instance.box.hit_test(
+            return instance.visible and instance.hit_test(
                 region.mouse_x, region.mouse_y)
 
     def invoke(self, context, event):
