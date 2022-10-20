@@ -1,13 +1,13 @@
-import bpy
-import blf
-import sys
 import os
-from dev_utils import measure
+import sys
 import time
 
+import blf
+import bpy
 from bpy.types import SpaceTextEditor
-from ... import gl, types, utils
-from ... import TEXTENSION_OT_hit_test
+from dev_utils import measure
+
+from ... import TEXTENSION_OT_hit_test, gl, types, utils
 from ...types import is_spacetext, is_text
 
 system = bpy.context.preferences.system
@@ -22,7 +22,9 @@ DEFAULT_SCROLLBAR_WIDTH = 20
 
 # TODO: Testing
 from dev_utils import enable_breakpoint_hook
+
 enable_breakpoint_hook(True)
+
 
 class SizeWidget(gl.GLPlainRect):
 
@@ -169,7 +171,7 @@ class Instance:
             if widget.hit_test(mrx, mry):
                 _context.window.cursor_set(widget.cursor)
                 return self.test_and_set(widget)
-                
+
         # Gutter
         if self.clamp_ratio != 0 and self.gutter.hit_test(mrx, mry):
             _context.window.cursor_set("DEFAULT")
@@ -232,7 +234,6 @@ def clear_instances_cache() -> None:
 
 def test_suggestions_box(data: types.HitTestData) -> types.Callable | None:
     """Hit test hook for TEXTENSION_OT_hit_test."""
-
     if (ins := instance_from_space(data.space_data)).poll() and \
         ins.box.hit_test(*(pos := data.pos)):
             if (hit := ins.hit_test_widgets(*pos)):
