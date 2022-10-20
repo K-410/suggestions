@@ -198,6 +198,7 @@ class Instance:
         # This is possible when the box is taller than all the entries.
         return None
 
+    # TODO: This method is ambiguous. "Should be drawn" != "should be hit tested".
     def poll(self):
         """When this method returns False, the box should not be drawn.
 
@@ -927,7 +928,6 @@ def redraw_open_instances():
             instance.region.tag_redraw()
 
 
-
 class TEXTENSION_PG_suggestions_settings(bpy.types.PropertyGroup):
 
     def on_update_font_size(self, _):
@@ -1004,12 +1004,12 @@ def enable():
     for cls in classes:
         bpy.utils.register_class(cls)
 
-    from ...utils import TextensionPreferences
-    TextensionPreferences.suggestions = bpy.props.PointerProperty(type=TEXTENSION_PG_suggestions_settings)
-
     from ... import TEXTENSION_OT_insert, TEXTENSION_OT_delete
+    from ...utils import TextensionPreferences
+
     TEXTENSION_OT_insert.insert_hooks.append(on_insert)
     TEXTENSION_OT_delete.delete_hooks.append(on_delete)
+    TextensionPreferences.suggestions = bpy.props.PointerProperty(type=TEXTENSION_PG_suggestions_settings)
 
     # Include module names which jedi can't infer on its own
     jedi.settings.auto_import_modules[:] = set(
@@ -1070,5 +1070,3 @@ def disable():
     clear_instances_cache()
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-
-# import lark
