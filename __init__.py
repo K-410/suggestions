@@ -174,10 +174,8 @@ class Instance(gl.GLRoundedRect):
 
     def test_and_set(self, new_hit):
         """Handle the hit test result's enter/leave events."""
-        if (hit := self.hit) != new_hit:
-            if hit is not None:
-                hit.on_leave()
-            self.hit = new_hit
+        if self.hit != new_hit:
+            self.set_new_hit(new_hit)
             new_hit.on_enter()
         return new_hit.on_hit
 
@@ -216,6 +214,11 @@ class Instance(gl.GLRoundedRect):
         _context.window.cursor_set("DEFAULT")
         return types.noop
 
+    def set_new_hit(self, new_hit=None):
+        if self.hit is not None:
+            self.hit.on_leave()
+        self.hit = new_hit
+
 
 def instance_from_space(st: SpaceTextEditor, *, cache={}) -> Instance:
     try:
@@ -238,9 +241,8 @@ def test_suggestions_box(data: types.HitTestData) -> types.Callable | None:
         ret = instance.hit_test(*data.pos)
 
         # If a previous hit exists, call its leave handler.
-        if ret in {types.noop, None} and instance.hit is not None:
-            instance.hit.on_leave()
-            instance.hit = None
+        if ret in {types.noop, None}:
+            instance.set_new_hit(None)
         return ret
     return None
 
@@ -658,6 +660,7 @@ def dismiss():
         instance.visible = False
         TEXTENSION_OT_hit_test.poll(context)
         context.region.tag_redraw()
+        instance.set_new_hit(None)
 # from jedi.api import Interpreter2
 # from jedi import Interpreter
 
