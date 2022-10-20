@@ -218,6 +218,28 @@ class Instance(gl.GLRoundedRect):
             new_hit.on_enter()
         return new_hit.on_hit
 
+    def poll(self):
+        """When this method returns False, the box should not be drawn.
+
+        Predicates include:
+        - self.visible must be True
+        - The text in the bound space data must not be None
+        - The text's cursor position must be synchronized with this instance.
+            - Position is updated via the insert/delete operator hooks
+        - The instance must have items to show.
+        """
+        if self.visible:
+            text = self.st.text
+            if text is not None:
+                if text.cursor_position == self.cursor_position:
+                    # TODO: This is bad. Should return bool
+                    return True
+                else:
+                    self.cursor_position = -1, -1
+        return False
+
+    def update_cursor(self):
+        self.cursor_position = self.st.text.cursor_position
 
     def hit_test(self, mrx, mry):
         if not super().hit_test(mrx, mry):
