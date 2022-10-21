@@ -28,9 +28,15 @@ enable_breakpoint_hook(True)
 
 class Widget:
     cursor: str
-    def on_enter(self): return None
-    def on_leave(self): return None
-    def on_hit(self): return None
+
+    def on_enter(self):
+        return None
+
+    def on_leave(self):
+        return None
+
+    def on_activate(self):
+        return None
 
 
 class RoundedWidget(gl.GLRoundedRect, Widget):
@@ -48,9 +54,9 @@ class Scrollbar(RoundedWidget):
         super().__init__(0.18, 0.18, 0.18, 0.0)
         self.parent = parent
         self.thumb = RoundedWidget(0.27, 0.27, 0.27, 1.0)
-        self.thumb.on_hit = lambda: bpy.ops.textension.suggestions_scrollbar('INVOKE_DEFAULT')
+        self.thumb.on_activate = lambda: bpy.ops.textension.suggestions_scrollbar('INVOKE_DEFAULT')
 
-    def on_hit(self):
+    def on_activate(self):
         bpy.ops.textension.suggestions_scroll('INVOKE_DEFAULT', action=self.action)
 
     def hit_test(self, mrx, mry):
@@ -109,7 +115,7 @@ class Resizer(RoundedWidget):
         self.sizers = [self]
         self.tag_redraw = parent.region.tag_redraw
 
-    def on_hit(self):
+    def on_activate(self):
         return bpy.ops.textension.suggestions_resize('INVOKE_DEFAULT', action=self.action)
 
     def on_enter(self):
@@ -135,7 +141,7 @@ class Entries(Widget):
             self.parent.hover_index = -1
             self.parent.region.tag_redraw()
 
-    def on_hit(self):
+    def on_activate(self):
         bpy.ops.textension.suggestions_commit(
             'INVOKE_DEFAULT', index=self.parent.hover_index)
 
@@ -216,7 +222,7 @@ class Instance(gl.GLRoundedRect):
         if self.hit != new_hit:
             self.set_new_hit(new_hit)
             new_hit.on_enter()
-        return new_hit.on_hit
+        return new_hit.on_activate
 
     def poll(self):
         """When this method returns False, the box should not be drawn.
