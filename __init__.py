@@ -281,8 +281,8 @@ class Instance(gl.GLRoundedRect):
         """Handle the hit test result's enter/leave events."""
         if self.hit != new_hit:
             self.set_new_hit(new_hit)
-            new_hit.on_enter()
-        return new_hit.on_activate
+            new_hit.enter()
+        return new_hit.activate
 
     def poll(self) -> bool:
         if self.visible:
@@ -310,7 +310,7 @@ class Instance(gl.GLRoundedRect):
 
     def set_new_hit(self, new_hit=None):
         if self.hit is not None:
-            self.hit.on_leave()
+            self.hit.leave()
         self.hit = new_hit
 
     def draw(self):
