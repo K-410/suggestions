@@ -41,7 +41,7 @@ class Scrollbar(Widget):
     compute_args: tuple[int, int, int, float] = (0, 0, 0, 0.0)
     compute_cache: tuple[int, int] = (0, 0)
 
-    def __init__(self, parent: "Entries"):
+    def __init__(self, parent: "ListBox"):
         super().__init__(0.18, 0.18, 0.18, 0.0)
         self.parent = parent
         self.thumb = Widget(0.27, 0.27, 0.27, 1.0)
@@ -135,7 +135,7 @@ class BoxResizer(Resizer):
         self.vert(x, y - 1, w, 5)
 
 
-class Entries(Widget):
+class ListBox(Widget):
     line_heightf: float = 1.0
     line_height: int    = 1         # Line height
     active_index: int   = 0         # Selected entry
@@ -258,7 +258,7 @@ class Instance(gl.GLRoundedRect):
         self.visible = False
         self.cursor_position = (0, 0)
         self.region = utils.region_from_space_data(st)
-        self.entries = Entries(self)
+        self.entries = ListBox(self)
         self.resizer = BoxResizer(self)
 
     def poll(self) -> bool:
@@ -886,23 +886,23 @@ def invalidate_surfaces():
 class TEXTENSION_PG_suggestions_settings(bpy.types.PropertyGroup):
     font_size: bpy.props.IntProperty(
         name="Font Size", description="Font size for suggestions entries",
-        update=update_factory(Entries, "font_size"),
-        default=Entries.font_size, min=1, max=144)
+        update=update_factory(ListBox, "font_size"),
+        default=ListBox.font_size, min=1, max=144)
 
     line_padding: bpy.props.FloatProperty(
         name="Line Padding", description="Line Padding",
-        update=update_factory(Entries, "line_padding"),
-        default=Entries.line_padding, min=0.0, max=4.0)
+        update=update_factory(ListBox, "line_padding"),
+        default=ListBox.line_padding, min=0.0, max=4.0)
 
     text_padding: bpy.props.IntProperty(
         name="Text Padding", description="Text Padding",
-        update=update_factory(Entries, "text_padding", invalidate_surfaces),
-        default=Entries.text_padding, min=0, max=1000)
+        update=update_factory(ListBox, "text_padding", invalidate_surfaces),
+        default=ListBox.text_padding, min=0, max=1000)
 
     scrollbar_width: bpy.props.IntProperty(
         name="Scrollbar Width", description="Scrollbar Width",
-        update=update_factory(Entries, "scrollbar_width"),
-        default=Entries.scrollbar_width, min=8, max=100)
+        update=update_factory(ListBox, "scrollbar_width"),
+        default=ListBox.scrollbar_width, min=8, max=100)
 
 
 classes = (
