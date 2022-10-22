@@ -166,7 +166,7 @@ class ListBox(Widget):
         self.hover.set_border_color(1.0, 1.0, 1.0, 0.08)
         self.selection = gl.GLRoundedRect(0.3, 0.4, 0.8, 0.4)
         self.scroll = Scrollbar(self)
-    
+
     def leave(self):
         if test_and_update(self, "hover_index", -1):
             self.parent.region.tag_redraw()
@@ -246,8 +246,6 @@ class ListBox(Widget):
 
 
 class Instance(gl.GLRoundedRect):
-    region: bpy.types.Region
-
     def __init__(self, st: SpaceTextEditor) -> None :
         super().__init__(0.2, 0.2, 0.2, 1.0)
         self.set_border_color(0.3, 0.3, 0.3, 1.0)
@@ -257,7 +255,7 @@ class Instance(gl.GLRoundedRect):
         self.hit = None
         self.visible = False
         self.cursor_position = (0, 0)
-        self.region = utils.region_from_space_data(st)
+        self.region: bpy.types.Region = utils.region_from_space_data(st)
         self.entries = ListBox(self)
         self.resizer = BoxResizer(self)
 
@@ -294,7 +292,7 @@ class Instance(gl.GLRoundedRect):
         return hit.activate
 
     def set_new_hit(self, hit=None):
-        if self.hit != hit:
+        if self.hit is not hit:
             if self.hit is not None:
                 self.hit.leave()
             self.hit = hit
