@@ -26,19 +26,16 @@ def test_and_update(obj, attr, new_value) -> bool:
     return False
 
 
-class Widget:
+class Widget(gl.GLRoundedRect):
     cursor: str
     def enter(self): return None
     def leave(self): return None
     def activate(self): return None
-
-
-class RoundedWidget(gl.GLRoundedRect, Widget):
     def __init__(self, *colors):
         super().__init__(*colors)
 
 
-class Scrollbar(RoundedWidget):
+class Scrollbar(Widget):
     action: str = 'undefined'
     clamp_ratio: float = 0.0
     compute_args: tuple[int, int, int, float] = (0, 0, 0, 0.0)
@@ -47,7 +44,7 @@ class Scrollbar(RoundedWidget):
     def __init__(self, parent: "Entries"):
         super().__init__(0.18, 0.18, 0.18, 0.0)
         self.parent = parent
-        self.thumb = RoundedWidget(0.27, 0.27, 0.27, 1.0)
+        self.thumb = Widget(0.27, 0.27, 0.27, 1.0)
         self.thumb.activate = lambda: bpy.ops.textension.suggestions_scrollbar('INVOKE_DEFAULT')
 
     def activate(self):
@@ -100,7 +97,7 @@ class Scrollbar(RoundedWidget):
         return self.geometry_cache
 
 
-class Resizer(RoundedWidget):
+class Resizer(Widget):
     def __init__(self, parent: 'Instance', cursor: str, action: str):
         super().__init__(0.5, 0.5, 0.5, 0.0)
         self.parent = parent
@@ -157,6 +154,7 @@ class Entries(Widget):
     metrics: tuple[float, float, float] = (0, 0, 0)
 
     def __init__(self, parent: "Instance"):
+        super().__init__()
         self.parent = parent
         self.hash = 0
         self.items = ()     # Completions
@@ -263,13 +261,6 @@ class Instance(gl.GLRoundedRect):
         self.entries = Entries(self)
         self.resizer = BoxResizer(self)
 
-    def test_and_set(self, new_hit):
-        """Handle the hit test result's enter/leave events."""
-        if self.hit != new_hit:
-            self.set_new_hit(new_hit)
-            new_hit.enter()
-        return new_hit.activate
-
     def poll(self) -> bool:
         if self.visible:
             if text := _context.space_data.text:
@@ -283,21 +274,32 @@ class Instance(gl.GLRoundedRect):
         self.cursor_position = _context.space_data.text.cursor_position
 
     def hit_test(self, mrx, mry):
-        if not super().hit_test(mrx, mry):          # Test the actual box
+        # Test if we're inside the box
+        if not super().hit_test(mrx, mry):
             return None
-        _context.window.cursor_set("DEFAULT")
 
-        if hit := self.resizer.hit_test(mrx, mry):  # Test resize handles
+        # Test if we're inside the resize handles
+        if hit := self.resizer.hit_test(mrx, mry):
             _context.window.cursor_set(hit.cursor)
-            return self.test_and_set(hit)
-        elif hit := self.entries.hit_test(mrx, mry):  # Test the entries
-            return self.test_and_set(hit)
-        return types.noop
+        else:
+            # Test if we're hitting any entry
+            _context.window.cursor_set("DEFAULT")
+            if hit := self.entries.hit_test(mrx, mry):
+                pass
 
-    def set_new_hit(self, new_hit=None):
-        if self.hit is not None:
-            self.hit.leave()
-        self.hit = new_hit
+            else:  # The box was hit, but none of the widgets were.
+                return types.noop
+
+        self.set_new_hit(hit)
+        return hit.activate
+
+    def set_new_hit(self, hit=None):
+        if self.hit != hit:
+            if self.hit is not None:
+                self.hit.leave()
+            self.hit = hit
+            if hit is not None:
+                hit.enter()
 
     def draw(self):
         entries = self.entries
