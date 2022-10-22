@@ -28,15 +28,9 @@ def test_and_update(obj, attr, new_value) -> bool:
 
 class Widget:
     cursor: str
-
-    def enter(self):
-        return None
-
-    def leave(self):
-        return None
-
-    def activate(self):
-        return None
+    def enter(self): return None
+    def leave(self): return None
+    def activate(self): return None
 
 
 class RoundedWidget(gl.GLRoundedRect, Widget):
@@ -107,35 +101,29 @@ class Scrollbar(RoundedWidget):
 
 
 class Resizer(RoundedWidget):
-    def __init__(self, parent: 'Instance', cursor: str, action: str = 'undefined'):
+    def __init__(self, parent: 'Instance', cursor: str, action: str):
         super().__init__(0.5, 0.5, 0.5, 0.0)
         self.parent = parent
         self.action = action
         self.cursor = cursor
         self.sizers = [self]
+        self.enter = lambda: self.set_alpha(1.0)
+        self.leave = lambda: self.set_alpha(0.0)
+        self.activate = lambda action=action: \
+            bpy.ops.textension.suggestions_resize('INVOKE_DEFAULT', action=action)
 
     def set_alpha(self, value):
         for resizer in self.sizers:
             if test_and_update(resizer.background, "w", value):
                 self.parent.region.tag_redraw()
 
-    def enter(self):
-        self.set_alpha(1.0)
-
-    def leave(self):
-        self.set_alpha(0.0)
-
-    def activate(self):
-        return bpy.ops.textension.suggestions_resize('INVOKE_DEFAULT', action=self.action)
-
 
 class BoxResizer(Resizer):
     def __init__(self, parent: "Instance"):
-        self.parent = parent
-        self.resize_hor = Resizer(parent, 'MOVE_X', 'HORIZONTAL')
-        self.resize_ver = Resizer(parent, 'MOVE_Y', 'VERTICAL')
         super().__init__(parent, 'SCROLL_XY', 'CORNER')
-        self.sizers[:] = [self.resize_hor, self.resize_ver]
+        self.sizers[:] = (self.horz, self.vert) = \
+            Resizer(parent, 'MOVE_X', 'HORIZONTAL'), \
+            Resizer(parent, 'MOVE_Y', 'VERTICAL')
 
     def hit_test(self, mrx, mry):
         if mrx >= self.parent.x2 - 8 and mry <= self.parent.y + 8:
@@ -146,10 +134,8 @@ class BoxResizer(Resizer):
         return None
 
     def draw(self, x, y, w, h):
-        
-        # Draw sizers even if transparent to update their hit test rectangles.
-        self.resize_hor(x + w - 4, y, 5, h)
-        self.resize_ver(x, y - 1, w, 5)
+        self.horz(x + w - 4, y, 5, h)
+        self.vert(x, y - 1, w, 5)
 
 
 class Entries(Widget):
