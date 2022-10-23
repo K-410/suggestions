@@ -16,7 +16,7 @@ system = _context.preferences.system
 PLUGIN_PATH = os.path.dirname(__file__)
 
 # TODO: Testing
-from dev_utils import enable_breakpoint_hook
+from dev_utils import enable_breakpoint_hook, per, measure
 
 enable_breakpoint_hook(True)
 
@@ -135,45 +135,49 @@ class BoxResizer(Resizer):
         self.vert(x, y - 1, w, 5)
 
 
+class EntryRect(gl.GLRoundedRect):
+    index: int
+
+    def __init__(self, *color, index=0):
+        super().__init__(*color)
+        self.index = index
+
+
 class ListBox(Widget):
-    line_heightf: float = 1.0
-    line_height: int    = 1         # Line height
-    active_index: int   = 0         # Selected entry
-    hover_index: int    = -1        # Hovered entry
-    hover: gl.GLRoundedRect         # Entry mouse hover
-    selection: gl.GLRoundedRect     # Entry selection
     cache_key: tuple = ()
     scroll: Scrollbar
 
+    line_heightf: float  = 1.0
+    line_height: int     = 1         # Line height
     font_size: int       = 14
     text_padding: int    = 5
     line_padding: float  = 1.45
     scrollbar_width: int = 20
 
     metrics_key: tuple[int, int] = (0, 0)
-    metrics: tuple[float, float, float] = (0, 0, 0)
 
     def __init__(self, parent: "Instance"):
         super().__init__()
         self.parent = parent
-        self.hash = 0
-        self.items = ()     # Completions
-        self.top = 0.0      # Scroll position
-        self.width = 300    # Entries width in pixels
-        self.height = 200   # Entries height in pixels
-        self.surface = gl.GLTexture(self.width, self.height)
-        self.hover = gl.GLRoundedRect(1.0, 1.0, 1.0, 0.08)
-        self.hover.set_border_color(1.0, 1.0, 1.0, 0.08)
-        self.selection = gl.GLRoundedRect(0.3, 0.4, 0.8, 0.4)
-        self.scroll = Scrollbar(self)
+        self.desc   = 0
+        self.hash   = 0
+        self.items  = ()        # Completions
+        self.top    = 0.0       # Scroll position
+        self.width  = 300
+        self.height = 200
+
+        self.surface    = gl.GLTexture(self.width, self.height)
+        self.scroll     = Scrollbar(self)
+        self.selection  = EntryRect(0.3, 0.4, 0.8, 0.4)
+        self.hover      = EntryRect(1.0, 1.0, 1.0, 0.08, index=-1)
 
     def leave(self):
-        if test_and_update(self, "hover_index", -1):
+        if test_and_update(self.hover, "index", -1):
             self.parent.region.tag_redraw()
 
     def activate(self):
         bpy.ops.textension.suggestions_commit(
-            'INVOKE_DEFAULT', index=self.hover_index)
+            'INVOKE_DEFAULT', index=self.hover.index)
 
     def draw(self):
         parent = self.parent
@@ -187,7 +191,7 @@ class ListBox(Widget):
 
         # If the items changed, reset scroll and selection
         if test_and_update(self, "hash", hash(self.items)):
-            self.active_index = 0
+            self.selection.index = 0
             self.top = 0.0
 
         # If the font metrics changed, re-compute line height
@@ -195,12 +199,12 @@ class ListBox(Widget):
         metrics_key = self.font_size, int(system.dpi * system.pixel_size)
         blf.size(1, *metrics_key)
         if test_and_update(self, "metrics_key", metrics_key):
-            self.metrics = (
-                xh   := blf.dimensions(1, "acemnorsuvwxz")[1],
-                        blf.dimensions(1, "ABC")[1] - xh,
-                        blf.dimensions(1, "gpqy")[1] - xh)
-            self.line_heightf = sum(self.metrics) * self.line_padding
+            _, adh = blf.dimensions(1, "Ag")
+            self.line_heightf = adh * self.line_padding
             self.line_height = int(self.line_heightf)
+
+            _, xh = blf.dimensions(1, "x")
+            self.desc = (adh - xh) * 0.5  # Averaged ascender/descender
 
         lh = self.line_height
         top = self.top
@@ -210,7 +214,8 @@ class ListBox(Widget):
         if test_and_update(self, "cache_key", (top, self.hash, lh, size)):
             max_items = int(h / self.line_heightf + 2)
             text_x = self.text_padding * system.wu * 0.05
-            text_y = h + self.metrics[2] - lh + offset + (3 * system.wu * 0.05)
+            text_y = h + self.desc - lh + offset + (3 * system.wu * 0.05)
+
             with self.surface.bind():
                 for item in self.items[top_int:top_int + max_items]:
                     blf.position(1, text_x, text_y, 0)
@@ -221,11 +226,16 @@ class ListBox(Widget):
         y = parent.y
         self.surface(x, y, w, h)
 
-        sy, sh = compute_entry_position(self.active_index - top_int, y, h, lh, offset)
-        self.selection(x + 1, sy, w - 2, sh)
+        for rect in (self.selection, self.hover):
+            height = lh
+            ypos = y + h - height - (height * (rect.index - top_int)) + offset
+            if ypos <= y:  # Selection y is below box
+                height -= (y - ypos) + 1
+                ypos = y + 1
+            if ypos + height >= y + h:  # Selection y + height is above box
+                height -= (ypos + height - (y + h)) + 1
+            rect(x + 1, ypos, w - 2, height)
 
-        hy, hh = compute_entry_position(self.hover_index - top_int, y, h, lh, offset)
-        self.hover(x + 1, hy, w - 2, hh)
         self.scroll.draw()
 
     def hit_test(self, mrx, mry):
@@ -234,7 +244,7 @@ class ListBox(Widget):
 
         hit_index = int(self.top + ((self.parent.y2 - mry) / self.line_height))
         if hit_index < len(self.items):
-            if test_and_update(self, "hover_index", hit_index):
+            if test_and_update(self.hover, "index", hit_index):
                 self.parent.region.tag_redraw()
             return self
         return None
@@ -340,16 +350,6 @@ def test_suggestions_box(data: types.HitTestData) -> types.Callable | None:
     return None
 
 
-def compute_entry_position(rel_index, y, h, height, offset_px):
-    ypos = y + h - height - (height * rel_index) + offset_px
-    if ypos <= y:  # Selection y is below box
-        height -= (y - ypos) + 1
-        ypos = y + 1
-    if ypos + height >= y + h:  # Selection y + height is above box
-        height -= (ypos + height - (y + h)) + 1
-    return ypos, height
-
-
 def draw():
     """Draw callback for suggestions box."""
     instance = get_instance()
@@ -372,8 +372,8 @@ class TEXTENSION_OT_suggestions_commit(types.TextOperator):
         is_return = False
         # When self.index is -1 or not given, use the currently active index.
         if self.index == -1:
-            assert entries.active_index < len(entries.items)
-            self.index = entries.active_index
+            assert entries.selection.index < len(entries.items)
+            self.index = entries.selection.index
             is_return = True
 
         complete_str = entries.items[self.index].complete
@@ -483,19 +483,19 @@ class TEXTENSION_OT_suggestions_navigate(types.TextOperator):
                 instance.cursor_position = -1, -1
                 return {'PASS_THROUGH'}
 
-            value = entries.active_index + (1 if self.action == 'DOWN' else -1)
+            value = entries.selection.index + (1 if self.action == 'DOWN' else -1)
             new_index = value % len(entries.items)
         elif self.action == 'PAGE_DOWN':
-            new_index = min(len(entries.items) - 1, entries.active_index + page)
+            new_index = min(len(entries.items) - 1, entries.selection.index + page)
         else:
-            new_index = max(0, entries.active_index - page)
+            new_index = max(0, entries.selection.index - page)
 
         if new_index >= entries.top + page:  # New index is below bottom
             entries.top = new_index - page
         elif new_index < entries.top:        # New index is above top
             entries.top = new_index
 
-        entries.active_index = new_index
+        entries.selection.index = new_index
         context.region.tag_redraw()
         return {'FINISHED'}
 
