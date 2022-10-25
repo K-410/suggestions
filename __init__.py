@@ -15,8 +15,9 @@ system = _context.preferences.system
 
 PLUGIN_PATH = os.path.dirname(__file__)
 
-# TODO: Testing
-from dev_utils import enable_breakpoint_hook, per, measure
+# Separators determine when completions should show after character insertion.
+# If the character matches the separator, completions will not run.
+separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}  # Excludes "."
 
 enable_breakpoint_hook(True)
 
@@ -278,7 +279,8 @@ class Instance(gl.GLRoundedRect):
                     self.cursor_position = -1, -1
         return False
 
-    def update_cursor(self):
+    def sync_cursor(self):
+        """Synchronize the cursor value with the text (required by poll)."""
         self.cursor_position = _context.space_data.text.cursor_position
 
     def hit_test(self, mrx, mry):
@@ -629,20 +631,12 @@ def dismiss():
         instance.set_new_hit(None)
 
 
-# Separators determine when completions should show after character insertion.
-# If the character matches the separator, completions will not run.
-separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}  # Excludes "."
-
-openers  = {"(", "[", "{", "\"", "\'"}
-
-
 def on_insert() -> None:
-    """Hook for TEXTENSION_OT_insert. Completion shouldn't run when the
-    inserted character is a token separator, excluding period "."
-    """
-    text = _context.edit_text
-    line, col = text.cursor_position
-    if text.lines[line].body[col - 1] in separators:
+    """Hook for TEXTENSION_OT_insert"""
+    line, col = _context.edit_text.cursor_position
+    if _context.edit_text.lines[line].body[col - 1] not in separators:
+        bpy.ops.textension.suggestions_complete('INVOKE_DEFAULT')
+    else:
         dismiss()
         return
 
@@ -660,23 +654,15 @@ def deferred_complete():
 
 
 def on_delete() -> None:
-    """Called after backspace operator runs. Completions run and show only if
-    there's text leading up to the cursor and it doesn't have a trailing comma.
-    """
+    """Hook for TEXTENSION_OT_delete"""
     line, col = _context.edit_text.cursor_position
     lead = _context.edit_text.lines[line].body[:col]
-
-    if not lead.strip() \
-        or lead[-1:] in separators \
-        or lead.endswith(".") \
-        or lead[-1:] in openers:
-            dismiss()
-
+    if not lead.strip() or lead[-1:] in separators | {"."}:
+        dismiss()
     elif lead.lstrip():
         instance = get_instance()
-        instance.update_cursor()
-        # If the box already is visible, run completions again.
-        if instance.poll():
+        instance.sync_cursor()
+        if instance.poll():  # If visible, run completions again.
             bpy.ops.textension.suggestions_complete('INVOKE_DEFAULT')
 
 import gc
@@ -694,7 +680,7 @@ class TEXTENSION_OT_suggestions_complete(types.TextOperator):
         text = st.text
         instance = get_instance()
         line, col = text.cursor_position
-        instance.update_cursor()
+        instance.sync_cursor()
         string = text.as_string()
         # TODO: If optimized, use that version.
         # from jedi.api import Interpreter
