@@ -640,18 +640,6 @@ def on_insert() -> None:
         dismiss()
         return
 
-    # Sometimes jedi can be slow. We don't want te insert operator to freeze
-    # until it completes, so completions run in the next event loop iteration.
-    else:
-        bpy.ops.textension.suggestions_complete('INVOKE_DEFAULT')
-
-
-def deferred_complete():
-    override = dict(_context.copy(), space_data=_context.space_data)
-    def wrapper(override=override):
-        bpy.ops.textension.suggestions_complete(override)
-    bpy.app.timers.register(wrapper, first_interval=1e-4)
-
 
 def on_delete() -> None:
     """Hook for TEXTENSION_OT_delete"""
@@ -738,8 +726,9 @@ class TEXTENSION_OT_suggestions_complete(types.TextOperator):
         return {'CANCELLED'}
 
     def invoke(self, context, event):
-        get_instance().update_cursor()
-        deferred_complete()
+        # Defer completion to the idle pass to make it appear.
+        override = dict(_context.copy(), space_data=_context.space_data)
+        utils.defer(bpy.ops.textension.suggestions_complete, override)
         return {'FINISHED'}
 
     @classmethod
