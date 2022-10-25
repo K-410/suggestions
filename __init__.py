@@ -250,10 +250,14 @@ class ListBox(Widget):
             return self
         return None
 
-    def set_top(self, new_top: float) -> None:
+    def set_top(self, top: float) -> None:
         """Assign a new top value."""
-        if test_and_update(self, "top", new_top):
+        if test_and_update(self, "top", max(0, min(self.max_top, top))):
             self.parent.region.tag_redraw()
+
+    @property
+    def max_top(self):
+        return len(self.items) - (self.height / self.line_height)
 
 
 class Instance(gl.GLRoundedRect):
@@ -526,9 +530,7 @@ class TEXTENSION_OT_suggestions_scroll(types.TextOperator):
 
     def invoke(self, context, event):
         self.entries = entries = get_instance().entries
-        span = entries.line_height * len(entries.items)
         self.page = entries.height / entries.line_height
-        self.max_top = (span / entries.line_height) - self.page
         self.thumb = entries.scroll.thumb
 
         # Operator was invoked from clicking the gutter.
@@ -547,7 +549,7 @@ class TEXTENSION_OT_suggestions_scroll(types.TextOperator):
         # Operator was invoked from scrolling the mouse wheel.
         elif event.type in {'WHEELDOWNMOUSE', 'WHEELUPMOUSE'}:
             lines = 3 if 'DOWN' in event.type else -3
-            entries.set_top(max(0, min(self.max_top, entries.top + lines)))
+            entries.set_top(entries.top + lines)
             # Scrolling the entries must update the hover highlights.
             test_suggestions_box(TEXTENSION_OT_hit_test.get_data(context))
         return {'CANCELLED'}
@@ -565,10 +567,10 @@ class TEXTENSION_OT_suggestions_scroll(types.TextOperator):
     def scroll(self, mry: int):
         top = self.entries.top
         if self.action == 'PAGE_DOWN' and mry < self.thumb.y:
-            self.entries.set_top(min(self.max_top, top + self.page))
+            self.entries.set_top(top + self.page)
 
         elif self.action == 'PAGE_UP' and mry > self.thumb.y + self.thumb.height:
-            self.entries.set_top(max(0, top - self.page))
+            self.entries.set_top(top - self.page)
         else:
             return False
         return True
@@ -589,16 +591,16 @@ class TEXTENSION_OT_suggestions_scrollbar(types.TextOperator):
 
     def invoke(self, context, event):
         self.entries = entries = get_instance().entries
-        height = entries.height
-        line_height = entries.line_height
-        span = line_height * len(entries.items)
-        self.max_top = (span / line_height) - (height / line_height)  # maximum scrollable (span minus 1 page)
-        self.px_ratio = span / height * 1.015  # Nasty compensation hack
+        line_px = entries.line_height
+        span = line_px * len(entries.items)
+        self.px_coeff = span / entries.height * 1.015  # Nasty compensation hack
         self.top_org = entries.top
-        self.max_px = self.max_top * line_height
-        self.line_height_coeff = 1 / max(1, line_height)
-        min_height = min(30, height)
-        self.clamp_diff_px = (min_height - (min_height / entries.scroll.clamp_ratio)) * self.px_ratio
+        self.line_height_coeff = 1 / max(1, line_px)
+        min_px = min(30, entries.height)
+        clamp_ratio = entries.scroll.clamp_ratio
+
+        clamp_coeff = (min_px - (min_px / clamp_ratio)) * self.px_coeff
+        self.delta_line_coeff = 1 + (clamp_coeff / (entries.max_top * line_px))
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
@@ -610,14 +612,9 @@ class TEXTENSION_OT_suggestions_scrollbar(types.TextOperator):
             if abs(event.mouse_prev_press_x - event.mouse_x) > 140:
                 top = self.top_org
             else:
-                mouse_y_delta = event.mouse_prev_press_y - event.mouse_y
-                scroll_px_delta = mouse_y_delta * self.px_ratio
-
-                # If the scroll thumb is clamped, multiply the difference against
-                # scroll pixels and apply it linearly towards maximum pixel span.
-                scroll_px_delta += scroll_px_delta * self.clamp_diff_px / self.max_px
-                line_delta = scroll_px_delta * self.line_height_coeff
-                top = max(0, min(self.max_top, self.top_org + line_delta))
+                dy = event.mouse_prev_press_y - event.mouse_y
+                delta_px = (dy * self.px_coeff) * self.delta_line_coeff
+                top = self.top_org + delta_px * self.line_height_coeff
             self.entries.set_top(top)
         return {'RUNNING_MODAL'}
 
