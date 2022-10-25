@@ -5,6 +5,7 @@ import time
 import blf
 import bpy
 from bpy.types import SpaceTextEditor
+from bpy.types import bpy_struct
 
 from ... import TEXTENSION_OT_hit_test, gl, types, utils
 from ...types import is_spacetext, is_text
@@ -681,6 +682,7 @@ class TEXTENSION_OT_suggestions_complete(types.TextOperator):
         interp = Interpreter(string, [])
         # ret = interp.complete_unsafe(line + 1, col)
         ret = interp.complete(line + 1, col)
+        bpy.ret = ret
         instance.entries.items = tuple(ret)
 
         # instance.items = tuple(entry.name for entry in ret)
@@ -889,6 +891,161 @@ classes = (
 )
 
 
+rna_map = {
+    "STRING": "",
+    "ENUM": "",
+    "BOOLEAN": False,
+    "INT": 0,
+    "FLOAT": 0.0,
+}
+
+
+def patch_inference_state_process(restore=False):
+    from jedi.inference.compiled.subprocess import _InferenceStateProcess as cls
+
+    if restore and (org_fn := getattr(cls, "_backup", False)):
+        cls.get_or_create_access_handle = org_fn
+        del cls._backup
+
+    elif not restore:
+        is_bpy_struct = bpy.types.bpy_struct.__instancecheck__
+
+        def wrapper(self, obj, *, func=cls.get_or_create_access_handle):
+            if is_bpy_struct(obj): return func(self, RnaResolver(obj))
+            else: return func(self, obj)
+
+        cls._backup = cls.get_or_create_access_handle
+        cls.get_or_create_access_handle = wrapper
+
+
+propcoll_keys = [k for k in dir(bpy.types.bpy_prop_collection) if not k.startswith("__")]
+bpy_struct_keys = [k for k in dir(bpy_struct) if not k.startswith("__")]
+
+class PropCollResolver:
+    """Resolves bpy_prop_collection subclasses"""
+    __class__ = list
+    __module__ = "builtins"
+
+    @per
+    def __init__(self, rna):
+        if rna.srna is None:
+            return
+
+        try:
+            self.rna = rna
+            class cls(list):
+                __qualname__ = rna.srna.identifier
+                __module__ = "module"
+            self.cls = cls
+
+            for fn in rna.srna.functions:
+                restype = next((p for p in fn.parameters if p.is_output), None)
+                if restype is not None:
+                    restype = RnaResolver(type(restype.fixed_type))
+                    restype = type("a", (), restype.as_dict())
+
+                params = *filter(lambda x: not x.is_output, fn.parameters),
+                params = tuple(p.identifier for p in params)
+                func = lambda: None
+                class func:
+                    __annotations__ = {"return": restype}
+                class code:
+                    co_argcount = len(params)
+                    co_varnames = params
+                func.__code__ = code
+
+                setattr(cls, fn.identifier, func)
+        except:
+            import traceback
+            print(traceback.print_exc())
+
+    def __getattribute__(self, attr: str):
+        try:
+            return super().__getattribute__(attr)
+        except:
+            return getattr(super().__getattribute__("cls"), attr)
+
+    def __iter__(self):
+        return iter((super().__getattribute__("rna").fixed_type,))
+
+    def __dir__(self):
+        return propcoll_keys + self.rna.srna.functions.keys()
+
+
+class RnaResolver:
+    """Resolves bpy_struct subclasses' properties and methods into a format
+    jedi understands without resorting to direct access. This is safer and
+    much faster.
+    """
+    __class__ = bpy_struct
+    __module__ = "bpy_types"
+    __annotations__ = {}
+
+    def as_dict(self):
+        d = {}
+        for k in super().__getattribute__("_keys"):
+            try:
+                d[k] = getattr(self, k)
+            except:
+                continue
+        return d
+        # try:
+        #     ret = {k: getattr(self, k) for k in dir(self)}
+        # except:
+        #     import traceback
+        #     print(traceback.format_exc())
+        # return print("KEYS", super().__getattribute__("_keys"))
+
+    def __new__(cls, any_rna, *, cache={}, get=object.__getattribute__):
+        rna = get(any_rna, "bl_rna")
+        try:
+            return cache[rna]
+        except KeyError:
+            return cache.setdefault(rna, super().__new__(cls))
+
+    def __init__(self, rna, *, get=object.__getattribute__):
+        rna = get(rna, "bl_rna")
+        assert not isinstance(rna, RnaResolver)
+        self.bl_rna = rna
+        self._properties = rna.properties
+
+        # Some collections like bpy.data have specialized methods
+        try:
+            *keys, = type(rna).__dict__
+        except AttributeError:
+            keys = []
+        # print("----- INIT", rna)
+        self._keys = rna.properties.keys() + \
+            rna.functions.keys() + bpy_struct_keys + keys
+
+    def __getattribute__(self, attr: str):
+        # print(attr, self)
+        try:
+            return super().__getattribute__(attr)
+        except:
+            if attr == "__objclass__":
+                raise AttributeError
+
+        rna = super().__getattribute__("_properties")[attr]
+        rna_type = rna.type
+        try:
+            return rna_map[rna_type]
+        except KeyError:
+            if rna_type == 'POINTER':
+                return RnaResolver(rna.fixed_type)
+            elif rna_type == 'COLLECTION':
+                return PropCollResolver(rna)
+            raise Exception(f"Unknown rna:", rna_type)
+
+    def __dir__(self):
+        return super().__dir__() + super().__getattribute__("_keys")
+
+    def __repr__(self):
+        return repr(super().__getattribute__("bl_rna"))
+
+    def __str__(self):
+        return str(super().__getattribute__("bl_rna"))
+
 def enable():
     bpy.utils.register_class(TEXTENSION_OT_suggestions_download_jedi)
 
@@ -917,6 +1074,7 @@ def enable():
     utils.add_draw_hook(fn=draw, space=SpaceTextEditor, args=())
     utils.add_hittest(test_suggestions_box)
 
+    patch_inference_state_process()
     from .optimizations import setup2
     setup2()
 
@@ -961,4 +1119,6 @@ def disable():
     utils.remove_hittest(test_suggestions_box)
     utils.remove_draw_hook(draw)
     clear_instances_cache()
+    RnaResolver.__new__.__kwdefaults__["cache"].clear()
+    patch_inference_state_process(restore=True)
     utils.unregister_class_iter(reversed(classes))
