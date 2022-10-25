@@ -164,10 +164,11 @@ class ListBox(Widget):
         self.hash   = 0
         self.items  = ()        # Completions
         self.top    = 0.0       # Scroll position
-        self.width  = 300
-        self.height = 200
 
-        self.surface    = gl.GLTexture(self.width, self.height)
+        # Compensate for the top/bottom 1px border of the box.
+        self.surface_size = self.width, self.height = 300, 200
+        self.surface    = gl.GLTexture(self.width, self.height - 2)
+
         self.scroll     = Scrollbar(self)
         self.selection  = EntryRect(0.3, 0.4, 0.8, 0.4)
         self.hover      = EntryRect(1.0, 1.0, 1.0, 0.08, index=-1)
@@ -187,12 +188,13 @@ class ListBox(Widget):
         # There's no scissor/clip as of 3.2, so we draw to an off-screen
         # surface instead. The surface is cached for performance reasons.
         size = (w, h) = (self.width, self.height)
-        if self.surface.size != size:
-            self.surface.resize(w, h)
+        if test_and_update(self, "surface_size", size):
+            self.surface.resize(w, h - 2)
 
-        # If the items changed, reset scroll and selection
+        # If the items changed, reset scroll, selection and hover
         if test_and_update(self, "hash", hash(self.items)):
             self.selection.index = 0
+            self.hover.index = 0
             self.top = 0.0
 
         # If the font metrics changed, re-compute line height
@@ -225,7 +227,7 @@ class ListBox(Widget):
 
         x = parent.x
         y = parent.y
-        self.surface(x, y, w, h)
+        self.surface(x, y + 1, w, h - 2)
 
         for rect in (self.selection, self.hover):
             height = lh
