@@ -20,9 +20,9 @@ from dev_utils import enable_breakpoint_hook, per, measure
 
 enable_breakpoint_hook(True)
 
-def test_and_update(obj, attr, new_value) -> bool:
-    if getattr(obj, attr) != new_value:
-        return not setattr(obj, attr, new_value)
+def test_and_update(obj, attr, value) -> bool:
+    if getattr(obj, attr) != value:
+        return not setattr(obj, attr, value)
     return False
 
 
