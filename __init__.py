@@ -1106,13 +1106,14 @@ def draw_settings(prefs, context, layout):
         row.operator("textension.suggestions_download_jedi")
         layout.separator()
 
+
 def disable():
     bpy.utils.unregister_class(TEXTENSION_OT_suggestions_download_jedi)
 
+    from ... import TEXTENSION_OT_insert, TEXTENSION_OT_delete
     from ...utils import TextensionPreferences
     del TextensionPreferences.suggestions
 
-    from ... import TEXTENSION_OT_insert, TEXTENSION_OT_delete
     TEXTENSION_OT_insert.insert_hooks.remove(on_insert)
     TEXTENSION_OT_delete.delete_hooks.remove(on_delete)
 
