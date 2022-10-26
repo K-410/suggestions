@@ -995,32 +995,29 @@ class RnaResolver:
         try:
             return cache[rna]
         except KeyError:
-            return cache.setdefault(rna, super().__new__(cls))
+            resolver = super().__new__(cls)
+            resolver.bl_rna = rna
+            resolver.properties = rna.properties
 
-    def __init__(self, rna, *, get=object.__getattribute__):
-        rna = get(rna, "bl_rna")
-        assert not isinstance(rna, RnaResolver)
-        self.bl_rna = rna
-        self._properties = rna.properties
+            # Some collections like bpy.data have specialized methods
+            try:
+                *keys, = type(rna).__dict__
+            except AttributeError:
+                keys = []
 
-        # Some collections like bpy.data have specialized methods
-        try:
-            *keys, = type(rna).__dict__
-        except AttributeError:
-            keys = []
-        # print("----- INIT", rna)
-        self._keys = rna.properties.keys() + \
-            rna.functions.keys() + bpy_struct_keys + keys
+            resolver._keys = rna.properties.keys() + \
+                rna.functions.keys() + bpy_struct_keys + keys
+            return cache.setdefault(rna, resolver)
+
 
     def __getattribute__(self, attr: str):
-        # print(attr, self)
         try:
             return super().__getattribute__(attr)
         except:
             if attr == "__objclass__":
                 raise AttributeError
 
-        rna = super().__getattribute__("_properties")[attr]
+        rna = super().__getattribute__("properties")[attr]
         rna_type = rna.type
         try:
             return rna_map[rna_type]
