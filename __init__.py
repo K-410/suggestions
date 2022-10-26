@@ -989,12 +989,6 @@ class RnaResolver:
             except:
                 continue
         return d
-        # try:
-        #     ret = {k: getattr(self, k) for k in dir(self)}
-        # except:
-        #     import traceback
-        #     print(traceback.format_exc())
-        # return print("KEYS", super().__getattribute__("_keys"))
 
     def __new__(cls, any_rna, *, cache={}, get=object.__getattribute__):
         rna = get(any_rna, "bl_rna")
