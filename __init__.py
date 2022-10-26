@@ -1040,6 +1040,22 @@ class RnaResolver:
     def __str__(self):
         return str(super().__getattribute__("bl_rna"))
 
+
+class ContextResolver(RnaResolver):
+    """ContextResolver gives a more complete list of members by attempting
+    to read the real context before using RnaResolver as the fallback.
+    """
+
+    def __getattribute__(self, attr: str, *, c=_context):
+        try:
+            return getattr(c, attr)
+        except:
+            return super().__getattribute__(attr)
+
+    def __dir__(self, *, c=_context):
+        return list(set(dir(c) + RnaResolver.__dir__(self)))
+
+
 def enable():
     bpy.utils.register_class(TEXTENSION_OT_suggestions_download_jedi)
 
