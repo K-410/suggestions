@@ -265,7 +265,7 @@ class ListBox(Widget):
 
 class Instance(gl.GLRoundedRect):
     def __init__(self, st: SpaceTextEditor) -> None :
-        super().__init__(0.2, 0.2, 0.2, 1.0)
+        super().__init__(0.15, 0.15, 0.15, 1.0)
         self.set_border_color(0.3, 0.3, 0.3, 1.0)
 
         self.x = 0
