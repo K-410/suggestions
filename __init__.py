@@ -195,7 +195,7 @@ class ListBox(Widget):
         # If the items changed, reset scroll, selection and hover
         if test_and_update(self, "hash", hash(self.items)):
             self.selection.index = 0
-            self.hover.index = 0
+            self.hover.index = -1  # Hover is visible only on cursor hover.
             self.top = 0.0
 
         # If the font metrics changed, re-compute line height
