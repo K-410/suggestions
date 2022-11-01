@@ -925,6 +925,9 @@ def enable():
     jedi.settings.auto_import_modules[:] = set(
         jedi.settings.auto_import_modules + ["bpy", "_bpy", "numpy", "sys"])
 
+    # Do not let jedi infer anonymous parameters. It's slow and useless.
+    jedi.settings.dynamic_params = False
+
     utils.add_draw_hook(fn=draw, space=SpaceTextEditor, args=())
     utils.add_hittest(test_suggestions_box)
 
