@@ -5,22 +5,24 @@ import time
 import blf
 import bpy
 from bpy.types import SpaceTextEditor
-from bpy.types import bpy_struct
 
-from ... import TEXTENSION_OT_hit_test, gl, types, utils
+from ... import TEXTENSION_OT_hit_test, gl, types, utils, _iter_expand_tokens
 from ...types import is_spacetext, is_text
 
+# TODO: Testing
+from dev_utils import enable_breakpoint_hook, per, measure, total, accumulate
+# import threading, debugpy
+# threading.Thread(target=debugpy.listen, args=(5678,), daemon=True).start()
+# print("Debug server at 127.0.0.1:5678")
 
 _context = utils._context
 system = _context.preferences.system
-
 PLUGIN_PATH = os.path.dirname(__file__)
 
 # Separators determine when completions should show after character insertion.
 # If the character matches the separator, completions will not run.
 separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}  # Excludes "."
 
-enable_breakpoint_hook(True)
 
 def test_and_update(obj, attr, value) -> bool:
     if getattr(obj, attr) != value:
@@ -664,16 +666,22 @@ class TEXTENSION_OT_suggestions_complete(types.TextOperator):
            and is_text(getattr(context, "edit_text", None))
 
     def execute(self, context):
-        st = context.space_data
-        text = st.text
-        instance = get_instance()
+        text = context.edit_text
         line, col = text.cursor_position
-        instance.sync_cursor()
         string = text.as_string()
+
+        # Suggestions should not show up inside comments
+        cursor = text.cursor_sorted
+        for t in _iter_expand_tokens(string):
+            if cursor in t and  t.type == 'COMMENT':
+                return {'CANCELLED'}
+
+        instance = get_instance()
+        instance.sync_cursor()
         # TODO: If optimized, use that version.
-        # from jedi.api import Interpreter
+        from jedi.api import Interpreter
         # from .optimizations import Interpreter2 as Interpreter, _clear_caches
-        from .optimizations import Interpreter2 as Interpreter
+        # from .optimizations import Interpreter2 as Interpreter
 
         # ret = sorted(interp.complete(line + 1, col, fuzzy=True),
         #     key=lambda x:x.complete is not None, reverse=False)
@@ -891,168 +899,6 @@ classes = (
 )
 
 
-rna_map = {
-    "STRING": "",
-    "ENUM": "",
-    "BOOLEAN": False,
-    "INT": 0,
-    "FLOAT": 0.0,
-}
-
-
-def patch_inference_state_process(restore=False):
-    from jedi.inference.compiled.subprocess import _InferenceStateProcess as cls
-
-    if restore and (org_fn := getattr(cls, "_backup", False)):
-        cls.get_or_create_access_handle = org_fn
-        del cls._backup
-
-    elif not restore:
-        is_bpy_struct = bpy.types.bpy_struct.__instancecheck__
-
-        def wrapper(self, obj, *, func=cls.get_or_create_access_handle):
-            if is_bpy_struct(obj): return func(self, RnaResolver(obj))
-            else: return func(self, obj)
-
-        cls._backup = cls.get_or_create_access_handle
-        cls.get_or_create_access_handle = wrapper
-
-
-propcoll_keys = [k for k in dir(bpy.types.bpy_prop_collection) if not k.startswith("__")]
-bpy_struct_keys = [k for k in dir(bpy_struct) if not k.startswith("__")]
-
-class PropCollResolver:
-    """Resolves bpy_prop_collection subclasses"""
-    __class__ = list
-    __module__ = "builtins"
-
-    @per
-    def __init__(self, rna):
-        if rna.srna is None:
-            return
-
-        try:
-            self.rna = rna
-            class cls(list):
-                __qualname__ = rna.srna.identifier
-                __module__ = "module"
-            self.cls = cls
-
-            for fn in rna.srna.functions:
-                restype = next((p for p in fn.parameters if p.is_output), None)
-                if restype is not None:
-                    restype = RnaResolver(type(restype.fixed_type))
-                    restype = type("a", (), restype.as_dict())
-
-                params = *filter(lambda x: not x.is_output, fn.parameters),
-                params = tuple(p.identifier for p in params)
-                func = lambda: None
-                class func:
-                    __annotations__ = {"return": restype}
-                class code:
-                    co_argcount = len(params)
-                    co_varnames = params
-                func.__code__ = code
-
-                setattr(cls, fn.identifier, func)
-        except:
-            import traceback
-            print(traceback.print_exc())
-
-    def __getattribute__(self, attr: str):
-        try:
-            return super().__getattribute__(attr)
-        except:
-            return getattr(super().__getattribute__("cls"), attr)
-
-    def __iter__(self):
-        return iter((super().__getattribute__("rna").fixed_type,))
-
-    def __dir__(self):
-        return propcoll_keys + self.rna.srna.functions.keys()
-
-
-class RnaResolver:
-    """Resolves bpy_struct subclasses' properties and methods into a format
-    jedi understands without resorting to direct access. This is safer and
-    much faster.
-    """
-    __class__ = bpy_struct
-    __module__ = "bpy_types"
-    __annotations__ = {}
-
-    def as_dict(self):
-        d = {}
-        for k in super().__getattribute__("_keys"):
-            try:
-                d[k] = getattr(self, k)
-            except:
-                continue
-        return d
-
-    def __new__(cls, any_rna, *, cache={}, get=object.__getattribute__):
-        rna = get(any_rna, "bl_rna")
-        try:
-            return cache[rna]
-        except KeyError:
-            resolver = super().__new__(cls)
-            resolver.bl_rna = rna
-            resolver.properties = rna.properties
-
-            # Some collections like bpy.data have specialized methods
-            try:
-                *keys, = type(rna).__dict__
-            except AttributeError:
-                keys = []
-
-            resolver._keys = rna.properties.keys() + \
-                rna.functions.keys() + bpy_struct_keys + keys
-            return cache.setdefault(rna, resolver)
-
-
-    def __getattribute__(self, attr: str):
-        try:
-            return super().__getattribute__(attr)
-        except:
-            if attr == "__objclass__":
-                raise AttributeError
-
-        rna = super().__getattribute__("properties")[attr]
-        rna_type = rna.type
-        try:
-            return rna_map[rna_type]
-        except KeyError:
-            if rna_type == 'POINTER':
-                return RnaResolver(rna.fixed_type)
-            elif rna_type == 'COLLECTION':
-                return PropCollResolver(rna)
-            raise Exception(f"Unknown rna:", rna_type)
-
-    def __dir__(self):
-        return super().__dir__() + super().__getattribute__("_keys")
-
-    def __repr__(self):
-        return repr(super().__getattribute__("bl_rna"))
-
-    def __str__(self):
-        return str(super().__getattribute__("bl_rna"))
-
-
-class ContextResolver(RnaResolver):
-    """ContextResolver gives a more complete list of members by attempting
-    to read the real context before using RnaResolver as the fallback.
-    """
-
-    def __getattribute__(self, attr: str, *, c=_context):
-        try:
-            return getattr(c, attr)
-        except:
-            return super().__getattribute__(attr)
-
-    def __dir__(self, *, c=_context):
-        return list(set(dir(c) + RnaResolver.__dir__(self)))
-
-
 def enable():
     bpy.utils.register_class(TEXTENSION_OT_suggestions_download_jedi)
 
@@ -1069,6 +915,7 @@ def enable():
 
     from ... import TEXTENSION_OT_insert, TEXTENSION_OT_delete
     from ...utils import TextensionPreferences
+    from . import resolvers
 
     TEXTENSION_OT_insert.insert_hooks.append(on_insert)
     TEXTENSION_OT_delete.delete_hooks.append(on_delete)
@@ -1081,9 +928,13 @@ def enable():
     utils.add_draw_hook(fn=draw, space=SpaceTextEditor, args=())
     utils.add_hittest(test_suggestions_box)
 
-    patch_inference_state_process()
+    resolvers.set_bpy_struct_mapping()
+    resolvers.patch_get_builtin_module_names()
+    resolvers.patch_inference_state_process()
+    resolvers.patch_anonymous_param()
+    resolvers.patch_getattr_paths()
     from .optimizations import setup2
-    setup2()
+    # setup2()
 
 
 _poll_cache = [False, 0]
@@ -1113,6 +964,9 @@ def draw_settings(prefs, context, layout):
         row.operator("textension.suggestions_download_jedi")
         layout.separator()
 
+def print_traceback():  # XXX: For development
+    import traceback
+    print(traceback.format_exc())
 
 def disable():
     bpy.utils.unregister_class(TEXTENSION_OT_suggestions_download_jedi)
@@ -1127,6 +981,7 @@ def disable():
     utils.remove_hittest(test_suggestions_box)
     utils.remove_draw_hook(draw)
     clear_instances_cache()
-    RnaResolver.__new__.__kwdefaults__["cache"].clear()
-    patch_inference_state_process(restore=True)
+    from . import resolvers
+    resolvers.RnaResolver.__new__.__kwdefaults__["cache"].clear()
+    resolvers.patch_inference_state_process(restore=True)
     utils.unregister_class_iter(reversed(classes))
