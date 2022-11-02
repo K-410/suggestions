@@ -453,9 +453,13 @@ class TEXTENSION_OT_suggestions_resize(types.TextOperator):
             *size, = self.entries.surface.size
             if self.action in {'CORNER', 'HORIZONTAL'}:
                 size[0] = max(self.min_width, self.width + x_delta)
+                # TODO: Entries surface is 2px shorter so we need to add 2 to
+                # prevent it from shrinking. This could be solved differently.
+                size[1] += 2
 
             if self.action in {'CORNER', 'VERTICAL'}:
-                size[1] = max(self.min_height, self.height - y_delta)
+                # TODO: Same here.
+                size[1] = max(self.min_height, self.height - y_delta + 2)
 
                 # Resizing vertically past the bottom entry moves the top up.
                 if (top := entries.top) > 0:
