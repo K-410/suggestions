@@ -65,7 +65,7 @@ class Scrollbar(Widget):
         y, h = self.compute_geometry()
         if h != 0:
             parent = self.parent
-            w = parent.scrollbar_width
+            w = parent.scrollbar_width * (system.wu * 0.05)
             x = parent.parent.x + parent.width - w
             y += parent.parent.y
             self(x, parent.parent.y + 1, w, parent.height - 2)
@@ -156,7 +156,7 @@ class ListBox(Widget):
     font_size: int       = 14
     text_padding: int    = 5
     line_padding: float  = 1.45
-    scrollbar_width: int = 20
+    scrollbar_width: int = 18
 
     metrics_key: tuple[int, int] = (0, 0)
 
