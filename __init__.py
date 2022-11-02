@@ -39,17 +39,27 @@ class Widget(gl.GLRoundedRect):
         super().__init__(*colors)
 
 
+def set_background(widget: Widget, background):
+    widget.set_background_color(*background)
+    _context.area.tag_redraw()
+
+
 class Scrollbar(Widget):
     action: str = 'undefined'
     clamp_ratio: float = 0.0
     compute_args: tuple[int, int, int, float] = (0, 0, 0, 0.0)
     compute_cache: tuple[int, int] = (0, 0)
 
+    thumb_background = 0.27, 0.27, 0.27, 1.0
+    thumb_highlight = 0.34, 0.34, 0.34, 1.0
+
     def __init__(self, parent: "ListBox"):
         super().__init__(0.18, 0.18, 0.18, 0.0)
         self.parent = parent
-        self.thumb = Widget(0.27, 0.27, 0.27, 1.0)
-        self.thumb.activate = lambda: bpy.ops.textension.suggestions_scrollbar('INVOKE_DEFAULT')
+        self.thumb = thumb = Widget(0.27, 0.27, 0.27, 1.0)
+        thumb.enter = lambda: set_background(thumb, self.thumb_highlight)
+        thumb.leave = lambda: set_background(thumb, self.thumb_background)
+        thumb.activate = lambda: bpy.ops.textension.suggestions_scrollbar('INVOKE_DEFAULT')
 
     def activate(self):
         bpy.ops.textension.suggestions_scroll('INVOKE_DEFAULT', action=self.action)
