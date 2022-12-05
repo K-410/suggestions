@@ -1,6 +1,9 @@
-from ... import types, utils
-from bpy import types as bpy_types
 import sys
+import bpy
+from types import BuiltinMethodType
+from bpy import types as bpy_types
+from ... import types, utils
+from typing import List, Tuple
 
 _context = utils._context
 bpy_struct = bpy_types.bpy_struct
@@ -25,7 +28,7 @@ def green(*args: str) -> str:
 
 
 # Global context members are fetched via bpy.types.Context.bl_rna.properties.
-# Non-global members uses dynamic lookup (ctx_data_pointer_get in context.c),
+# Non-global members use dynamic lookup (ctx_data_pointer_get in context.c),
 # which means they have to be added manually.
 
 # Obviously this sucks, but the complete listing can be found here:
@@ -196,27 +199,6 @@ rna_pytypes = {
 }
 
 
-def patch_inference_state_process(restore=False):
-    from jedi.inference.compiled.subprocess import _InferenceStateProcess as cls
-
-    if restore and (org_fn := getattr(cls, "_backup", False)):
-        cls.get_or_create_access_handle = org_fn
-        del cls._backup
-
-    elif not restore:
-        is_bpy_struct = bpy_types.bpy_struct.__instancecheck__
-
-        def wrapper(self, obj, *, func=cls.get_or_create_access_handle):
-            if is_bpy_struct(obj) and not isinstance(obj, RnaResolver):
-                return func(self, RnaResolver(obj))
-            else: return func(self, obj)
-
-        cls._backup = cls.get_or_create_access_handle
-        cls.get_or_create_access_handle = wrapper
-
-
-from types import BuiltinMethodType
-
 propcoll_keys = [k for k in dir(bpy_types.bpy_prop_collection)]
 bpy_struct_keys = [k for k in dir(bpy_struct) if not k.startswith("__")]
 default_code = types.noop.__code__.replace
@@ -224,298 +206,321 @@ resolver_py__dict__ = {}
 stub_cache = {}
 resolver_cache = {}
 
-struct_id = bpy_types.ID.bl_rna.functions['copy'].parameters['id'].fixed_type
+# Faster than super cell getattribute. Important for lookups.
+type_getattr = type.__getattribute__
 
-def stub_from_rna_func(parent_rna, func):
-    # print(yellow("stub_from_rna_func"), parent_rna, func)
+struct_id = bpy_types.ID.bl_rna.functions['copy'].parameters['id'].fixed_type
+return_type_cache = {}
+
+
+class ResolverMeta(type):
+    """The only reason this exists is because jedi refuses to infer return
+    types that are instances (see jedi.inference.compiled.getattr_static).
+    So we give jedi what it wants, while also resolving lookups.
+    """
+    def __getattribute__(cls, name):
+        # RnaResolver.store holds all listings for any instance rna.
+        if name == "__dict__":
+            return type_getattr(cls, "store")
+
+        # Queries meant for the resolver for property/function lookups.
+        try:
+            return getattr(type_getattr(cls, "resolver"), name)
+        except:
+            pass
+        # When all else fails, query on the class itself.
+        return type_getattr(cls, name)
+
+def dbg(*args):
+    f = sys._getframe(1)
+    depth = 0
+    while f is not None:
+        if "self" in f.f_locals and is_resolver(f.f_locals["self"]):
+            break
+        depth += 1
+        f = f.f_back
+    else:
+        depth = 0
+    if depth:
+        args = ((" " * depth),) + args
+    print(*args)
+
+
+def stub_from_rna_func(rna, fn):
     try:
-        return stub_cache[parent_rna, func]
+        return stub_cache[rna, fn]
     except:
         pass
-    inputs = []
-    restype = None
-    # try:
-    #     print("gen stub", func.identifier)
-    # except BaseException:
-    #     print_traceback()  # TODO: Remove if OK
 
-    for p in func.parameters:
-        # TODO: support additional semantics like:
-        # - is_required
-        # - is_never_none        (?)
-        # - is_argument_optional (?)
-        # Example:
-        # argument1: (required)
-        # argument2: (optional)
+    dbg(green("creating stub"))
+    # TODO: support is_required, is_never_none, is_argument_optional
+    param = {}
+    for p in fn.parameters:
         if p.is_output:
-            # All ID types use identical 'copy' function with bpy.types.ID as
-            # the return type. This isn't really useful so we hard map it to
-            # the resolver this function was found at
-            if func.identifier == "copy" and p.fixed_type == struct_id:
-                mapping = resolver_py__dict__[RnaResolver(parent_rna)]
-            else:
-                mapping = resolver_py__dict__[RnaResolver(p.fixed_type)]
-            restype = type("restype", (), mapping)
-        else:
-            inputs.append(p.identifier)
+            dbg("  found output", p)
+            ret_rna = p.fixed_type
 
-    def stub() -> restype: pass
-    stub.__name__ = func.identifier
-    stub.__code__ = default_code(co_argcount=len(inputs), co_varnames=tuple(inputs))
-    stub.__doc__ = func.description
-    stub_cache[parent_rna, func] = stub
-    return stub
+            # Default is bpy.types.Object.copy() -> bpy.types.ID.
+            # This makes the return type the same as the parent rna.
+            if fn.identifier == "copy" and ret_rna == struct_id:
+                ret_rna = rna
 
-
-class PropCollResolver:
-    """Resolves bpy_prop_collection subclasses"""
-    __class__ = list
-
-    def __init__(self, rna):
-        # def propcoll_iter() -> rna.fixed_type:
-        #     pass
-
-        class cls(list):
-            __qualname__ = (rna.srna or rna.rna_type).identifier
-            __module__ = "module"
-
-        self.rna = rna
-        self.cls = cls
-        self.__iter__ = stub_from("__iter__", (), rna.fixed_type)
-        
-        for func in getattr(rna.srna, "functions", ()):
-            setattr(cls, func.identifier, stub_from_rna_func(rna, func))
-
-    def __getattribute__(self, attr):
-        try:
-            return super().__getattribute__(attr)
-        except:
-            # print(yellow("getting PCS", attr))
+            # Jedi expects the return type to be a class so we have to
+            # use metaclasses to provide resolution for return types.
             try:
-                ret = getattr(self.cls, attr)
-                return ret
+                ret = return_type_cache[ret_rna]
             except:
-                print(red("failed getting PCS", attr))
+                class ReturnType(metaclass=ResolverMeta):
+                    name = f"Return Type Resolver {rna.identifier}.{fn.identifier}()"
+                    resolver = RnaResolver(ret_rna, static=True)
+                    __module__ = "builtins"
+                    store = resolver.store
+                ret = return_type_cache[ret_rna] = ReturnType
+            param["return"] = ret
+        else:
+            dbg("  found param", p)
+            param[p.identifier] = None
 
-
-    def __iter__(self):
-        return iter((self.rna.fixed_type,))
-
-    def __dir__(self):
-        rna = self.rna
-        *ret, = type(rna.bl_rna).__dict__.keys()
-        if srna := rna.srna:
-            ret += list(srna.functions.keys())
-            ret += list(srna.properties.keys())
-        return ret + propcoll_keys
-
-
-def resolve_property_rna(rna):
-    rna_type = rna.type
-
-    if rna_type == 'POINTER':  # Property is a pointer to an RNA type
-        return RnaResolver(rna.fixed_type)
-
-    elif rna_type == 'COLLECTION':  # Property is a pointer to a property collection
-        return PropCollResolver(rna)
-    else:
-        return rna_pytypes[rna_type]
+    ret = param.pop("return", None)
+    stub = stub_from(ret, fn.identifier, tuple(param), fn.description)
+    stub_cache[rna, fn] = stub
+    return stub
 
 
 def resolve_rna(resolver, rna, attr):
     if isinstance(rna, bpy_types.Property):
-        ret = resolve_property_rna(rna)
-        print(green("prop"), attr, "   ", ret)
+        rna_type = rna.type
+
+        if rna_type == 'POINTER':  # Pointer to an RNA type
+            dbg("is a pointer")
+            ret = RnaResolver(rna.fixed_type, static=True)
+
+        elif rna_type == 'COLLECTION':  # Pointer to a property collection
+            dbg("is a Collection")
+            ret = CollectionResolver(rna, resolver)
+        else:
+            dbg("is a Pytype")
+            ret = rna_pytypes[rna_type]
 
     elif isinstance(rna, bpy_types.Function):
-        stub = stub_from_rna_func(resolver, rna)
-        ret = RnaResolver(rna)
-        ret.__annotations__ = stub.__annotations__
-        ret.__call__ = stub.__call__
-        print(green("func"), attr, "   ", ret)
+        dbg("is a Function")
+        ret = stub_from_rna_func(resolver, rna)
 
     elif isinstance(rna, (types.Callable, BuiltinMethodType)):
+        dbg("is a Method")
         ret = rna
-        print(green("meth"), attr, "   ", ret)
+
+    # Dynamic additions like context resolver
+    elif isinstance(rna, RnaResolver):
+        dbg("is a Resolver")
+        ret = rna
+
     else:
-        print(yellow(f"unhandled: {attr}"))
+        # raise AttributeError(f"unhandled: {attr} {rna} {type(rna)}")
+        dbg(yellow(f"unhandled: {attr}", rna, type(rna)))
         return rna
 
+    dbg(f"resolved to {green(ret)}\n")
     return ret
 
 
-class bpy_typesResolver:
-    """bpy.types resolver returns the RnaResolver version of any rna so that
-    rna types can be used as annotations and still give completions as if the
-    object was an instance."""
-    def __getattribute__(self, attr):
-        if attr.startswith("__"):
-            return super().__getattribute__
-        # print("get::", attr)
-        obj = getattr(bpy_types, attr)
-        # print("obj::", obj)
-        ret = RnaResolver(obj.bl_rna)
-        # print("got::", ret)
-        return ret
-
-    __dir__ = bpy_types.__dir__
+def print_traceback():  # XXX: For development
+    import traceback
+    print(traceback.format_exc())
 
 
-resolver_rna = {}
-bpy_typesResolver = bpy_typesResolver()
+collection_resolver_cache = {}
 
-# Dictionary that holds bpy.types.Struct.bl_rna members
-struct_rna_dict = {}
+collection_dict = {}
+for cls in reversed(bpy.types.bpy_prop_collection.__mro__):
+    collection_dict.update(cls.__dict__)
 
-for attr in dir(bpy_types.Struct.bl_rna):
-    struct_rna_dict[attr] = getattr(bpy_types.Struct.bl_rna, attr)
 
-class StructRnaForwarder:
-    """Forwards uncached bl_rna. This is needed because RnaResolver is cached
-    and uses the same hash key as the rna it performs lookup on, which will
-    always return itself.
+is_getset_descriptor = type(type.__dict__["__dict__"].__get__).__instancecheck__
+
+
+class CollectionResolver:
+    """Resolves collection properties. Some collections don't have a bl_rna
+    component, so they can't be resolved using RnaResolver. CollectionResolver
+    also enables subscription and iterator access.
     """
-
-    def __new__(cls, rna):
-        assert type(rna) is not RnaResolver
-        self = super().__new__(cls)
-        self.bl_rna = rna.bl_rna
-        self._dict = bpy_struct.__dict__ | type(rna).__dict__ | struct_rna_dict
-        # self.__dict__.update(bpy_struct.__dict__ | type(rna).__dict__ | struct_rna_dict)
-        return self
-
-    def __dir__(self):
-        return dir(self.bl_rna) + list(self._dict.keys())
-        # return dir(self._rna) + list(self.__dict__.keys())
-
-
-class RnaResolver(bpy_struct):
-    """Resolves bpy_struct subclasses' properties and methods into a format
-    jedi understands without resorting to direct access. This is safer and
-    much faster.
-    RnaResolver expects 
-    """
-    def __new__(cls, rna, *, cache=resolver_cache):
-        # Needed so pointer types resolve to their non-pointer types.
-        if isinstance(rna, bpy_types.PointerProperty):
-            rna = rna.fixed_type
+    __class__ = list  # Required for subscript/iterator
+    __module__ = "builtins"
+    def __new__(cls, rna, data):
+        # The rna type expected
+        assert isinstance(rna, bpy.types.CollectionProperty)
 
         try:
-            return cache[rna]
-        except:  # Assume KeyError
-            pass
-
-        assert type(rna) is not RnaResolver
-
-
-        resolver = cache[rna] = super().__new__(cls, rna)
-        print("new resolver:", object.__str__(rna))
-        print(object.__str__(rna))
-        resolver_rna[resolver] = rna
-
-        resolver.__mro__ = type(rna).__mro__
-
-        # Instance rna vs struct rna is generally a headache to tell apart,
-        # because both are instances of bpy_struct, but only one of them
-        # contains introspection attributes.
-        if not hasattr(rna, "properties"):
-            rna = rna.bl_rna
-
-        # Add rna subclass methods/properties
-        res_dict = dict(rna.properties.items() + rna.functions.items())
-        print(*res_dict.keys(), sep=" ")
-        # Add struct rna and non-rna methods/properties
-        res_dict.update(bpy_struct.__dict__ | type(rna).__dict__)
-
-        resolver_py__dict__[resolver] = res_dict
-        return resolver
-
-    def __getattribute__(self, attr: str):
-        assert self in resolver_py__dict__, type.__repr__(self)
-        assert isinstance(self, RnaResolver)
-        print(yellow("get", attr), object.__str__(self))
-
-        if attr == "bl_rna":
-            return StructRnaForwarder(resolver_rna[self].bl_rna)
-
-        if rna := resolver_py__dict__[self].get(attr):
-            return resolve_rna(self, rna, attr)
-        # print("not rna:", attr)
-        try:
-            return super().__getattribute__(attr)
+            return collection_resolver_cache[rna]
         except:
             pass
 
-        # Nasty, but this allows jedi to annotate the rna type
-        restype = type("restype", (), resolver_py__dict__[self])
-        if attr == "__annotations__":
-            return {"return": restype}
-        if attr == "__call__":
-            def test() -> restype:
-                pass
-            return test
-        # print(red(f"get failed: {repr(attr)}", self))
-        raise AttributeError
+        # print("Creating CollectionResolver")
+        self = collection_resolver_cache.setdefault(rna, super().__new__(cls))
+        self.store = store = collection_dict.copy()
+
+        # XXX: id_data is difficult to resolve without walking bpy_types and
+        # visiting all rna types and map every collection. Blender simply
+        # doesn't store their refined type in bl_rna.
+        self.data = data
+
+        srna = rna.srna
+        if srna is not None:
+            # Resolver for this collection
+            resolver = RnaResolver(srna, static=True)
+            resolver.store.update(store)
+            store.update(srna.properties.items() + srna.functions.items())
+            store["bl_rna"] = rna
+            self.resolver = resolver
+        else:
+            print(red("srna is None for", rna))
+            # raise AssertionError(red("srna is None for", rna))
+
+        # Resolver for the element type in the collection
+        self.restype = restype = resolver_as_class(RnaResolver(rna.fixed_type, static=True))
+
+        # Required for 'for loops'
+        self.__iter__ = stub_from(restype, "__iter__")
+        return self
+
+    def __getattr__(self, name):
+        print("getting", repr(name))
+
+        # Static resolution for bpy_prop_collection methods
+        if name == "get":
+            return stub_from(self.restype)
+        elif name == "items":
+            return stub_from(List[Tuple[str, self.restype]])
+        elif name == "values":
+            return stub_from(List[self.restype])
+
+        try:
+            ret = getattr(self.resolver, name)
+            # ret = self.store[name]
+        except:
+            print("failed getting", name)
+            raise AttributeError
+        else:
+            try:
+                ret = resolve_rna(None, ret, name)
+                print(1)
+                return ret
+            except:
+                ret = getattr(self.resolver, name)
+                print(2)
+                return ret
+            if isinstance(ret, bpy_struct):
+                ret = RnaResolver(ret, static=True)
+                ret = getattr(ret, name)
+                print("return bl_rna", ret)
+                return ret
+
+            if is_getset_descriptor(ret):
+                print("is getset descriptor", name, ret)
+                if name == "data":
+                    print("returning data")
+                    return self.data
+
+    # Required for subscript
+    def __iter__(self):
+        return iter((self.restype,))
 
     def __dir__(self):
-        print(green("dir"), resolver_py__dict__[self].keys())
-        return resolver_py__dict__[self].keys()
+        return list(self.store.keys())
 
 
-def stub_from(name, arglist, restype, doc=""):
-    def stub() -> restype:
-        pass
-
-    stub.__name__ = name
-    stub.__code__ = default_code(co_argcount=len(arglist), co_varnames=arglist)
-    stub.__doc__ = doc
-    return stub
-
-
-class ContextResolver(RnaResolver):
-    """ContextResolver gives a more complete list of members by attempting
-    to read the real context before using RnaResolver as the fallback.
+class RnaResolver:
+    """RnaResolver provides resolutions for RNA instances by listing bl_rna
+    methods and properties and resolving them as instance attributes in order
+    to provide completions.
     """
 
-    def __new__(cls):
-        self = super().__new__(cls, bpy_types.Context.bl_rna)
-        resolver_py__dict__[self]["copy"] = stub_from("copy", (), dict)
-        return self
-        # try:
-        #     return resolver_cache[bpy_types.Context.bl_rna]
-        # except:
-        #     super().____(self, bpy_types.Context)
-        #     # Add dict as the return type for bpy_types.Context.copy()
-        #     resolver_py__dict__[self]["copy"] = stub_from("copy", (), dict)
+    store: dict
+    # __objclass__ = None  # XXX: Is this needed?
 
-    def __getattr__(self, attr: str, *, c=_context):
-        # Dynamic context attributes are not listed in completions because it
-        # clutters the list with over 100 entries that may or may not exist.
-        # However they still can be resolved when typing manually.
+    def __new__(cls, rna, *, static=False):
+        if is_resolver(rna) or (not static and rna.as_pointer() == rna.bl_rna.as_pointer()):
+            return rna
+
         try:
-            ret = dyn_context[attr]
-            try:
-                if isinstance(ret.bl_rna, bpy_struct):
-                    ret = RnaResolver(ret.bl_rna)
-                    # print("resolving", ret)
-            except:
-                pass
+            return resolver_cache[rna.bl_rna]
+        except KeyError:
+            bl_rna = rna.bl_rna
+            self = resolver_cache.setdefault(bl_rna, super().__new__(cls))
+            self.identifier = bl_rna.identifier
+
+            self.store = store = bpy_struct.__dict__ | type(rna).__dict__
+            store.update(bl_rna.properties.items() + bl_rna.functions.items())
+            return self
+
+    def __getattr__(self, name):  # Resolve only if AttributeError is raised.
+        dbg(f"{self} query {yellow(name)}")
+
+        try:
+            data = self.store[name]
+        except KeyError:
+            dbg(self, red(name, "not in store:"))
+            # print(self, red(name, "not in store:", self.store.keys()))
+            raise AttributeError
+
+        try:
+            ret = resolve_rna(self, data, name)
+            self.__dict__[name] = ret
             return ret
         except:
-            return getattr(c, attr)
+            print_traceback()
+            raise AttributeError(name) from None
 
-    def __dir__(self, *, c=_context):
-        return list(set(list(screen_context.keys()) + list(RnaResolver.__dir__(self))))
-        # return list(set(list(dir(c)) + list(RnaResolver.__dir__(self))))
+    def __dir__(self):
+        return self.store.keys()
 
+    def __str__(self):
+        return f"<{super().__getattribute__('identifier')}>"
+
+
+def resolver_as_class(instance: RnaResolver):
+    try:
+        return return_type_cache[instance]
+    except:
+        class ReturnType(metaclass=ResolverMeta):
+            name = f"Resolver Class {instance.identifier}"
+            resolver = RnaResolver(instance, static=True)
+            __module__ = "builtins"
+            store = resolver.store
+        return_type_cache[instance] = ReturnType
+    return ReturnType
+
+
+is_resolver = RnaResolver.__instancecheck__
+
+
+def stub_from(restype=None, name="stub", vars=(), doc=None):
+    def s() -> restype: pass
+    s.__name__ = name
+    s.__code__ = s.__code__.replace(co_argcount=len(vars), co_varnames=vars)
+    s.__doc__ = doc
+    return s
+
+
+def build_context_resolver():
+    from types import GenericAlias
+    store = RnaResolver(_context).store
+    for key, value in screen_context.items():
+        if isinstance(value, GenericAlias):
+            store[key] = [RnaResolver(value.__args__[0].bl_rna, static=True)]
+        else:
+            store[key] = RnaResolver(value.bl_rna, static=True)
+
+    store["copy"] = stub_from(dict, "copy")
 
 
 # Return type mapping for bpy_struct methods - manually edited.
 # Not ideal, but bpy_struct does not have a blueprint, and its
 # methods are used in all StructRNA instances.
 def set_bpy_struct_mapping():
-    import idprop
     import typing
+
+    import idprop
 
     # IDPropertyUIManager isn't exposed, so we do this hack by adding a
     # StringProperty on a bpy.types.ID instance.
@@ -563,132 +568,3 @@ def set_bpy_struct_mapping():
         func.__doc__ = doc
         setattr(RnaResolver, identifier, func)
 
-
-def patch_get_builtin_module_names():
-    """Patches jedi's builtin modules getter to include file-less modules
-    like _bpy, that doesn't exist in sys.builtin_module_names"""
-    from jedi.inference.compiled.subprocess import functions
-
-    def get_builtin_module_names(inference_state):
-        extended = []
-        for modname, module in sys.modules.items():
-            if not hasattr(module, "__file__"):
-                extended.append(modname)
-        return tuple(set(sys.builtin_module_names) | set(extended))
-
-    functions.get_builtin_module_names.__code__ = get_builtin_module_names.__code__
-
-
-def patch_anonymous_param():
-    """Patch dynamic params so bpy.types.Operator method parameters are
-    automatically inferred.
-    """
-    from textension.plugins.suggestions.resolvers import RnaResolver, ContextResolver
-    from jedi.inference.dynamic_params import dynamic_param_lookup
-    from jedi.inference.compiled.access import create_access
-    from jedi.inference.compiled.value import CompiledValue
-    from jedi.inference.value.instance import BoundMethod
-    from jedi.inference.base_value import ValueSet, NO_VALUES
-    from bpy import types as bpy_types
-
-    def bpy_dynamic_param(function_value, param_index,
-        RnaResolver=RnaResolver,
-        ContextResolver=ContextResolver,
-        create_access=create_access,
-        CompiledValue=CompiledValue,
-        BoundMethod=BoundMethod,
-        ValueSet=ValueSet,
-        NO_VALUES=NO_VALUES,
-        Operator=bpy_types.Operator,
-        Event=bpy_types.Event):
-
-        if isinstance(function_value, BoundMethod):
-            func_name = function_value.name.string_name
-            if func_name in {"invoke", "execute", "modal", "draw", "poll"}:
-
-                # Support mixin so that bpy.types.Operator can appear anywhere
-                for base in function_value.instance.class_value.py__bases__():
-                    for val in base.infer():
-                        try:
-                            obj = val.access_handle.access._obj
-                        except:
-                            continue
-                        if isinstance(obj.bl_rna.bl_rna, Operator):
-                            if param_index == 1:
-                                obj = ContextResolver()
-                                print("resolving context")
-                            else:
-                                obj = RnaResolver(Event.bl_rna)
-                            access = create_access(function_value.inference_state, obj)
-                            c = CompiledValue(function_value.inference_state, access, None)
-                            return ValueSet({c})
-                            # This must exist so python binds it as a free variable, which
-                            # matches the number of free variables in the original function.
-                            # Must not be used as the variable may be *anything*
-                            bpy_types  # Intentional
-        return NO_VALUES
-
-    dynamic_param_lookup.__code__ = bpy_dynamic_param.__code__
-    dynamic_param_lookup.__defaults__ = bpy_dynamic_param.__defaults__
-
-
-def patch_getattr_paths():
-    """Patch getattr_paths so any rna type is intercepted and resolved using
-    RnaResolver.
-    """
-    from jedi.inference.compiled.access import DirectObjectAccess, _sentinel
-    from warnings import catch_warnings, simplefilter
-    from inspect import ismodule, getmodule
-    import builtins
-
-    def getattr_paths(self, name, default=_sentinel):
-        # This part is identical to the start of the original function
-        try:
-            with catch_warnings(record=True):
-                simplefilter("always")
-                return_obj = getattr(self._obj, name)
-        except Exception as e:
-            if default is _sentinel:
-                if isinstance(e, AttributeError):
-                    raise
-                raise AttributeError
-            return_obj = default
-
-        # This part redirects rna resolutions
-        if isinstance(return_obj, bpy_struct):
-            if isinstance(return_obj, bpy_types.Context):
-                return_obj = ContextResolver()
-            else:
-                return_obj = RnaResolver(return_obj)
-        elif return_obj is bpy_types:
-            return_obj = bpy_typesResolver
-
-        # This part is identical to the rest of the original function
-        access = self._create_access(return_obj)
-        if ismodule(return_obj):
-            return [access]
-
-        try:
-            module = return_obj.__module__
-        except AttributeError:
-            pass
-        else:
-            if module is not None and isinstance(module, str):
-                try:
-                    __import__(module)
-                    # For some modules like _sqlite3, the __module__ for classes is
-                    # different, in this case it's sqlite3. So we have to try to
-                    # load that "original" module, because it's not loaded yet. If
-                    # we don't do that, we don't really have a "parent" module and
-                    # we would fall back to builtins.
-                except ImportError:
-                    pass
-
-        module = getmodule(return_obj)
-        if module is None:
-            module = getmodule(type(return_obj))
-            if module is None:
-                module = builtins
-        return [self._create_access(module), access]
-
-    DirectObjectAccess.getattr_paths = getattr_paths
