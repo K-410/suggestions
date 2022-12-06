@@ -20,7 +20,7 @@ from ... import ui
 
 _context = utils._context
 system = _context.preferences.system
-PLUGIN_PATH = os.path.dirname(__file__)
+
 
 # Separators determine when completions should show after character insertion.
 # If the character matches the separator, completions will not run.
@@ -823,7 +823,7 @@ class TEXTENSION_OT_suggestions_download_jedi(bpy.types.Operator):
         return context.area.type == 'PREFERENCES'
 
     def execute(self, context, *, g={"active": False}):
-
+        plugin_path = os.path.dirname(__file__)
         if g["active"]:
             print("download alread active, cancelling")
             return {'CANCELLED'}
@@ -904,7 +904,7 @@ class TEXTENSION_OT_suggestions_download_jedi(bpy.types.Operator):
                     connected = True
 
                     register_timer(lambda s=S_DOWNLOADING: set_status(s))
-                    ret = pipmain(["install", "jedi", "-t", PLUGIN_PATH, "--upgrade"])
+                    ret = pipmain(["install", "jedi", "-t", plugin_path, "--upgrade"])
                     if ret == 0:
                         register_timer(lambda s=S_COMPLETE: set_status(s))
 
@@ -1065,8 +1065,9 @@ def enable():
 
     # Unless Jedi already exists, it's placed into the directory 'download'.
     # In this case we add it to sys.path to make it globally importable.
-    if PLUGIN_PATH not in sys.path:  # TODO: Should be 'download', not root directory.
-        sys.path.append(PLUGIN_PATH)
+    plugin_path = os.path.dirname(__file__)
+    if plugin_path not in sys.path:  # TODO: Should be 'download', not root directory.
+        sys.path.append(plugin_path)
 
     if not poll_plugin():
         return
