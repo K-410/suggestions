@@ -360,9 +360,11 @@ def optimize_filter_names():
         ret = []
         dct = {}
         for e in completion_names:
-            n = case(e.string_name)
+            n_ = e.string_name
+            n = case(n_)
             if n[:like_name_len] == like_name:
-                if (k := (n, n[like_name_len:])) not in dct:
+                # Store unmodified so names like Cache and cache aren't merged.
+                if (k := (n_, n_[like_name_len:])) not in dct:
                     dct[k] = None
                     if ((tn := e.tree_name) is None) or (getattr(tn.get_definition(), "type", None) != "del_stmt"):
                         new = completion()
