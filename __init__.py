@@ -767,10 +767,7 @@ def on_delete() -> None:
         if instance.poll():  # If visible, run completions again.
             bpy.ops.textension.suggestions_complete('INVOKE_DEFAULT')
 
-# import gc
-# import tracemalloc
 
-# started = False
 class TEXTENSION_OT_suggestions_complete(types.TextOperator):
     keymap("Text Generic", 'SPACE', 'PRESS', ctrl=1)
 
@@ -792,8 +789,8 @@ class TEXTENSION_OT_suggestions_complete(types.TextOperator):
         instance = get_instance()
         instance.sync_cursor()
 
-        from jedi.api import Interpreter
-        # from .optimizations import Interpreter
+        # from jedi.api import Interpreter
+        from .optimizations import Interpreter
 
         # ret = sorted(interp.complete(line + 1, col, fuzzy=True),
         #     key=lambda x:x.complete is not None, reverse=False)
