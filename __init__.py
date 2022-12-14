@@ -4,12 +4,13 @@ import time
 
 import blf
 import bpy
-from bpy.types import SpaceTextEditor
 
-from ... import TEXTENSION_OT_hit_test, gl, types, utils, _iter_expand_tokens
-from ...types import is_spacetext, is_text
-from ...km_utils import keymap
-from ... import ui
+from textension import TEXTENSION_OT_hit_test, _iter_expand_tokens
+from textension import utils, gl, types, ui
+from textension.types import is_spacetext, is_text, SpaceTextEditor
+from textension.km_utils import keymap
+
+
 # TODO: Testing
 
 # from dev_utils import enable_breakpoint_hook, per, measure, total, accumulate
@@ -782,21 +783,23 @@ class TEXTENSION_OT_suggestions_complete(types.TextOperator):
         string = text.as_string()
 
         # Suggestions should not show up inside comments or multi-line strings
-        cursor = text.cursor_sorted
-        for t in _iter_expand_tokens(string):
-            if cursor in t and  t.type in {'COMMENT', 'MULTILINE_STRING'}:
-                return {'CANCELLED'}
+        # cursor = text.cursor_sorted
+        # for t in _iter_expand_tokens(string):
+        #     if cursor in t and  t.type in {'COMMENT', 'MULTILINE_STRING'}:
+        #         return {'CANCELLED'}
         instance = get_instance()
         instance.sync_cursor()
 
         # from jedi.api import Interpreter
+        # interp = Interpreter(string, [])
+
         from .optimizations import Interpreter
+        interp = Interpreter(string, text)
 
         # ret = sorted(interp.complete(line + 1, col, fuzzy=True),
         #     key=lambda x:x.complete is not None, reverse=False)
-        interp = Interpreter(string, [])
         ret = interp.complete(line + 1, col)
-        bpy.ret = ret
+        bpy.ret = ret  # For introspection
         instance.entries.items = tuple(ret)
         instance.visible = True
         instance.region.tag_redraw()

@@ -1,6 +1,26 @@
 # This module implements patches required for jedi to work with bpy.
 
 
+from .tools import _get_super_meth, _deferred_patch_function, _copy_func
+
+
+def apply():
+    patch_importer_completion_names()
+    patch_get_api_type()
+    patch_getattr_paths()
+    patch_anonymous_param()
+    patch_get_builtin_module_names()
+    patch_module_value_getattribute_fallback()
+    # patch_builtin_from_name()
+    # patch_compiledvaluefilter()
+    patch_compiledvalue()
+    patch_compiledmodule()
+    patch_classmixin()
+    # patch_misc()
+    patch_stubfilter()
+    # patch_try_to_load_stub()
+
+
 # Patch Importer.completion_names to resolve builtin submodules and
 # submodules with a dot in their name. Blender does this for modules like
 # bpy.app, bpy.app.handlers, mathutils.noise, mathutils.geometry etc.
@@ -265,16 +285,16 @@ def patch_builtin_from_name():
 
 
 
-def patch_compiledvaluefilter():
-    from jedi.inference.compiled import CompiledValueFilter, CompiledName
-    def get(self, name, *args, check_has_attribute=False):
-        if args:
-            allowed_getattr_callback, in_dir_callback = args
-            has_attribute, is_descriptor = allowed_getattr_callback(name, safe=False)
-            if check_has_attribute and not has_attribute or self.is_instance and not in_dir_callback(name):
-                return []
-        return [CompiledName(self._inference_state, self.compiled_value, name)]
-    CompiledValueFilter.get = CompiledValueFilter._get = get
+# def patch_compiledvaluefilter():
+#     from jedi.inference.compiled import CompiledValueFilter, CompiledName
+#     def get(self, name, *args, check_has_attribute=False):
+#         if args:
+#             allowed_getattr_callback, in_dir_callback = args
+#             has_attribute, is_descriptor = allowed_getattr_callback(name, safe=False)
+#             if check_has_attribute and not has_attribute or self.is_instance and not in_dir_callback(name):
+#                 return []
+#         return [CompiledName(self._inference_state, self.compiled_value, name)]
+#     CompiledValueFilter.get = CompiledValueFilter._get = get
 
 
 
@@ -315,34 +335,57 @@ def patch_compiledvalue():
 # Patch CompiledModule to support getting sub-modules.
 def patch_compiledmodule():
     from jedi.inference.compiled.value import CompiledModule
-    
-    def sub_modules_dict(self):
-        from jedi.inference.names import SubModuleName
-        from types import ModuleType
-        from sys import modules
-        is_module = ModuleType.__instancecheck__
-        mod = self.access_handle.access._obj
-        names = {}
+    from jedi.inference.names import SubModuleName
+    from importlib.util import find_spec
+    from types import ModuleType
+    from sys import modules
+    is_module = ModuleType.__instancecheck__
+    is_str = str.__instancecheck__
+    true_dir = object.__dir__
+    sentinel = object()
+
+    module_name_cache = {}
+
+    def find_name(mod):
+        name = None
         try:
             name = mod.__name__
         except:
-            name = None
-            if mod in modules.values():
-                for _name, _mod in modules.items():
-                    if mod is _mod:
-                        name = _name
-                        break
-        if not isinstance(name, str):
+            for sys_modname, sys_mod in modules.items():
+                if mod is sys_mod:
+                    name = sys_modname
+                    break
+        # It's possible that 'name' isn't even a string.
+        if not is_str(name):
             name = str(type(mod).__name__)
-        sentinel = object()
-        from importlib.util import find_spec
+        return name
+
+    def sub_modules_dict(self):
+        mod = self.access_handle.access._obj
+        names = {}
+
+        try:
+            name = module_name_cache[mod]
+        except:
+            name = module_name_cache[mod] = find_name(mod)
+
         if is_module(mod):
-            for m in getattr(mod, "__all__", False) or dir(mod):
+            all_exports = set(true_dir(mod))
+            # __all__ could hold anything, and an overridden dir may even
+            # fail. Only object.__dir__ promises to return a list of strings.
+            try: all_exports |= {str(v) for v in mod.__all__}
+            except: pass
+            try: all_exports |= {str(v) for v in dir(mod)}
+            except: pass
+
+            # We skip __init__ because it has potential side effects.
+            for m in all_exports - {"__init__"}:
                 n = f"{name}.{m}"
                 try:
                     assert find_spec(n)
+
                 except (ValueError, AssertionError, ModuleNotFoundError):
-                    if n not in modules or modules[n] is not getattr(mod, m, sentinel):
+                    if n not in modules or getattr(mod, m, sentinel) is not modules[n]:
                         continue
                 names[m] = SubModuleName(self.as_context(), m)
         return names
@@ -372,16 +415,76 @@ def patch_classmixin():
     ClassMixin.get_filters = get_filters
 
 
-def apply():
-    patch_importer_completion_names()
-    patch_get_api_type()
-    patch_getattr_paths()
-    patch_anonymous_param()
-    patch_get_builtin_module_names()
-    patch_module_value_getattribute_fallback()
-    patch_builtin_from_name()
-    patch_compiledvaluefilter()
-    patch_compiledvalue()
-    patch_compiledmodule()
-    patch_classmixin()
-    # patch_misc()
+# Patch StubFilter to lookup names using its compiled counterpart as fallback.
+# Specifically this fixes completing sys._getframe, among other stub values.
+def patch_stubfilter():
+    from jedi.inference.gradual.stub_value import StubFilter
+    super_meth = _get_super_meth(StubFilter, "_is_name_reachable")
+
+    private_cache = {}
+
+    def _is_name_reachable(self: StubFilter, name):
+        if not super_meth(self, name):
+            return False
+
+        definition = name.get_definition()
+        if definition.type in {'import_from', 'import_name'}:
+            if name.parent.type not in {'import_as_name', 'dotted_as_name'}:
+                return False
+
+        n = name.value
+        # TODO: Possible optimization here
+        if n.startswith('_') and not (n.startswith('__') and n.endswith('__')):
+
+            # Jedi blanket rejects private names from stubs, which means
+            # omitting things like sys._getframe. This fixes that.
+            try:
+                cache = private_cache[self]
+            except:
+                merged_dict = {}
+                for nsv in self.parent_context._value.non_stub_value_set:
+                    merged_dict |= nsv.access_handle.access._obj.__dict__
+                cache = private_cache[self] = merged_dict
+            return n in cache
+        return True
+
+    StubFilter._is_name_reachable = _is_name_reachable
+
+
+# Patch _try_to_load_stubs to find stubs based the actual suffix of a module.
+# Finds stubs for modules which embed their cpython version in their name.
+def patch_try_to_load_stub():
+    from importlib.machinery import all_suffixes
+    from jedi.inference.gradual.typeshed import \
+        _try_to_load_stub, _try_to_load_stub_from_file, FileIO
+    from os import access, F_OK
+
+    suffixes = tuple(all_suffixes())
+    stub_loader = _copy_func(_try_to_load_stub)
+
+    def run_first(inference_state, import_names, python_value_set,
+                  parent_module_value, sys_path):
+        for c in python_value_set:
+            try:
+                file_path = c.py__file__()
+            except:
+                continue
+            if not file_path:
+                continue
+            name = file_path.name
+            endswith = name.endswith
+            if not endswith(suffixes):
+                continue
+
+            suf = max([suf for suf in suffixes if endswith(suf)], key=len)
+            path = str(file_path.parent.joinpath(name[:-len(suf)]  + ".pyi"))
+            if access(path, F_OK):
+                m = _try_to_load_stub_from_file(
+                    inference_state, python_value_set,
+                    file_io=FileIO(path), import_names=import_names)
+                if m is not None:
+                    return m
+        return stub_loader(
+            inference_state, import_names, python_value_set, parent_module_value, sys_path)
+
+    _deferred_patch_function(_try_to_load_stub, run_first)
