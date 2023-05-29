@@ -1,8 +1,9 @@
 # This adds fixes for jedi to outright work.
 
 
+from textension.utils import _patch_function, _copy_function
 from .tools import state, _descriptor_overrides, _value_overrides, \
-    _patch_function, _get_unbound_super_method, _copy_function
+    _get_unbound_super_method
 
 from .modules._bpy_types import get_rna_value, patch_AnonymousParamName_infer
 from .modules._mathutils import apply_mathutils_overrides

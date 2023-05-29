@@ -1,8 +1,9 @@
 # This module implements safe optimizations for jedi.
 # A safe optimization is independent and does not modify behavior.
 
-from ..tools import _descriptor, _forwarder, _patch_function, PyInstanceMethod_New
+from textension.utils import _forwarder, PyInstanceMethod_New, noop, _patch_function
 from operator import attrgetter, methodcaller
+
 
 def apply_safe_optimizations():
     optimize_Value_bool_functions()
@@ -32,6 +33,7 @@ def apply_safe_optimizations():
     optimize_is_big_annoying_library()
     optimize_iter_module_names()
 
+
 # Optimizes various getters on Value which simply return a falsy
 # value, which is 220% faster than ``def func(self): return False``.
 def optimize_Value_bool_functions():
@@ -40,21 +42,24 @@ def optimize_Value_bool_functions():
     # Curiously, this is 1.1x faster than False.__bool__.
     falsy_func = object.__init_subclass__
 
-    Value.is_class = falsy_func
-    Value.is_class_mixin = falsy_func
-    Value.is_instance = falsy_func
-    Value.is_function = falsy_func
-    Value.is_module = falsy_func
-    Value.is_namespace = falsy_func
-    Value.is_compiled = falsy_func
-    Value.is_bound_method = falsy_func
-    Value.is_builtins_module = falsy_func
+    Value.is_class            = falsy_func
+    Value.is_class_mixin      = falsy_func
+    Value.is_instance         = falsy_func
+    Value.is_function         = falsy_func
+    Value.is_module           = falsy_func
+    Value.is_namespace        = falsy_func
+    Value.is_compiled         = falsy_func
+    Value.is_bound_method     = falsy_func
+    Value.is_builtins_module  = falsy_func
+    Value.py__bool__          = True.__bool__
+    Value.get_qualified_names = falsy_func
+    Value.get_type_hint       = noop
 
 
 def optimize_ImportName_get_defined_names():
     from parso.python.tree import ImportName
-    from builtins import hasattr, iter
     from itertools import islice
+    from builtins import hasattr, iter
 
     def get_defined_names_o(self: ImportName, include_setitem=False):
         if not hasattr(self, "defined_names"):
@@ -138,33 +143,40 @@ def optimize_create_stub_map():
 
     def _create_stub_map_p(directory_path_info):
         is_third_party = directory_path_info.is_third_party
-        dirpath = directory_path_info.path
+        dirpath        = directory_path_info.path
+
         try:
             listed = listdir(dirpath)
         except (FileNotFoundError, NotADirectoryError):
             return {}
+
         stubs = {}
+
         # Prepare the known parts for faster string interpolation.
         init_tail = "/__init__.pyi"
         head = f"{dirpath}/"
 
         for entry in listed:
+
             # Entry is likely a .pyi stub module.
             if entry[-1] is "i" and entry[-4:] == ".pyi":
                 name = entry[:-4]
                 if name != "__init__":
                     stubs[name] = PathInfo(f"{head}{entry}", is_third_party)
-            else:  # Entry is likely a directory.
+
+            # Entry is likely a directory.
+            else:
                 path = f"{head}{entry}{init_tail}"
-                # We only test access, not if it's a directory.
+                # Test only access - not if it's a directory.
                 if access(path, F_OK):
                     stubs[entry] = PathInfo(path, is_third_party)
+
         return stubs
+
     _patch_function(_create_stub_map, _create_stub_map_p)
 
 
 # Optimizes _StringComparisonMixin to use faster checks.
-# Hide encapsulated calls to assist debugging.
 def optimize_StringComparisonMixin__eq__():
     from parso.python.tree import _StringComparisonMixin
 
@@ -175,8 +187,8 @@ def optimize_StringComparisonMixin__eq__():
             return self.value == other
         return self is other
 
-    _StringComparisonMixin.__eq__ = __eq__
-    _StringComparisonMixin.__hash__ = _descriptor(attrgetter("value.__hash__"))
+    _StringComparisonMixin.__eq__   = __eq__
+    _StringComparisonMixin.__hash__ = _forwarder("value.__hash__")
 
 
 def optimize_AbstractNameDefinition_get_public_name():
@@ -189,10 +201,10 @@ def optimize_AbstractNameDefinition_get_public_name():
 def optimize_ValueContext():
     from jedi.inference.context import ValueContext
 
-    ValueContext.parent_context = _descriptor(attrgetter("_value.parent_context"))
-    ValueContext.tree_node = _descriptor(attrgetter("_value.tree_node"))
-    ValueContext.get_value = PyInstanceMethod_New(attrgetter("_value"))
-    ValueContext.name = _descriptor(attrgetter("_value.name"))
+    ValueContext.parent_context = _forwarder("_value.parent_context")
+    ValueContext.tree_node      = _forwarder("_value.tree_node")
+    ValueContext.get_value      = PyInstanceMethod_New(attrgetter("_value"))
+    ValueContext.name           = _forwarder("_value.name")
 
 
 def optimize_Name_is_definition():
@@ -317,8 +329,8 @@ def optimize_static_getmro():
 def optimize_AbstractTreeName_properties():
     from jedi.inference.names import AbstractTreeName
 
-    AbstractTreeName.start_pos = _descriptor(attrgetter("tree_name.start_pos"))
-    AbstractTreeName.string_name = _descriptor(attrgetter("tree_name.value"))
+    AbstractTreeName.start_pos   = _forwarder("tree_name.start_pos")
+    AbstractTreeName.string_name = _forwarder("tree_name.value")
 
 
 def optimize_BaseName_properties():
@@ -331,7 +343,7 @@ def optimize_BaseName_properties():
     ParamNameWithEquals.public_name = property(ParamNameWithEquals.get_public_name)
     BaseTreeParamName.public_name = property(BaseTreeParamName.get_public_name)
 
-    BaseName.name = _descriptor(attrgetter("_name.public_name"))
+    BaseName.name = _forwarder("_name.public_name")
 
 
 def optimize_complete_global_scope():
@@ -356,9 +368,10 @@ def optimize_complete_global_scope():
 def optimize_Leaf():
     from parso.tree import Leaf
 
-    @_descriptor(attrgetter("line", "column")).setter
+    @_forwarder("line", "column").setter
     def start_pos(self: Leaf, pos: tuple[int, int]) -> None:
         self.line, self.column = pos
+
     Leaf.start_pos = start_pos
 
     def __init__(self: Leaf, value: str, start_pos: tuple[int, int], prefix: str = ''):
@@ -408,14 +421,12 @@ def optimize_platform_system():
     import sys
 
     if sys.platform == "win32":
-        platform._system = platform.system  # Backup
         platform.system = "Windows".__str__
 
 
 def optimize_getmodulename():
     module_suffixes = {suf: -len(suf) for suf in sorted(
-        __import__("importlib").machinery.all_suffixes() +
-            [".pyi"], key=len, reverse=True)}
+        __import__("importlib").machinery.all_suffixes() + [".pyi"], key=len, reverse=True)}
     suffixes = tuple(module_suffixes)
     module_suffixes = module_suffixes.items()
     rpartition = str.rpartition
@@ -435,6 +446,7 @@ def optimize_getmodulename():
 # Make is_big_annoying_library into a no-op.
 def optimize_is_big_annoying_library():
     from jedi.inference.helpers import is_big_annoying_library
+
     _patch_function(is_big_annoying_library, lambda _: None)
 
 
@@ -461,9 +473,10 @@ def optimize_iter_module_names():
         if paths in cache:
             return cache[paths]
 
-        names = []
+        names   = []
         entries = []
-        _paths = iter(paths)
+        _paths  = iter(paths)
+
         while True:
             try:
                 entries += from_iterable(map(scandir, _paths))
@@ -480,6 +493,7 @@ def optimize_iter_module_names():
                     names += [name]
             elif is_dir(entry) and isidentifier(name) and name != "__pycache__":
                 names += [name]
+
         cache[paths] = names
         return names
 

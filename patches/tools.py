@@ -3,7 +3,7 @@
 import functools
 import collections
 
-from textension.utils import factory, PyFunction_SetClosure, namespace
+from textension.utils import factory, namespace
 from types import FunctionType
 from typing import Any
 
@@ -73,18 +73,6 @@ def _filter_modules():
     return _filter_modules
 
 
-# Patch a function with new closures and code object. Returns copy of the old.
-def _patch_function(fn: FunctionType, new_fn: FunctionType):
-    orig = _copy_function(fn)
-
-    # Apply the closure cells from the new function.
-    PyFunction_SetClosure(fn, new_fn.__closure__)
-
-    fn.__code__ = new_fn.__code__.replace(co_name=f"{fn.__name__} ({new_fn.__name__})")
-    fn.__orig__ = vars(fn).setdefault("__orig__", orig)
-    return orig
-
-
 # Get the first method using the method resolution order.
 def _get_unbound_super_method(cls, name: str):
     for base in cls.__mro__[1:]:
@@ -93,19 +81,6 @@ def _get_unbound_super_method(cls, name: str):
         except AttributeError:
             continue
     raise AttributeError(f"Method '{name}' not on any superclass")
-
-
-# Make a deep copy of a function.
-def _copy_function(f):
-    g = FunctionType(
-        f.__code__,
-        f.__globals__,
-        name=f.__name__,
-        argdefs=f.__defaults__,
-        closure=f.__closure__)
-    g = functools.update_wrapper(g, f)
-    g.__kwdefaults__ = f.__kwdefaults__
-    return g
 
 
 def override_method(cls: type, *, alias=None):
