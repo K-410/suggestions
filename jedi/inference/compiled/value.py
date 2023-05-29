@@ -182,6 +182,7 @@ class CompiledValue(Value):
             for access in all_access_paths
         )
 
+    #     if not index_value_set:
     def py__iter__(self, contextualized_node=None):
         if not self.access_handle.has_iter():
             yield from super().py__iter__(contextualized_node)
