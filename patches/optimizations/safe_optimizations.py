@@ -1,13 +1,24 @@
 # This module implements safe optimizations for jedi.
 # A safe optimization is independent and does not modify behavior.
 
-from textension.utils import _forwarder, PyInstanceMethod_New, noop, _patch_function
+from textension.utils import (
+    _forwarder,
+    _unbound_getter,
+    _unbound_method,
+    _unbound_attrcaller,
+    _patch_function,
+    truthy_noargs,
+    falsy,
+    falsy_noargs)
+
+
 from operator import attrgetter, methodcaller
+from itertools import repeat
+from jedi.inference.base_value import NO_VALUES
 
 
 def apply_safe_optimizations():
-    optimize_Value_bool_functions()
-    optimize_ImportName_get_defined_names()
+    optimize_Value_methods()
     optimize_Param_name()
     optimize_ImportFrom_get_defined_names()
     optimize_create_stub_map()
@@ -16,7 +27,7 @@ def apply_safe_optimizations():
     optimize_ValueContext()
     # # optimize_Name_is_definition()  # XXX: Can this be enabled?
     optimize_ClassMixin()
-    optimize_CompiledValue()
+    optimize_Compiled_methods()
     optimize_CompiledName()
     optimize_TreeContextMixin()
     optimize_MergedFilter()
@@ -34,49 +45,31 @@ def apply_safe_optimizations():
     optimize_iter_module_names()
 
 
-# Optimizes various getters on Value which simply return a falsy
-# value, which is 220% faster than ``def func(self): return False``.
-def optimize_Value_bool_functions():
+rep_NO_VALUES = repeat(NO_VALUES).__next__
+
+
+# Optimizes various methods on Value that return a fixed value.
+# This makes them faster and debug stepping in Jedi more bearable.
+def optimize_Value_methods():
     from jedi.inference.base_value import Value
 
-    # Curiously, this is 1.1x faster than False.__bool__.
-    falsy_func = object.__init_subclass__
+    # Automatically False.
+    Value.is_class            = falsy_noargs
+    Value.is_class_mixin      = falsy_noargs
+    Value.is_instance         = falsy_noargs
+    Value.is_function         = falsy_noargs
+    Value.is_module           = falsy_noargs
+    Value.is_namespace        = falsy_noargs
+    Value.is_compiled         = falsy_noargs
+    Value.is_bound_method     = falsy_noargs
+    Value.is_builtins_module  = falsy_noargs
+    Value.get_qualified_names = falsy_noargs
 
-    Value.is_class            = falsy_func
-    Value.is_class_mixin      = falsy_func
-    Value.is_instance         = falsy_func
-    Value.is_function         = falsy_func
-    Value.is_module           = falsy_func
-    Value.is_namespace        = falsy_func
-    Value.is_compiled         = falsy_func
-    Value.is_bound_method     = falsy_func
-    Value.is_builtins_module  = falsy_func
-    Value.py__bool__          = True.__bool__
-    Value.get_qualified_names = falsy_func
-    Value.get_type_hint       = noop
+    Value.get_type_hint       = falsy
+    Value.py__bool__          = truthy_noargs
 
-
-def optimize_ImportName_get_defined_names():
-    from parso.python.tree import ImportName
-    from itertools import islice
-    from builtins import hasattr, iter
-
-    def get_defined_names_o(self: ImportName, include_setitem=False):
-        if not hasattr(self, "defined_names"):
-            self.defined_names = ret = []
-            pool = [self.children[1]]
-
-            for as_name in iter(pool):
-                type_ = as_name.type
-                if type_ == "name":
-                    ret += [as_name]
-                elif type_ == "dotted_as_name":
-                    ret += [as_name.children[2]]
-                else:  # ``dotted_as_names`` (plural)
-                    pool += islice(as_name.children, None, None, 2)
-        return self.defined_names
-
-    ImportName.get_defined_names = get_defined_names_o
+    Value.is_stub = _forwarder("parent_context.is_stub")
+    Value.py__getattribute__alternatives = rep_NO_VALUES
 
 
 def optimize_Param_name():
@@ -93,50 +86,33 @@ def optimize_Param_name():
 
     Param.name = name
 
-    
 
 def optimize_ImportFrom_get_defined_names():
     from parso.python.tree import ImportFrom
     from itertools import islice
 
-    # def get_defined_names_o(self: ImportFrom, include_setitem=False):
-    #     last = self.children[-1]
-    #     if last == ')':
-    #         last = self.children[-2]
-    #     elif last == '*':
-    #         return  # No names defined directly.
-
-    #     if last.type == 'import_as_names':
-    #         as_names = islice(last.children, None, None, 2)
-    #     else:
-    #         as_names = [last]
-
-    #     for name in as_names:
-    #         if name.type != 'name':
-    #             name = name.children[-1]
-    #         yield name
-
     def get_defined_names_o(self: ImportFrom, include_setitem=False):
         last = self.children[-1]
 
-        if last.type == "operator":
-            if last.value is ')':
-                last = self.children[-2]
-            else:
-                return  # No names defined directly. Starred import.
+        if last == ')':
+            last = self.children[-2]
+        elif last == '*':
+            return  # No names defined directly.
 
-        if last.type == 'name':
-            yield [last]
+        if last.type == 'import_as_names':
+            as_names = islice(last.children, None, None, 2)
         else:
-            for name in islice(last.children, None, None, 2):
-                if name.type != 'name':
-                    name = name.children[-1]
-                yield name
+            as_names = [last]
+
+        for name in as_names:
+            if name.type != 'name':
+                name = name.children[-1]
+            yield name
 
     ImportFrom.get_defined_names = get_defined_names_o
 
 
-# Optimizes _create_stub_map to eliminate os.stat calls and heuristics.
+# Optimizes to eliminate excessive os.stat calls and add heuristics.
 def optimize_create_stub_map():
     from jedi.inference.gradual.typeshed import _create_stub_map, PathInfo
     from os import listdir, access, F_OK
@@ -153,7 +129,7 @@ def optimize_create_stub_map():
         stubs = {}
 
         # Prepare the known parts for faster string interpolation.
-        init_tail = "/__init__.pyi"
+        tail = "/__init__.pyi"
         head = f"{dirpath}/"
 
         for entry in listed:
@@ -166,7 +142,7 @@ def optimize_create_stub_map():
 
             # Entry is likely a directory.
             else:
-                path = f"{head}{entry}{init_tail}"
+                path = f"{head}{entry}{tail}"
                 # Test only access - not if it's a directory.
                 if access(path, F_OK):
                     stubs[entry] = PathInfo(path, is_third_party)
@@ -194,7 +170,7 @@ def optimize_StringComparisonMixin__eq__():
 def optimize_AbstractNameDefinition_get_public_name():
     from jedi.inference.names import AbstractNameDefinition
 
-    AbstractNameDefinition.get_public_name = PyInstanceMethod_New(attrgetter("string_name"))
+    AbstractNameDefinition.get_public_name = _unbound_getter("string_name")
 
 
 # Optimizes various ValueContext members to use method descriptors.
@@ -203,8 +179,9 @@ def optimize_ValueContext():
 
     ValueContext.parent_context = _forwarder("_value.parent_context")
     ValueContext.tree_node      = _forwarder("_value.tree_node")
-    ValueContext.get_value      = PyInstanceMethod_New(attrgetter("_value"))
     ValueContext.name           = _forwarder("_value.name")
+
+    ValueContext.get_value      = _unbound_getter("_value")
 
 
 def optimize_Name_is_definition():
@@ -217,26 +194,45 @@ def optimize_Name_is_definition():
 def optimize_ClassMixin():
     from jedi.inference.value.klass import ClassMixin, ClassContext
 
-    ClassMixin.is_class = True .__bool__
-    ClassMixin.is_class_mixin = True .__bool__
-    ClassMixin.py__name__ = PyInstanceMethod_New(attrgetter("name.string_name"))
-    ClassMixin._as_context = PyInstanceMethod_New(ClassContext)
+    ClassMixin.is_class       = truthy_noargs
+    ClassMixin.is_class_mixin = truthy_noargs
+
+    ClassMixin.py__name__  = _unbound_getter("name.string_name")
+    ClassMixin._as_context = _unbound_method(ClassContext)
 
 
-# Optimizes CompiledValue properties to use forwarding descriptors.
-def optimize_CompiledValue():
-    from jedi.inference.compiled.value import CompiledValue
+# Optimizes Compiled**** classes to use forwarding descriptors.
+def optimize_Compiled_methods():
+    from jedi.inference.compiled.value import CompiledValue, CompiledContext, CompiledModule, CompiledModuleContext, CompiledName
 
     CompiledValue.get_qualified_names = _forwarder("access_handle.get_qualified_names")
-    CompiledValue.py__bool__ = _forwarder("access_handle.py__bool__")
-    CompiledValue.is_class = _forwarder("access_handle.is_class")
+
+    CompiledValue.is_compiled = truthy_noargs
+    CompiledValue.is_stub     = falsy_noargs
+
+    CompiledValue.is_class    = _forwarder("access_handle.is_class")
     CompiledValue.is_function = _forwarder("access_handle.is_function")
-    CompiledValue.is_module = _forwarder("access_handle.is_module")
-    CompiledValue.is_compiled = True.__bool__
-    CompiledValue.is_stub = False.__bool__
     CompiledValue.is_instance = _forwarder("access_handle.is_instance")
-    CompiledValue.py__doc__ = _forwarder("access_handle.py__doc__")
-    CompiledValue.py__name__ = _forwarder("access_handle.py__name__")
+    CompiledValue.is_module   = _forwarder("access_handle.is_module")
+
+
+    CompiledValue.py__bool__  = _forwarder("access_handle.py__bool__")
+    CompiledValue.py__doc__   = _forwarder("access_handle.py__doc__")
+    CompiledValue.py__name__  = _forwarder("access_handle.py__name__")
+
+    CompiledValue.api_type    = _unbound_attrcaller("access_handle.get_api_type")
+    CompiledValue.array_type  = _unbound_attrcaller("access_handle.get_array_type")
+    CompiledValue._as_context = _unbound_method(CompiledContext)
+
+    CompiledValue.get_metaclasses = rep_NO_VALUES
+
+    CompiledModule._as_context = _unbound_method(CompiledModuleContext)
+    CompiledModule.py__path__  = _forwarder("access_handle.py__path__")
+    CompiledModule.py__file__  = _forwarder("access_handle.py__file__")
+
+    CompiledName.inferred_value  = _unbound_attrcaller("infer_compiled_value")
+    CompiledName.py__doc__ = _forwarder("inferred_value.py__doc__")
+    CompiledName.api_type  = _forwarder("inferred_value.api_type")
 
 
 # Optimizes CompiledName initializer to omit calling parent_value.as_context()
@@ -244,16 +240,14 @@ def optimize_CompiledValue():
 def optimize_CompiledName():
     from jedi.inference.compiled.value import CompiledName
 
-    # TODO: as_context() should be optimized.
-    def parent_context(self: CompiledName):
-        return self._parent_value.as_context()
-
-    CompiledName.parent_context = property(parent_context)
+    # self.parent_context >>> self._parent_value.as_context()
+    CompiledName.parent_context = _unbound_attrcaller("_parent_value.as_context")
 
     def __init__(self, inference_state, parent_value, name):
         self._inference_state = inference_state
         self._parent_value = parent_value
         self.string_name = name
+
     CompiledName.__init__ = __init__
 
 
@@ -263,7 +257,7 @@ def optimize_TreeContextMixin():
     from jedi.inference.context import TreeContextMixin
     from jedi.inference.syntax_tree import infer_node
 
-    TreeContextMixin.infer_node = PyInstanceMethod_New(infer_node)
+    TreeContextMixin.infer_node = _unbound_method(infer_node)
 
 
 # Optimizes MergedFilter methods to use functional style calls.
@@ -275,9 +269,10 @@ def optimize_MergedFilter():
     from_iterable = chain.from_iterable
     call_values = methodcaller("values")
 
-    @PyInstanceMethod_New
+    @_unbound_method
     def values(self: MergedFilter):
         return list(from_iterable(map(call_values, self._filters)))
+
     MergedFilter.values = values
 
 
