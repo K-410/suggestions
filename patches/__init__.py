@@ -6,7 +6,7 @@ from .tools import state, _descriptor_overrides, _value_overrides, \
 
 from .modules._bpy_types import get_rna_value, patch_AnonymousParamName_infer
 from .modules._mathutils import apply_mathutils_overrides
-
+from .imports import fix_bpy_imports
 
 import bpy
 
@@ -18,6 +18,7 @@ def apply():
 def _apply_patches():
     # patch_hide_shit_for_debugging()  # XXX: For debuggin
 
+    fix_bpy_imports()
     apply_mathutils_overrides()
 
     patch_NameWrapper_getattr()

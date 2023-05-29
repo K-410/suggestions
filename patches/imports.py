@@ -12,25 +12,72 @@ from operator import getitem
 from .modules._mathutils import float_vector_map
 from .modules._bpy_types import MathutilsValue, PropArrayValue, RnaValue
 
-# This doesn't seem to exist anywhere.
-bpy_prop_collection_idprop = bpy.types.bpy_prop_collection.__subclasses__()[0]
+
+app_submodule_names = tuple(
+    name for name in bpy.app.__match_args__ if f"bpy.app.{name}" in sys.modules)
 
 
-# Make ``bpy.app`` into a virtual module.
-app_module = VirtualModule(ModuleType("bpy.app"))
+prop_names = (
+    "BoolProperty",
+    "BoolVectorProperty",
+    "CollectionProperty",
+    "EnumProperty",
+    "FloatProperty",
+    "FloatVectorProperty",
+    "IntProperty",
+    "IntVectorProperty",
+    "PointerProperty",
+    "StringProperty",
+)
 
-for name in bpy.app.__match_args__:
-    full_name = f"bpy.app.{name}"
-    value = getattr(bpy.app, name)
+# Map of PropertyFunctions for custom property inference.
+prop_func_map: dict[str, "PropertyFunction"] = {}
 
-    # For handlers, timers, translations etc.
-    if full_name in sys.modules and not isinstance(value, ModuleType):
-        value = ModuleType(full_name)
-        value.__dict__.update({sub_k: getattr(value, sub_k) for sub_k in dir(value)})
-    app_module.obj.__dict__[name] = value
+prop_type_map = {
+    "BoolProperty":       bool,
+    "EnumProperty":       str,
+    "FloatProperty":      float,
+    "IntProperty":        int,
+    "StringProperty":     str,
+}
+
+# ``bpy_prop_collection_idprop`` isn't reachable anywhere else.
+for cls in bpy.types.bpy_prop_collection.__subclasses__():
+    if cls.__name__ == "bpy_prop_collection_idprop":
+        prop_type_map["CollectionProperty"] = cls
+        break
 
 
-# Make ``bpy.ops`` into a virtual module.
+def _as_module(obj, name):
+    m = ModuleType(name)
+    try:
+        m.__dict__.update(obj.__dict__)
+    except AttributeError:
+        for name in dir(obj):
+            m.__dict__[name] = getattr(obj, name)
+    return m
+
+
+def infer_vector_from_arguments(self: "PropertyFunction", arguments, context):
+    for key, value in arguments.unpack():
+        if key == "subtype" and value.data.type == "string":
+            if obj := float_vector_map.get(value.data._get_payload()):
+                return (MathutilsValue(obj, context).instance,)
+
+    obj = prop_type_map[self.obj.__name__.replace("Vector", "")]
+    return (PropArrayValue(obj, context).instance,)
+
+
+# Needs to exist for import redirects.
+class BpyModule(VirtualModule):
+    pass
+
+
+class AppModule(VirtualModule):
+    def get_submodule_names(self, only_modules=False):
+        yield from map(SubModuleName, repeat(self.as_context()), app_submodule_names)
+
+
 class OpsModule(VirtualModule):
     def get_submodule_names(self, only_modules=False):
         sub = map(getitem, map(str.partition, _bpy.ops.dir(), repeat("_OT_")), repeat(0))
@@ -38,7 +85,6 @@ class OpsModule(VirtualModule):
         return list(map(SubModuleName, repeat(self.as_context()), names))
 
 
-# Make ``bpy.props`` into a virtual module.
 class PropsModule(VirtualModule):
     def py__getattribute__(self, name_or_str, **kw):
         if value := prop_func_map.get(name_or_str.value):
@@ -54,15 +100,6 @@ class VirtualFunction(VirtualValue):
         instance.py__call__ = instance_call
         return (instance,)
 
-
-def infer_vector_from_arguments(self: "PropertyFunction", arguments, context):
-    for key, value in arguments.unpack():
-        if key == "subtype" and value.data.type == "string":
-            if obj := float_vector_map.get(value.data._get_payload()):
-                return (MathutilsValue(obj, context).instance,)
-
-    obj = prop_type_map[self.obj.__name__.replace("Vector", "")]
-    return (PropArrayValue(obj, context).instance,)
 
 
 class PropertyFunction(VirtualFunction):
@@ -85,42 +122,28 @@ class PropertyFunction(VirtualFunction):
         return (RnaValue(obj, context).instance,)
 
 
-prop_type_map = {
-    "BoolProperty":       bool,
-    "CollectionProperty": bpy_prop_collection_idprop,
-    "EnumProperty":       str,
-    "FloatProperty":      float,
-    "IntProperty":        int,
-    "StringProperty":     str,
-}
+def fix_bpy_imports():
+    Importer_redirects["bpy"]     = BpyModule(bpy)
+    Importer_redirects["bpy.ops"] = OpsModule(bpy.ops)
 
+    # Add bpy.app redirect.
+    Importer_redirects["bpy.app"] = AppModule(_as_module(bpy.app, "bpy.app"))
 
-props_module = PropsModule(bpy.props)
-ops_module   = OpsModule(bpy.ops)
-props_module = PropsModule(bpy.props)
-# bpy_private_module = VirtualModule(_bpy)
+    # Add bpy.app handlers | icons | timers | translations.
+    for name in app_submodule_names:
+        full_name = f"bpy.app.{name}"
+        submodule = _as_module(getattr(bpy.app, name), full_name)
+        Importer_redirects[full_name] = VirtualModule(submodule)
 
-Importer_redirects["bpy.app"] = app_module
-Importer_redirects["bpy.ops"] = ops_module
-# Importer_redirects["_bpy.props"] = props_module
-Importer_redirects["bpy.props"] = props_module
-# Importer_redirects["_bpy"] = bpy_private_module
+    # Add bpy.props redirect.
+    Importer_redirects["bpy.props"] = PropsModule(bpy.props)
+    Importer_redirects["_bpy.props"] = Importer_redirects["bpy.props"]
+    context = Importer_redirects["bpy.props"].as_context()
 
-for module in Importer_redirects.values():
-    CompiledModule_redirects[module.obj] = module
+    # Add property function redirects.
+    for name in prop_names:
+        prop_func_map[name] = PropertyFunction(getattr(bpy.props, name), context)
 
-props_context = props_module.as_context()
-
-
-prop_func_map = {
-    "BoolProperty":        PropertyFunction(bpy.props.BoolProperty, props_context),
-    "BoolVectorProperty":  PropertyFunction(bpy.props.BoolVectorProperty, props_context),
-    "CollectionProperty":  PropertyFunction(bpy.props.CollectionProperty, props_context),
-    "EnumProperty":        PropertyFunction(bpy.props.EnumProperty, props_context),
-    "FloatProperty":       PropertyFunction(bpy.props.FloatProperty, props_context),
-    "FloatVectorProperty": PropertyFunction(bpy.props.FloatVectorProperty, props_context),
-    "IntProperty":         PropertyFunction(bpy.props.IntProperty, props_context),
-    "IntVectorProperty":   PropertyFunction(bpy.props.IntVectorProperty, props_context),
-    "PointerProperty":     PropertyFunction(bpy.props.PointerProperty, props_context),
-    "StringProperty":      PropertyFunction(bpy.props.StringProperty, props_context),
-}
+    # Add redirects for compiled value interceptions.
+    for module in Importer_redirects.values():
+        CompiledModule_redirects[module.obj] = module
