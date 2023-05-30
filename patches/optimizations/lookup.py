@@ -11,7 +11,6 @@ def apply():
     Leaf.is_nonterminal = False
 
     optimize_name_get_definition()
-    optimize_get_definition_names()  # XXX: Requires optimize_name_get_definition
     optimize_Module_get_used_names()  # XXX: Requires prepare_optimizations and optimize_name_get_definition.
     optimize_AbstractUsedNamesFilter_get_and_values()  # XXX Requires UsedNames and optimize_name_get_definition
     optimize_ParserTreeFilter_filter()
@@ -176,7 +175,6 @@ class Collection(list):
 # TAG:  UsedNames
 class UsedNames(defaultdict):
     module: Module
-    scope_map: dict
 
     def get(self, *args):
         return ()
@@ -189,7 +187,6 @@ class UsedNames(defaultdict):
         self.module.updates = set()
 
         self.module.names = set()
-        self.scope_map = defaultdict(Collection)
 
         # A set of nodes at module level.
         self.nodes = set()
@@ -213,9 +210,6 @@ class UsedNames(defaultdict):
         new_nodes |= module.updates
         module.updates.clear()
 
-        scope_map = self.scope_map
-        scope_map.default_factory = Collection
-
         is_namenode = Name.__instancecheck__
         is_basenode = BaseNode.__instancecheck__  # Means node has children.
 
@@ -238,7 +232,6 @@ class UsedNames(defaultdict):
                 scope = get_parent_scope_fast(name)
 
                 name.scope_cache = {False: scope}
-                scope_map[scope, name.value] += [name]
 
                 if scope is module:
                     new_module_names += [name]
@@ -253,7 +246,6 @@ class UsedNames(defaultdict):
         # TODO: Is this actually needed?
         all_names |= set(new_module_names)
         # TODO: Is this also actually needed? Shouldn't this be done on the scope map?
-        scope_map.default_factory = None
         self.default_factory = None
         return self
 
@@ -280,8 +272,8 @@ def optimize_Module_get_used_names():
 
 
 # XXX: This optimization requires UsedNames, and UsedNames requires this!
-# Optimizes _AbstractUsedNamesFilter.get to inline ``_get_definition_names``
-# and to allow it query the filter's node context to get the exact scope.
+# Optimizes _AbstractUsedNamesFilter.get, .values and ._convert_names.
+# Inlines ``filter._get_definition_names``
 # TAG: AbstractUsedNamesFilter
 def optimize_AbstractUsedNamesFilter_get_and_values():
     # Requires ``Name._get_definition`` optimization.
@@ -293,27 +285,6 @@ def optimize_AbstractUsedNamesFilter_get_and_values():
 
     # Same as Name.get_definition, but without trying the cache.
     get_definition = Name.get_definition
-    from dev_utils import ncalls, get_callsite_string
-
-    def get(self: _AbstractUsedNamesFilter, name):
-        node = self._node_context.tree_node
-        scope_map = self._used_names.scope_map
-        try:
-            names = scope_map[node, name]
-        except:
-            print("can't find", name, get_callsite_string(depth=3))
-            return []
-
-        try:
-            ret = names.cached_result
-        except:  # Assume AttributeError.
-            ret = names.cached_result = []  
-            for name in names:
-                definition = get_definition(name, include_setitem=True)
-                name.definition = {(False, True): definition}
-                if definition is not None:
-                    ret += [name]
-        return self._convert_names(self._filter(ret))
 
     def get(self: _AbstractUsedNamesFilter, name):
         node = self._node_context.tree_node
@@ -325,7 +296,6 @@ def optimize_AbstractUsedNamesFilter_get_and_values():
             if node := node.parent:
                 continue
             break
-            
 
         for n in names:
             if n.value == name:
@@ -447,40 +417,3 @@ def optimize_name_get_definition():
 
     Name.get_definition  = get_definition
     Name._get_definition = _get_definition
-
-
-# XXX: Requires optimize_name_get_definition.
-# Optimizes _get_definition_names in 'jedi/inference/filters.py'
-def optimize_get_definition_names():
-    from parso.python.tree import Name
-    from jedi.inference.filters import _get_definition_names
-
-
-    # Same as Name.get_definition, but without trying the cache.
-    get_definition = Name.get_definition
-
-    # TAG: get_definition_names
-    # The result is cached on the ``Collection`` object instead.
-
-    def _get_definition_names_o(parso_cache_node, used_names: UsedNames, string):
-        # Jedi sometimes looks up strings like ``__init__`` on classes that 
-        # don't define them. In this case we just jedi sort it automagically.
-        try:
-            names = used_names.scope_map[parso_cache_node.node, string]
-        except:
-            # print("can't find", repr(string), "on", parso_cache_node.node, get_callsite_string(depth=3))  # Debug purposes.
-            return []
-
-        try:
-            ret = names.cached_result
-        except:  # Assume AttributeError.
-            ret = names.cached_result = []
-
-            for name in names:
-                definition = get_definition(name, include_setitem=True)
-                name.definition = {(False, True): definition}
-                if definition is not None:
-                    ret += [name]
-        return ret
-
-    _patch_function(_get_definition_names, _get_definition_names_o)
