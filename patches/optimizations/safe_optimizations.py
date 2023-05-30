@@ -17,9 +17,8 @@ from itertools import repeat
 from jedi.inference.base_value import NO_VALUES
 
 
-def apply_safe_optimizations():
+def apply():
     optimize_Value_methods()
-    optimize_Param_name()
     optimize_ImportFrom_get_defined_names()
     optimize_create_stub_map()
     optimize_StringComparisonMixin__eq__()
@@ -43,10 +42,19 @@ def apply_safe_optimizations():
     optimize_getmodulename()
     optimize_is_big_annoying_library()
     optimize_iter_module_names()
+    optimize_Context_methods()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
 
+
+def optimize_Context_methods():
+    from jedi.inference.context import ModuleContext, GlobalNameFilter
+
+    ModuleContext.py__file__ = _forwarder("_value.py__file__")
+    ModuleContext.get_global_filter = _unbound_method(GlobalNameFilter)
+    ModuleContext.string_names = _forwarder("_value.string_names")
+    ModuleContext.code_lines = _forwarder("_value.code_lines")
 
 # Optimizes various methods on Value that return a fixed value.
 # This makes them faster and debug stepping in Jedi more bearable.
@@ -70,21 +78,6 @@ def optimize_Value_methods():
 
     Value.is_stub = _forwarder("parent_context.is_stub")
     Value.py__getattribute__alternatives = rep_NO_VALUES
-
-
-def optimize_Param_name():
-    from parso.python.tree import Param
-
-    @property
-    def name(self):
-        n = self.children[0]
-        if n.type == "name":
-            return n
-        elif n.type == "tfpdef":
-            return n.children[0]
-        return self.children[1]
-
-    Param.name = name
 
 
 def optimize_ImportFrom_get_defined_names():

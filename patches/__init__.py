@@ -12,8 +12,10 @@ from .imports import fix_bpy_imports
 import bpy
 
 def apply():
-    from .optimizations.safe_optimizations import apply_safe_optimizations
-    apply_safe_optimizations()
+    from .optimizations import safe_optimizations, lookup
+
+    safe_optimizations.apply()
+    lookup.apply()
     _apply_optimizations()
     _apply_patches()
 
