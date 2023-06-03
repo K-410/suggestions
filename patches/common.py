@@ -44,7 +44,10 @@ class VirtualInstance(CompiledInstance):
         return NO_VALUES
 
     def py__simple_getitem__(self, index):
-        if self.getitem_type is not None:
+        # XXX: This seems to happen for CollectionProperties.
+        if not hasattr(self, "getitem_type"):
+            print("missing getitem_type for", self)
+        elif self.getitem_type is not None:
             return ValueSet((make_instance(self.getitem_type, self.parent_context),))
         return NO_VALUES
 

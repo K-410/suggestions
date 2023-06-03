@@ -11,11 +11,8 @@ from .imports import fix_bpy_imports
 
 import bpy
 
-def apply():
-    from .optimizations import safe_optimizations, lookup
 
-    safe_optimizations.apply()
-    lookup.apply()
+def apply():
     _apply_optimizations()
     _apply_patches()
 
@@ -50,9 +47,13 @@ def _apply_patches():
 
 
 def _apply_optimizations():
+    from .optimizations import safe_optimizations, lookup, defined_names
     pass
     from .optimizations import interpreter
     interpreter.apply()
+    lookup.apply()
+    safe_optimizations.apply()
+    defined_names.apply()
 
 
 import gpu

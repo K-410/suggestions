@@ -2,7 +2,7 @@
 
 from parso.python.tree import Module, Name, BaseNode, Leaf
 from collections import defaultdict
-from textension.utils import _patch_function
+from textension.utils import _patch_function, factory
 
 
 def apply():
@@ -11,26 +11,66 @@ def apply():
     Leaf.is_nonterminal = False
 
     optimize_name_get_definition()
-    optimize_Module_get_used_names()  # XXX: Requires prepare_optimizations and optimize_name_get_definition.
-    optimize_AbstractUsedNamesFilter_get_and_values()  # XXX Requires UsedNames and optimize_name_get_definition
+    optimize_Module_get_used_names()    # XXX: Needs name_get_definition.
+    optimize_AbstractUsedNamesFilter()  # XXX: Needs UsedNames and name_get_definition
     optimize_ParserTreeFilter_filter()
+    optimize_GlobalNameFilter()
 
+    optimize_get_parent_scope()
+
+
+# XXX: Required because we filter differently now.
+def optimize_GlobalNameFilter():
+    from jedi.inference.filters import GlobalNameFilter
+
+    from operator import attrgetter
+    from itertools import compress
+
+    get_parent_type = attrgetter("parent.type")
+    is_global_statement = "global_stmt".__eq__
+
+    from dev_utils import ncalls
+    def get(self: GlobalNameFilter, name):
+        try:
+            names = self._used_names[name]
+        except KeyError:
+            return []
+        return self._convert_names(self._filter(names))
+
+    def _filter(self: GlobalNameFilter, names):
+        raise Exception  # XXX: This should not be used. ``self.values()`` inlines this!
+        ret = []
+        for name in names:
+            if name.parent.type == 'global_stmt':
+                ret += [name]
+        return ret
+
+    def values(self: GlobalNameFilter):
+        parent_types = map(get_parent_type, self._used_names)  # ``name.parent.type``
+        selectors    = map(is_global_statement, parent_types)  # ... == "global_stmt"
+        global_names = compress(self._used_names, selectors)
+        # TODO: Inline self._convert_names and make functional?
+        return self._convert_names(global_names)
+
+    GlobalNameFilter.get = get
+    GlobalNameFilter.values = values
+    GlobalNameFilter._filter = _filter
 
 # Optimizes ParserTreeFilter._filter.
 # XXX: This is not a drop-in replacement. It only works in conjunction with lookup optimizations.
 # Names are cached on the filter.
 # The filter is cached on the node.
 def optimize_ParserTreeFilter_filter():
-    from jedi.inference.filters import ParserTreeFilter, flow_analysis
+    from jedi.inference.filters import flow_analysis, ParserTreeFilter
     from jedi.inference.flow_analysis import reachability_check
     from jedi.inference.gradual.stub_value import StubFilter
-    from jedi.parser_utils import get_parent_scope
     from itertools import compress, takewhile, repeat
-    from builtins import map, filter, sorted, hash, tuple
+    from builtins import map, sorted
     from operator import attrgetter
 
     get_start = attrgetter("start_pos")
     is_stubfilter = StubFilter.__instancecheck__
+
     not_unreachable = flow_analysis.UNREACHABLE.__ne__
     not_reachable = flow_analysis.REACHABLE.__ne__
 
@@ -82,17 +122,19 @@ def optimize_ParserTreeFilter_filter():
         for name in names:
 
             # XXX: This code assumes ``get_used_names`` called ``get_parent_scope`` on the name.
-            # if name.scope_cache[False] is scope:
-            #     tmp += [name]
-            #     continue
+            if name.scope_cache[False] is scope:
+                tmp += [name]
+                continue
 
             parent_type = name.parent.type
+
             if parent_type != "trailer":
-                base = name if parent_type not in {"classdef", "funcdef"} else name.parent
-                try:
-                    parent_scope = base.scope_cache[False]
-                except:
-                    parent_scope = get_parent_scope(base)
+                if parent_type in {"classdef", "funcdef"}:
+                    parent_scope = get_parent_scope_fast(name.parent)
+                else:
+                    # XXX: Names have their parent scope cached.
+                    parent_scope = name.scope_cache[False]
+
                 if parent_scope == scope:
                     tmp += [name]
                 continue
@@ -114,6 +156,87 @@ def optimize_ParserTreeFilter_filter():
         return []
 
     ParserTreeFilter._filter = _filter
+
+
+# NOTE: Requires NodeOrLeaf to not use __slots__, or have "scope" added to it.
+@factory
+def map_parent_scopes(node):
+    from jedi.parser_utils import get_parent_scope
+    from parso.python.tree import Flow, Keyword
+    from itertools import compress, count
+
+    flows  = {"for_stmt", "if_stmt", "try_stmt", "while_stmt", "with_stmt"}
+
+    scopes = {"classdef", "comp_for", "file_input", "funcdef",  "lambdef",
+              "sync_comp_for"}
+
+    any_scope = scopes | flows
+    is_keyword = Keyword.__instancecheck__
+    from dev_utils import measure_total, ncalls
+
+    def map_parent_scopes(node):
+        start  = node.start_pos
+        parent = node.parent
+        type   = parent.type
+
+        # Precompute this.
+        is_param = (type == 'tfpdef' and parent.children[0] == node) or \
+                   (type == 'param'  and parent.name == node)
+
+        flow  = None
+        scope = node
+        while scope := scope.parent:
+            t = scope.type
+
+            if t in any_scope:
+                if t in scopes:
+                    if t in {"classdef", "funcdef", "lambdef"}:
+                        if not is_param and scope.children[-2].start_pos >= start:
+                            continue
+
+                    elif t == "comp_for" and scope.children[1].type != "sync_comp_for":
+                        continue
+                    break
+
+                elif not flow:
+                    if t == "if_stmt":
+                        children = scope.children
+                        for index in compress(count(), map(is_keyword, children)):
+                            if children[index].value != "else":
+                                n = children[index + 1]
+                                if start >= n.start_pos and start < n.end_pos:
+                                    break
+                        else:
+                            flow = scope
+                        continue
+
+                    flow = scope
+
+        node.scope_cache = {False: scope,
+                            True:  flow or scope}
+        # assert node.scope_cache[False] == get_parent_scope(node, include_flows=False)
+        # assert node.scope_cache[True] == get_parent_scope(node, include_flows=True)
+        return scope
+
+    return map_parent_scopes
+
+
+def optimize_get_parent_scope():
+    from jedi.parser_utils import get_parent_scope
+    from .lookup import map_parent_scopes
+    from textension.utils import _copy_function
+
+    get_parent_scope_org = _copy_function(get_parent_scope)
+    
+    def get_cached_parent_scope(node, include_flows=False):
+        try:
+            return node.scope_cache[include_flows]
+        except AttributeError:
+            return get_parent_scope_org(node, include_flows)
+            # map_parent_scopes(node)
+            # return node.scope_cache[include_flows]
+
+    # _patch_function(get_parent_scope, get_cached_parent_scope)
 
 
 # TAG: get_parent_scope_fast
@@ -173,51 +296,56 @@ class Collection(list):
 
 # TODO: Implement a get(string) method. Seems jedi requires this for in some cases.
 # TAG:  UsedNames
-class UsedNames(defaultdict):
+class UsedNames(set):
     module: Module
 
-    def get(self, *args):
-        return ()
+    values = set.__iter__
+
+    def get(self, name, default=()):
+        from operator import attrgetter
+        from itertools import compress, repeat
+        get_value = attrgetter("value")
+        
+        selectors = map(name.__eq__, map(get_value, self))
+        return compress(self, selectors)
 
     def __init__(self, module):
-        super().__init__(Collection)
-        self.module = module
+        self.module = module         # The module.
 
-        # Update tagged nodes from the DiffParser.
-        self.module.updates = set()
+        self.module.updates = set()  # Updated nodes from the diff parser.
+        self.module.names   = self   # All names.
+        self.nodes = set()           # ``module.children``.
 
-        self.module.names = set()
-
-        # A set of nodes at module level.
-        self.nodes = set()
+    def __getitem__(self, _):
+        raise KeyError
 
     def update_module(self):
-        from builtins import map, set
+        from builtins import set, filter
         module = self.module
+        print("module", module)
 
-        all_names = module.names
-        old_nodes = set()
-        # old_nodes = self.nodes  # XXX: While debugging. This makes incremental updates no longer work.
-        new_nodes = self.nodes = set(module.children)
+        # from dev_utils import measure_total
+        # with measure_total:
 
-        remove_nodes = old_nodes - new_nodes
+        old = self.nodes
+        new = self.nodes = set(module.children)
 
-        for branch in remove_nodes:
-            all_names -= branch.names
+        # Module nodes updated by the diff parser.
+        # These already exist on the module.
+        updates = module.updates
 
-        new_nodes -= old_nodes
+        for branch in old - new:
+            self -= branch.names
 
-        new_nodes |= module.updates
-        module.updates.clear()
+        new -= old
 
         is_namenode = Name.__instancecheck__
         is_basenode = BaseNode.__instancecheck__  # Means node has children.
 
-
-        _get_definition = Name._get_definition
+        get_definition = Name.get_definition
         new_module_names = []
 
-        for branch in new_nodes - old_nodes:
+        for branch in new | updates:
 
             pool = [branch]
             branch_names = []
@@ -228,12 +356,9 @@ class UsedNames(defaultdict):
 
             # Process Name nodes in branch.
             for name in filter(is_namenode, pool):
-                name.definition = {(False, True): _get_definition(name, False, True)}
-                scope = get_parent_scope_fast(name)
+                name.definition = {(False, True): get_definition(name, False, True)}
 
-                name.scope_cache = {False: scope}
-
-                if scope is module:
+                if map_parent_scopes(name) is module:
                     new_module_names += [name]
 
                 branch_names += [name]
@@ -243,10 +368,16 @@ class UsedNames(defaultdict):
             # XXX: Does this really have to be a set? Where is branch.names looked up?
             branch.names = set(branch_names)
 
-        # TODO: Is this actually needed?
-        all_names |= set(new_module_names)
-        # TODO: Is this also actually needed? Shouldn't this be done on the scope map?
-        self.default_factory = None
+        updates.clear()
+        new_module_names = set(new_module_names)
+
+        # print(f"{str(module):<17} - Nodes {len(self | new_module_names):<5} ({len(new_module_names - self)} new)")
+        # if len(new_module_names - self) < 10:
+        #     for n in new_module_names - self:
+        #         print(n, sep=", ")
+        #     print()
+        self |= new_module_names
+        # print(", ".join(s.value for s in self))
         return self
 
 
@@ -275,7 +406,7 @@ def optimize_Module_get_used_names():
 # Optimizes _AbstractUsedNamesFilter.get, .values and ._convert_names.
 # Inlines ``filter._get_definition_names``
 # TAG: AbstractUsedNamesFilter
-def optimize_AbstractUsedNamesFilter_get_and_values():
+def optimize_AbstractUsedNamesFilter():
     # Requires ``Name._get_definition`` optimization.
 
     from jedi.inference.filters import _AbstractUsedNamesFilter
@@ -298,11 +429,12 @@ def optimize_AbstractUsedNamesFilter_get_and_values():
             break
 
         for n in names:
-            if n.value == name:
-                definition = get_definition(n, import_name_always=False, include_setitem=True)
-                n.definition = {(False, True): definition}
-                if definition is not None:
-                    ret += [n]
+            if n.value == name and n.definition[False, True]:
+                # XXX: Already called in module update.
+                # definition = get_definition(n, import_name_always=False, include_setitem=True)
+                # n.definition = {(False, True): definition}
+                # if definition is not None:
+                ret += [n]
         return self._convert_names(self._filter(ret))
 
     _AbstractUsedNamesFilter.get = get
@@ -318,9 +450,13 @@ def optimize_AbstractUsedNamesFilter_get_and_values():
                 node = get_parent_scope(node)
 
             ret = []
-            names = node.names
-            for name in names:
-                if name.get_definition(include_setitem=True):
+            # names = node.names
+            # XXX: UsedNames already maps the definition.
+            # ret += filter(attrgetter("definition"), node.names)
+            for name in node.names:
+                if name.definition[False, True]:
+            #     # assert hasattr(name, "definition")
+            #     if name.get_definition(include_setitem=True):
                     ret += [name]
             ret = list(self._filter(ret))
             ret = list(map(self.name_class, repeat(self.parent_context), ret))
@@ -329,13 +465,15 @@ def optimize_AbstractUsedNamesFilter_get_and_values():
     
     _AbstractUsedNamesFilter.values = values
 
-    def _convert_names(self, names):
+    def _convert_names(self: _AbstractUsedNamesFilter, names):
         # return map(self.name_class, repeat(self.parent_context), names)
         return list(map(self.name_class, repeat(self.parent_context), names))
 
     _AbstractUsedNamesFilter._convert_names = _convert_names
 
 
+# 7771    6.71     8.60  # XXX
+# 7754    6.35     7.99
 def optimize_name_get_definition():
     from parso.python.tree import Name, _GET_DEFINITION_TYPES, _IMPORTS
 
@@ -343,77 +481,112 @@ def optimize_name_get_definition():
     # # If the name is the ``e`` part of ``except Exception as e``, then the
     # # ancestor that defines the try-clause (``try_stmt``) is returned.
     index = list.index
+    from dev_utils import ncalls
 
-    # def _get_definition(self: Name, import_name_always=False, include_setitem=False):
-    #     p: BaseNode = self.parent
-
-    #     type = p.type
-    #     if type in {"funcdef", "classdef", "except_clause"}:
-
-    #         # ``funcdef`` or ``classdef``.
-    #         children = p.children
-    #         if self is children[1]:  # Same as ``self == parent.name``.
-    #             return p 
-
-    #         # self is ``e`` part of ``except X as e``.
-    #         elif type == "except_clause":
-    #             if children[index(children, self) - 1].value == "as":
-    #                 return p.parent  # The try_stmt.
-    #         return None
-
-    #     while p:
-    #         type = p.type
-    #         if type not in _GET_DEFINITION_TYPES:
-    #             p = p.parent
-    #             continue
-
-    #         elif self in p.get_defined_names(include_setitem):
-    #             return p
-    #         elif import_name_always and type in _IMPORTS:
-    #             return p
-    #         return None
-
-    def _get_definition(self: Name, import_name_always=False, include_setitem=False):
+    def get_definition(self: Name, import_name_always=False, include_setitem=False):
         p: BaseNode = self.parent
-
-        type       = p.type
-        definition = None
+        type = p.type
 
         if type in {"funcdef", "classdef", "except_clause"}:
 
             # ``funcdef`` or ``classdef``.
             children = p.children
             if self is children[1]:  # Same as ``self == parent.name``.
-                definition = p 
+                return p
 
             # self is ``e`` part of ``except X as e``.
-            elif type == "except_clause" and  children[index(children, self) - 1].value == "as":
-                definition = p.parent  # The try_stmt.
-        else:
-            while p:
-                type = p.type
-                if type not in _GET_DEFINITION_TYPES:
-                    p = p.parent
-                    continue
+            elif type == "except_clause":
+                if children[index(children, self) - 1].value == "as":
+                    return p.parent  # The try_stmt.
+            return None
 
-                elif self in p.get_defined_names(include_setitem) or import_name_always and type in _IMPORTS:
-                    definition = p
-                break
-        return definition
+        while p:
+            if p.type in _GET_DEFINITION_TYPES:
+                if self in p.get_defined_names(include_setitem) or \
+                        import_name_always and p.type in _IMPORTS:
+                    return p
+                return None
+            p = p.parent
+
+    def get_definition2(self: Name, import_name_always=False, include_setitem=False):
+        p: BaseNode = self.parent
+
+        type = p.type
+        if type in {"funcdef", "classdef", "except_clause"}:
+
+            # ``funcdef`` or ``classdef``.
+            children = p.children
+            if self is children[1]:  # Same as ``self == parent.name``.
+                return p
+
+            # self is ``e`` part of ``except X as e``.
+            elif type == "except_clause":
+                if children[index(children, self) - 1].value == "as":
+                    return p.parent  # The try_stmt.
+            return None
+
+        while p:
+            if p.type in _GET_DEFINITION_TYPES:
+
+                for n in p.get_defined_names(include_setitem):
+                    if n.value == self.value:
+                        if p.children[1] != n:
+                            pass
+                        assert p.children[1] == n
+                        return n
+                if import_name_always and p.type in _IMPORTS:
+                    return p
+
+                # ret = list(p.get_defined_names(include_setitem))
+                # if self in ret or \
+                #         import_name_always and p.type in _IMPORTS:
+                    # return p
+                return None
+            p = p.parent
+
+    # def _get_definition(self: Name, import_name_always=False, include_setitem=False):
+    #     with measure_total:
+    #         p: BaseNode = self.parent
+
+    #         type       = p.type
+    #         definition = None
+
+    #         if type in {"funcdef", "classdef", "except_clause"}:
+
+    #             # ``funcdef`` or ``classdef``.
+    #             children = p.children
+    #             if self is children[1]:  # Same as ``self == parent.name``.
+    #                 definition = p 
+
+    #             # self is ``e`` part of ``except X as e``.
+    #             elif type == "except_clause" and  children[index(children, self) - 1].value == "as":
+    #                 definition = p.parent  # The try_stmt.
+    #         else:
+    #             while p:
+    #                 type = p.type
+    #                 if type not in _GET_DEFINITION_TYPES:
+    #                     p = p.parent
+    #                     continue
+
+    #                 elif self in p.get_defined_names(include_setitem) or import_name_always and type in _IMPORTS:
+    #                     definition = p
+    #                 break
+    #         return definition
 
     # XXX: Requires __slots__ removed on BaseNode and ``definition`` to exist on the node.
-    def get_definition(self: Name, import_name_always=False, include_setitem=False):
-        args = import_name_always, include_setitem
-        try:
-            # Try directly. Definition is mainly done in module_update.
-            return self.definition[args]
-        except:
-            definition = self.definition = getattr(self, "definition", {})
+    # def get_definition(self: Name, import_name_always=False, include_setitem=False):
+    #     args = import_name_always, include_setitem
+    #     try:
+    #         # Try directly. Definition is mainly done in module_update.
+    #         return self.definition[args]
+    #     except:
+    #         definition = self.definition = getattr(self, "definition", {})
 
-        ret = definition[args] = orig_get_definition(self, *args)
-        return ret
+    #     ret = definition[args] = orig_get_definition(self, *args)
+    #     return ret
 
-    orig_get_definition  = Name.get_definition
+    # orig_get_definition  = Name.get_definition
 
     Name.get_definition  = get_definition
-    Name._get_definition = _get_definition
+    # Name.get_definition2 = get_definition2
+    # Name._get_definition = _get_definition

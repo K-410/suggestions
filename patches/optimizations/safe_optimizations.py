@@ -34,7 +34,7 @@ def apply():
     optimize_static_getmro()
     optimize_AbstractTreeName_properties()
     optimize_BaseName_properties()
-    optimize_complete_global_scope()
+    optimize_complete_global_scope()  # XXX: Can we enabled this again?
     optimize_Leaf()
     optimize_split_lines()
     optimize_Param_get_defined_names()
@@ -43,9 +43,20 @@ def apply():
     optimize_is_big_annoying_library()
     optimize_iter_module_names()
     optimize_Context_methods()
+    optimize_builtins_lifetime()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
+
+
+def optimize_builtins_lifetime():
+    from jedi.inference import InferenceState
+    from jedi.inference.imports import import_module_by_names
+
+    from ..tools import state
+
+    InferenceState.builtins_module, = import_module_by_names(
+        state, ("builtins",), prefer_stubs=True)
 
 
 def optimize_Context_methods():
@@ -145,14 +156,13 @@ def optimize_create_stub_map():
     _patch_function(_create_stub_map, _create_stub_map_p)
 
 
-# Optimizes _StringComparisonMixin to use faster checks.
+# Optimizes _StringComparisonMixin to use a 2x faster check.
 def optimize_StringComparisonMixin__eq__():
     from parso.python.tree import _StringComparisonMixin
-
-    is_str = str.__instancecheck__
+    from builtins import str
 
     def __eq__(self, other):
-        if is_str(other):
+        if other.__class__ is str:
             return self.value == other
         return self is other
 
@@ -213,8 +223,6 @@ def optimize_Compiled_methods():
     CompiledValue.py__doc__   = _forwarder("access_handle.py__doc__")
     CompiledValue.py__name__  = _forwarder("access_handle.py__name__")
 
-    CompiledValue.api_type    = _unbound_attrcaller("access_handle.get_api_type")
-    CompiledValue.array_type  = _unbound_attrcaller("access_handle.get_array_type")
     CompiledValue._as_context = _unbound_method(CompiledContext)
 
     CompiledValue.get_metaclasses = rep_NO_VALUES
@@ -223,18 +231,11 @@ def optimize_Compiled_methods():
     CompiledModule.py__path__  = _forwarder("access_handle.py__path__")
     CompiledModule.py__file__  = _forwarder("access_handle.py__file__")
 
-    CompiledName.inferred_value  = _unbound_attrcaller("infer_compiled_value")
-    CompiledName.py__doc__ = _forwarder("inferred_value.py__doc__")
-    CompiledName.api_type  = _forwarder("inferred_value.api_type")
-
 
 # Optimizes CompiledName initializer to omit calling parent_value.as_context()
 # and instead make it on-demand.
 def optimize_CompiledName():
     from jedi.inference.compiled.value import CompiledName
-
-    # self.parent_context >>> self._parent_value.as_context()
-    CompiledName.parent_context = _unbound_attrcaller("_parent_value.as_context")
 
     def __init__(self, inference_state, parent_value, name):
         self._inference_state = inference_state
@@ -343,13 +344,13 @@ def optimize_complete_global_scope():
     get_values = methodcaller("values")
     from_iterable = chain.from_iterable
 
-    def _complete_global_scope(self):
+    def _complete_global_scope(self: Completion):
         context = get_user_context(self._module_context, self._position)
         flow_scope_node = get_flow_scope_node(self._module_node, self._position)
         filters = get_global_filters(context, self._position, flow_scope_node)
         return from_iterable(map(get_values, filters))
 
-    Completion._complete_global_scope = _complete_global_scope
+    # Completion._complete_global_scope = _complete_global_scope
 
 
 # Optimizes Leaf to use builtin descriptor for faster access.
