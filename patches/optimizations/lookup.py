@@ -109,10 +109,13 @@ def optimize_ParserTreeFilter_filter():
                     continue
             yield name
 
+    from dev_utils import ncalls
+    from jedi.inference.value.klass import ClassFilter
+
     def _filter(self: ParserTreeFilter, names):
         # This inlines AbstractFilter._filter.
         if end := self._until_position:
-            names = list(compress(names, map(end.__gt__, map(get_start, names))))
+            names = compress(names, map(end.__gt__, map(get_start, names)))
 
         # The scope which ``names`` is tested for reachability.
         scope = self._parser_scope
@@ -130,9 +133,8 @@ def optimize_ParserTreeFilter_filter():
 
             if parent_type != "trailer":
                 if parent_type in {"classdef", "funcdef"}:
-                    parent_scope = get_parent_scope_fast(name.parent)
+                    parent_scope = name.parent.scope_cache[False]
                 else:
-                    # XXX: Names have their parent scope cached.
                     parent_scope = name.scope_cache[False]
 
                 if parent_scope == scope:
@@ -161,8 +163,7 @@ def optimize_ParserTreeFilter_filter():
 # NOTE: Requires NodeOrLeaf to not use __slots__, or have "scope" added to it.
 @factory
 def map_parent_scopes(node):
-    from jedi.parser_utils import get_parent_scope
-    from parso.python.tree import Flow, Keyword
+    from parso.python.tree import Keyword
     from itertools import compress, count
 
     flows  = {"for_stmt", "if_stmt", "try_stmt", "while_stmt", "with_stmt"}
@@ -172,19 +173,18 @@ def map_parent_scopes(node):
 
     any_scope = scopes | flows
     is_keyword = Keyword.__instancecheck__
-    from dev_utils import measure_total, ncalls
 
     def map_parent_scopes(node):
         start  = node.start_pos
         parent = node.parent
         type   = parent.type
 
-        # Precompute this.
         is_param = (type == 'tfpdef' and parent.children[0] == node) or \
                    (type == 'param'  and parent.name == node)
 
         flow  = None
         scope = node
+
         while scope := scope.parent:
             t = scope.type
 
@@ -193,7 +193,6 @@ def map_parent_scopes(node):
                     if t in {"classdef", "funcdef", "lambdef"}:
                         if not is_param and scope.children[-2].start_pos >= start:
                             continue
-
                     elif t == "comp_for" and scope.children[1].type != "sync_comp_for":
                         continue
                     break
@@ -262,36 +261,36 @@ def get_parent_scope_fast(node):
     return scope
 
 
-class Collection(list):
-    cached_data = {}
+# class Collection(list):
+#     cached_data = {}
 
-    # XXX: What is this for? Do we need this?
-    def __getattr__(self, __name):
-        if __name == "value":
-            value = self[0].value
-            setattr(self, "value", value)
-            return value
-        raise AttributeError
+#     # XXX: What is this for? Do we need this?
+#     def __getattr__(self, __name):
+#         if __name == "value":
+#             value = self[0].value
+#             setattr(self, "value", value)
+#             return value
+#         raise AttributeError
    
-    # XXX: What is this for? Do we need this?
-    def get_cached(self, filter_func):
-        cached_data = self.cached_data
-        comp = tuple(self)
+#     # XXX: What is this for? Do we need this?
+#     def get_cached(self, filter_func):
+#         cached_data = self.cached_data
+#         comp = tuple(self)
  
-        value = self.value
-        try:
-            prev_comp, dct = cached_data[value]
-        except:
-            dct = {}
-            cached_data[value] = comp, dct
-        else:
-            if prev_comp == comp:
-                try:
-                    return dct[filter_func]
-                except:
-                    pass
-        ret = dct[filter_func] = filter_func(self)
-        return ret
+#         value = self.value
+#         try:
+#             prev_comp, dct = cached_data[value]
+#         except:
+#             dct = {}
+#             cached_data[value] = comp, dct
+#         else:
+#             if prev_comp == comp:
+#                 try:
+#                     return dct[filter_func]
+#                 except:
+#                     pass
+#         ret = dct[filter_func] = filter_func(self)
+#         return ret
 
 
 # TODO: Implement a get(string) method. Seems jedi requires this for in some cases.
@@ -302,82 +301,50 @@ class UsedNames(set):
     values = set.__iter__
 
     def get(self, name, default=()):
-        from operator import attrgetter
-        from itertools import compress, repeat
-        get_value = attrgetter("value")
-        
-        selectors = map(name.__eq__, map(get_value, self))
-        return compress(self, selectors)
+        try:
+            return self.module.definitions[name]
+        except:
+            return default
 
     def __init__(self, module):
         self.module = module         # The module.
 
         self.module.updates = set()  # Updated nodes from the diff parser.
-        self.module.names   = self   # All names.
         self.nodes = set()           # ``module.children``.
+        self.module.definitions = defaultdict(set)
+        self.module.scope_cache = {False: None, True: None}
 
     def __getitem__(self, _):
         raise KeyError
 
     def update_module(self):
         from builtins import set, filter
-        module = self.module
-        print("module", module)
 
-        # from dev_utils import measure_total
-        # with measure_total:
+        module   = self.module
+        updates  = module.updates
+        current  = set(module.children)
 
-        old = self.nodes
-        new = self.nodes = set(module.children)
-
-        # Module nodes updated by the diff parser.
-        # These already exist on the module.
-        updates = module.updates
-
-        for branch in old - new:
-            self -= branch.names
-
-        new -= old
-
-        is_namenode = Name.__instancecheck__
         is_basenode = BaseNode.__instancecheck__  # Means node has children.
+        is_namenode = Name.__instancecheck__
 
-        get_definition = Name.get_definition
-        new_module_names = []
+        definitions = module.definitions
 
-        for branch in new | updates:
-
+        for branch in current - self.nodes | updates:
             pool = [branch]
-            branch_names = []
 
             # Process branch nodes.
             for node in filter(is_basenode, pool):
+                map_parent_scopes(node)
                 pool += node.children
 
             # Process Name nodes in branch.
             for name in filter(is_namenode, pool):
-                name.definition = {(False, True): get_definition(name, False, True)}
-
-                if map_parent_scopes(name) is module:
-                    new_module_names += [name]
-
-                branch_names += [name]
-
-            # The module and its direct decendants store their children in
-            # sets to speed up ParserTreeFilter.filter by using exclusion sets.
-            # XXX: Does this really have to be a set? Where is branch.names looked up?
-            branch.names = set(branch_names)
+                map_parent_scopes(name)
+                if name.is_definition():
+                    definitions[name.value] |= {name}
 
         updates.clear()
-        new_module_names = set(new_module_names)
-
-        # print(f"{str(module):<17} - Nodes {len(self | new_module_names):<5} ({len(new_module_names - self)} new)")
-        # if len(new_module_names - self) < 10:
-        #     for n in new_module_names - self:
-        #         print(n, sep=", ")
-        #     print()
-        self |= new_module_names
-        # print(", ".join(s.value for s in self))
+        self.nodes = current
         return self
 
 
@@ -390,9 +357,9 @@ def optimize_Module_get_used_names():
     lookup_cache = {}
 
     def get_used_names(self: Module):
-        # print(self, id(self))
         if (used_names := self._used_names) is not None:
             return used_names
+
         if self in lookup_cache:
             self._used_names = used_names = lookup_cache[self]
         else:
@@ -407,81 +374,74 @@ def optimize_Module_get_used_names():
 # Inlines ``filter._get_definition_names``
 # TAG: AbstractUsedNamesFilter
 def optimize_AbstractUsedNamesFilter():
-    # Requires ``Name._get_definition`` optimization.
-
     from jedi.inference.filters import _AbstractUsedNamesFilter
-    from jedi.parser_utils import get_parent_scope
-    from parso.python.tree import Name
-    from itertools import repeat
+    from jedi.inference.value.klass import ClassFilter
+    from itertools import repeat, chain
 
-    # Same as Name.get_definition, but without trying the cache.
-    get_definition = Name.get_definition
+    is_basenode = BaseNode.__instancecheck__  # Means node has children.
+    is_namenode = Name.__instancecheck__
 
-    def get(self: _AbstractUsedNamesFilter, name):
-        node = self._node_context.tree_node
-
-        ret = []
-
-        while not (names := getattr(node, "names", ())):
-            # print(f"Node '{node}' has no attribute 'names'. Asked for: {name}")
-            if node := node.parent:
-                continue
-            break
-
-        for n in names:
-            if n.value == name and n.definition[False, True]:
-                # XXX: Already called in module update.
-                # definition = get_definition(n, import_name_always=False, include_setitem=True)
-                # n.definition = {(False, True): definition}
-                # if definition is not None:
-                ret += [n]
-        return self._convert_names(self._filter(ret))
-
-    _AbstractUsedNamesFilter.get = get
+    from dev_utils import ncalls
+    values_orig = ClassFilter.values
 
     def values(self: _AbstractUsedNamesFilter):
-        try:
-            return self.cached_values
-        except:
-            # TODO: Defined names should be cached on the tree node.
-            node = self._node_context.tree_node
 
-            while not hasattr(node, "names"):
-                node = get_parent_scope(node)
+        # XXX: Only deal with ClassFilter for now.
+        if isinstance(self, ClassFilter):
+            definitions = self._parser_scope.get_root_node().definitions
 
-            ret = []
-            # names = node.names
-            # XXX: UsedNames already maps the definition.
-            # ret += filter(attrgetter("definition"), node.names)
-            for name in node.names:
-                if name.definition[False, True]:
-            #     # assert hasattr(name, "definition")
-            #     if name.get_definition(include_setitem=True):
-                    ret += [name]
-            ret = list(self._filter(ret))
-            ret = list(map(self.name_class, repeat(self.parent_context), ret))
-            self.cached_values = ret
-        return self.cached_values
+            names = []
+            pool = self._parser_scope.children[-1].children[:]
+            for node in iter(pool):
+                if is_basenode(node):
+                    if node.type == "funcdef":
+                        names += [node.children[1]]  # The method name.
+                        continue
+                    pool += node.children
+                elif is_namenode(node):
+                    if node in definitions[node.value]:
+                        names += [node]
+
+            ret = self._filter(names)
+            return map(self.name_class, repeat(self.parent_context), ret)
+
+
+
+
+            # pool = self._parser_scope.children[-1].children
+
+            # for node in filter(is_basenode, pool):
+            #     pool += node.children
+
+            # names = []
+            
+            # for name in filter(is_namenode, pool):
+            #     if name in definitions[name.value]:
+            #         names += [name]
+
+            # names = chain.from_iterable(definitions.values())
+
+
+            ret = self._filter(names)
+            return map(self.name_class, repeat(self.parent_context), ret)
+        print("not a ClassFilter:", type(self))
+        definitions = self._parser_scope.get_root_node().definitions
+        names = chain.from_iterable(definitions.values())
+        ret = self._filter(names)
+        return map(self.name_class, repeat(self.parent_context), ret)
+        return values_orig(self)
     
     _AbstractUsedNamesFilter.values = values
 
     def _convert_names(self: _AbstractUsedNamesFilter, names):
-        # return map(self.name_class, repeat(self.parent_context), names)
-        return list(map(self.name_class, repeat(self.parent_context), names))
+        return map(self.name_class, repeat(self.parent_context), names)
 
     _AbstractUsedNamesFilter._convert_names = _convert_names
 
 
-# 7771    6.71     8.60  # XXX
-# 7754    6.35     7.99
 def optimize_name_get_definition():
     from parso.python.tree import Name, _GET_DEFINITION_TYPES, _IMPORTS
-
-    # # This function takes a Name and returns the ancestor that defines it.
-    # # If the name is the ``e`` part of ``except Exception as e``, then the
-    # # ancestor that defines the try-clause (``try_stmt``) is returned.
     index = list.index
-    from dev_utils import ncalls
 
     def get_definition(self: Name, import_name_always=False, include_setitem=False):
         p: BaseNode = self.parent
@@ -508,85 +468,4 @@ def optimize_name_get_definition():
                 return None
             p = p.parent
 
-    def get_definition2(self: Name, import_name_always=False, include_setitem=False):
-        p: BaseNode = self.parent
-
-        type = p.type
-        if type in {"funcdef", "classdef", "except_clause"}:
-
-            # ``funcdef`` or ``classdef``.
-            children = p.children
-            if self is children[1]:  # Same as ``self == parent.name``.
-                return p
-
-            # self is ``e`` part of ``except X as e``.
-            elif type == "except_clause":
-                if children[index(children, self) - 1].value == "as":
-                    return p.parent  # The try_stmt.
-            return None
-
-        while p:
-            if p.type in _GET_DEFINITION_TYPES:
-
-                for n in p.get_defined_names(include_setitem):
-                    if n.value == self.value:
-                        if p.children[1] != n:
-                            pass
-                        assert p.children[1] == n
-                        return n
-                if import_name_always and p.type in _IMPORTS:
-                    return p
-
-                # ret = list(p.get_defined_names(include_setitem))
-                # if self in ret or \
-                #         import_name_always and p.type in _IMPORTS:
-                    # return p
-                return None
-            p = p.parent
-
-    # def _get_definition(self: Name, import_name_always=False, include_setitem=False):
-    #     with measure_total:
-    #         p: BaseNode = self.parent
-
-    #         type       = p.type
-    #         definition = None
-
-    #         if type in {"funcdef", "classdef", "except_clause"}:
-
-    #             # ``funcdef`` or ``classdef``.
-    #             children = p.children
-    #             if self is children[1]:  # Same as ``self == parent.name``.
-    #                 definition = p 
-
-    #             # self is ``e`` part of ``except X as e``.
-    #             elif type == "except_clause" and  children[index(children, self) - 1].value == "as":
-    #                 definition = p.parent  # The try_stmt.
-    #         else:
-    #             while p:
-    #                 type = p.type
-    #                 if type not in _GET_DEFINITION_TYPES:
-    #                     p = p.parent
-    #                     continue
-
-    #                 elif self in p.get_defined_names(include_setitem) or import_name_always and type in _IMPORTS:
-    #                     definition = p
-    #                 break
-    #         return definition
-
-    # XXX: Requires __slots__ removed on BaseNode and ``definition`` to exist on the node.
-    # def get_definition(self: Name, import_name_always=False, include_setitem=False):
-    #     args = import_name_always, include_setitem
-    #     try:
-    #         # Try directly. Definition is mainly done in module_update.
-    #         return self.definition[args]
-    #     except:
-    #         definition = self.definition = getattr(self, "definition", {})
-
-    #     ret = definition[args] = orig_get_definition(self, *args)
-    #     return ret
-
-    # orig_get_definition  = Name.get_definition
-
     Name.get_definition  = get_definition
-    # Name.get_definition2 = get_definition2
-    # Name._get_definition = _get_definition
