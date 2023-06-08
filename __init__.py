@@ -20,8 +20,6 @@ separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
 
 BLF_BOLD = 1 << 11  # ``blf.enable(0, BLF_BOLD)`` adds bold effect.
 
-runtime = namespace(active_text=None, active_instance=None)
-
 
 class SuggestionsEntry(ListEntry):
     @property
@@ -271,7 +269,7 @@ def on_insert() -> None:
     """Hook for TEXTENSION_OT_insert"""
     line, col = _context.edit_text.cursor.focus
     if _context.edit_text.lines[line].body[col - 1] not in separators and on_insert.last_format != b"#":
-        bpy.ops.textension.suggestions_complete('INVOKE_DEFAULT')
+        deferred_complete()
     else:
         dismiss()
 
@@ -286,7 +284,14 @@ def on_delete() -> None:
         instance = get_instance()
         instance.sync_cursor()
         if instance.poll() and on_delete.last_format != b"#":  # If visible, run completions again.
+            deferred_complete()
+
+
+def deferred_complete():
+    def wrapper(ctx=_context.copy()):
+        with _context.temp_override(**ctx):
             bpy.ops.textension.suggestions_complete('INVOKE_DEFAULT')
+    utils.defer(wrapper)
 
 
 def get_interpreter(text):
@@ -297,23 +302,6 @@ def get_interpreter(text):
     return Interpreter(text.as_string(), [])
 
 
-def complete():
-    instance = runtime.active_instance
-    text = runtime.active_text
-
-    line, col = text.cursor.focus
-    interp = get_interpreter(text)
-
-    ret = interp.complete(line + 1, col)
-    bpy.ret = ret  # For introspection
-    instance.lines = list(map(SuggestionsEntry, ret))
-
-    # TODO: Weak.
-    instance.is_visible = bool(instance.lines)
-    safe_redraw()
-    ui.idle_update()
-
-
 class TEXTENSION_OT_suggestions_complete(TextOperator):
     km_def("Text Generic", 'SPACE', 'PRESS', ctrl=1)
 
@@ -322,14 +310,27 @@ class TEXTENSION_OT_suggestions_complete(TextOperator):
     def invoke(self, context, event):
         instance = get_instance()
         instance.sync_cursor()
-        runtime.active_instance = instance
 
-        runtime.active_text = context.edit_text
+        text = context.edit_text
+        line, col = text.cursor.focus
+        interp = get_interpreter(text)
 
-        # This is needed because the operator catches exceptions when jedi
-        # throws it, making debugging useless in many cases.
-        utils.defer(complete, delay=0.01)
-        return {'FINISHED'}
+        try:
+            ret = interp.complete(line + 1, col)
+        except BaseException as e:
+            import traceback
+            traceback.print_exc()
+            raise e from None
+        else:
+            bpy.ret = ret  # For introspection
+            instance.lines = list(map(SuggestionsEntry, ret))
+
+            # TODO: Weak.
+            instance.is_visible = bool(instance.lines)
+            safe_redraw()
+            ui.idle_update()
+        finally:
+            return {'FINISHED'}
 
 
 _instances: tuple[Suggestions] = get_instance.__kwdefaults__["cache"].values()
@@ -724,7 +725,7 @@ from textension.btypes.defs import OPERATOR_CANCELLED
 
 class TEXT_OT_autocomplete(OpOverride):
     def invoke(self):
-        bpy.ops.textension.suggestions_complete('INVOKE_DEFAULT')
+        deferred_complete()
         return OPERATOR_CANCELLED
 
 
