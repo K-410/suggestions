@@ -1,7 +1,6 @@
 # This adds fixes for jedi to outright work.
 
-
-from textension.utils import _patch_function, _copy_function
+from textension.utils import _patch_function, _copy_function, _forwarder
 from .tools import state, _descriptor_overrides, _value_overrides, \
     _get_unbound_super_method
 
@@ -11,6 +10,8 @@ from .imports import fix_bpy_imports
 
 import bpy
 
+from .optimizations import safe_optimizations, lookup, defined_names, used_names
+from .optimizations import interpreter, context, stubs, class_values, completions
 
 def apply():
     _apply_optimizations()
@@ -18,8 +19,6 @@ def apply():
 
 
 def _apply_patches():
-    # patch_hide_shit_for_debugging()  # XXX: For debuggin
-
     fix_bpy_imports()
     apply_mathutils_overrides()
 
@@ -40,20 +39,21 @@ def _apply_patches():
     # patch_SelfAttributeFilter_filter_self_names()  # XXX: Clean this up.
     patch_paths_from_list_modifications()
 
-    # from .resolvers import init_lookups
-    # init_lookups()
-
     patch_create_cached_compiled_value()
+    patch_various_redirects()
+    patch_SequenceLiteralValue()
 
 
 def _apply_optimizations():
-    from .optimizations import safe_optimizations, lookup, defined_names
-    pass
-    from .optimizations import interpreter
     interpreter.apply()
     lookup.apply()
     safe_optimizations.apply()
     defined_names.apply()
+    # context.apply()
+    stubs.apply()
+    class_values.apply()
+    completions.apply()
+    used_names.apply()
 
 
 import gpu
@@ -63,20 +63,93 @@ _fallbacks = {
 }
 
 
-# Fixes stack overflow of NameWrapper.__getattr__ during debugging.
 def patch_NameWrapper_getattr():
     from jedi.inference.names import NameWrapper
 
-    _getattribute = object.__getattribute__
-    del NameWrapper.__getattr__
+    # del NameWrapper.__getattr__
 
-    def __getattribute__(self, name):
-        try:
-            return _getattribute(self, name)
-        except AttributeError:
-            return getattr(_getattribute(self, "_wrapped_name"), name)
-        
-    NameWrapper.__getattribute__ = __getattribute__
+    NameWrapper.public_name = _forwarder("_wrapped_name.public_name")
+    NameWrapper.get_public_name = _forwarder("_wrapped_name.get_public_name")
+    NameWrapper.string_name = _forwarder("_wrapped_name.string_name")
+    NameWrapper.parent_context = _forwarder("_wrapped_name.parent_context")
+    # NameWrapper.tree_name = _forwarder("_wrapped_name.tree_name")
+
+
+def patch_SequenceLiteralValue():
+    from jedi.inference.value.iterable import SequenceLiteralValue
+    from jedi.inference.gradual.base import GenericClass, _LazyGenericBaseClass
+    from textension.utils import falsy_noargs, truthy_noargs
+    from jedi.cache import memoize_method
+
+    @memoize_method
+    def py__bases__(self: GenericClass):
+        ret = []
+        bases = list(self._wrapped_value.py__bases__())
+        for base in bases:
+            add = _LazyGenericBaseClass(self, base, self._generics_manager)
+            ret += [add]
+        return ret
+
+    GenericClass.py__bases__ = py__bases__
+
+    from jedi.inference.gradual.typing import TypedDict
+    from jedi.inference.base_value import ValueSet
+    from jedi.inference.value import TreeInstance
+
+    @memoize_method
+    def py__call__(self: GenericClass, arguments):
+        if self.is_typeddict():
+            return ValueSet([TypedDict(self)])
+        return ValueSet([TreeInstance(self.inference_state, self.parent_context, self, arguments)])
+
+    GenericClass.py__call__ = py__call__
+
+
+# Removes calls to __getattr__ for dynamic forwarding. This is an effort to
+# eliminate most stack overflows during debugging.
+def patch_various_redirects():
+
+    from jedi.inference.value.iterable import SequenceLiteralValue
+    SequenceLiteralValue.parent_context = _forwarder("_wrapped_value.parent_context")
+    SequenceLiteralValue.py__class__    = _forwarder("_wrapped_value.py__class__")
+    SequenceLiteralValue._arguments     = _forwarder("_wrapped_value._arguments")
+    SequenceLiteralValue.is_module      = _forwarder("_wrapped_value.is_module")
+    SequenceLiteralValue.is_stub        = _forwarder("_wrapped_value.is_stub")
+    SequenceLiteralValue.is_instance    = _forwarder("_wrapped_value.is_instance")
+
+    from jedi.inference.gradual.base import GenericClass
+    GenericClass.parent_context      = _forwarder("_wrapped_value.parent_context")
+    GenericClass.inference_state     = _forwarder("_wrapped_value.inference_state")
+    GenericClass.get_metaclasses     = _forwarder("_wrapped_value.get_metaclasses")
+    GenericClass.is_bound_method     = _forwarder("_wrapped_value.is_bound_method")
+    GenericClass.get_qualified_names = _forwarder("_wrapped_value.get_qualified_names")
+    GenericClass.tree_node           = _forwarder("_wrapped_value.tree_node")
+    GenericClass.is_compiled         = _forwarder("_wrapped_value.is_compiled")
+    GenericClass.list_type_vars      = _forwarder("_wrapped_value.list_type_vars")
+    GenericClass.is_stub             = _forwarder("_wrapped_value.is_stub")
+    GenericClass.is_instance         = _forwarder("_wrapped_value.is_instance")
+    
+    from jedi.inference.gradual.type_var import TypeVar, TypeVarClass
+    TypeVar.get_safe_value = _forwarder("_wrapped_value.get_safe_value")
+    TypeVar.is_compiled    = _forwarder("_wrapped_value.is_compiled")
+    TypeVarClass.inference_state = _forwarder("_wrapped_value.inference_state")
+    TypeVarClass.parent_context  = _forwarder("_wrapped_value.parent_context")
+    TypeVarClass.is_bound_method = _forwarder("_wrapped_value.is_bound_method")
+    TypeVarClass.is_instance     = _forwarder("_wrapped_value.is_instance")
+    TypeVarClass.tree_node       = _forwarder("_wrapped_value.tree_node")
+
+    from jedi.inference.gradual.stub_value import VersionInfo
+    VersionInfo.get_safe_value = _forwarder("_wrapped_value.get_safe_value")
+    VersionInfo.is_compiled    = _forwarder("_wrapped_value.is_compiled")
+
+    from jedi.inference.gradual.typing import TypingClassWithGenerics
+    TypingClassWithGenerics.is_compiled = _forwarder("_wrapped_value.is_compiled")
+    TypingClassWithGenerics.tree_node   = _forwarder("_wrapped_value.tree_node")
+    TypingClassWithGenerics.is_stub     = _forwarder("_wrapped_value.is_stub")
+    TypingClassWithGenerics.is_instance = _forwarder("_wrapped_value.is_instance")
+
+    from jedi.inference.compiled import ExactValue
+    ExactValue.py__class__ = _forwarder("_wrapped_value.py__class__")
 
 
 # Fixes jedi erroneously yielding wrong inherited methods.
@@ -111,34 +184,17 @@ def patch_Completion_complete_inherited():
     Completion._complete_inherited = _complete_inherited
 
 
-def patch_hide_shit_for_debugging():
-    from dev_utils import hide
-
-    from parso.python.tree import _StringComparisonMixin
-    from jedi.inference.base_value import ValueSet
-    from jedi.debug import dbg, increase_indent_cm
-    from textension.utils import _forwarder
-
-    hide(_StringComparisonMixin.__eq__)
-    hide(dbg)
-    # hide(ValueSet.py__getattribute__)
-    # hide(ValueSet.from_sets)
-    # hide(ValueSet._from_frozen_set)
-    hide(increase_indent_cm)
-    del ValueSet.__bool__
-    ValueSet.__len__ = _forwarder("_set.__len__")
-    ValueSet.__iter__ = _forwarder("_set.__iter__")
-
-
 # Fallback for py__getattribute__.
 def patch_Value_py__getattribute__alternatives():
-    from jedi.inference.base_value import Value, NO_VALUES, ValueSet
-    from jedi.inference.compiled.value import CompiledValue
     from jedi.inference.value.instance import CompiledInstance
+    from jedi.inference.compiled.value import CompiledValue
+    from jedi.inference.base_value import Value, NO_VALUES, ValueSet
+
     from .tools import make_compiled_value
 
     def py__getattribute__alternatives(self: Value, name_or_str):
         if obj := _fallbacks.get(name_or_str):
+            print("got gpu fallback")
             return ValueSet((make_compiled_value(obj, self.as_context()),))
         
         elif isinstance(self, CompiledInstance):
@@ -148,9 +204,9 @@ def patch_Value_py__getattribute__alternatives():
                     return make_compiled_value(ret, value.as_context()).py__call__(None)
                 else:
                     print("missing descriptor", self, name_or_str)
+
         elif isinstance(self, CompiledValue):
             obj = self.access_handle.access._obj
-
             try:
                 if obj in _descriptor_overrides:
                     descriptor = getattr(obj, name_or_str)
@@ -158,7 +214,7 @@ def patch_Value_py__getattribute__alternatives():
             except TypeError:
                 pass
 
-        print("no fallbacks found for", repr(name_or_str))
+        # print("no fallbacks found for", repr(name_or_str))
         return NO_VALUES
     
     Value.py__getattribute__alternatives = py__getattribute__alternatives
@@ -170,27 +226,22 @@ def patch_Value_py__getattribute__alternatives():
 # an exception and prevents further completions in the source from working.
 def patch_paths_from_list_modifications():
     from jedi.inference.sys_path import _paths_from_list_modifications
-
     def _safe_wrapper(*args, **kw):
-        # Materialize now so this generator can blow up at the call site.
         try:
+            # Materialize this generator can blow up at the call site.
             return list(orig_fn(*args, **kw))
 
-        # We don't care about the exception.
-        except:
+        except BaseException:  # We don't care about the exception.
             return ()
-
-    orig_fn = _copy_function(_paths_from_list_modifications)
-    _patch_function(_paths_from_list_modifications, _safe_wrapper)
+    orig_fn = _patch_function(_paths_from_list_modifications, _safe_wrapper)
 
 
 # Patches filter_self_names to detect bpy.props properties.
 # TODO: This needs a LOT of cleanup.
 def patch_SelfAttributeFilter_filter_self_names():
     from jedi.inference.value.instance import SelfAttributeFilter
-    
-    from jedi.inference.syntax_tree import infer_node
     from jedi.inference.compiled.value import CompiledValue
+    from jedi.inference.syntax_tree import infer_node
     from .resolvers import PropResolver
 
     def _filter_self_names(self, names):
@@ -261,8 +312,8 @@ def patch_SelfAttributeFilter_filter_self_names():
     SelfAttributeFilter._filter_self_names = _filter_self_names
 
 
-# Patch ``_is_pytest_func`` to return False. Otherwise we can't define a 
-# function called ``test`` without jedi thinking it's somehow pytest related.
+# Patch ``_is_pytest_func`` to return False. Otherwise we can't have a
+# compiled called ``test`` without jedi thinking it's somehow pytest related.
 def patch_is_pytest_func():
     from jedi.plugins.pytest import _is_pytest_func
     _patch_function(_is_pytest_func, lambda *_: False)
@@ -307,34 +358,20 @@ def patch_is_pytest_func():
 # gpu, mathutils, etc. Names are obtained from compiled modules using safety
 # principles similar to how Jedi does things in getattr_static.
 def patch_import_resolutions():
-    from jedi.inference.imports import Importer, import_module as org_import_module
-    from jedi.inference.compiled.access import create_access
     from jedi.inference.compiled.value import CompiledModule
-    from jedi.inference.names import SubModuleName
     from jedi.inference.base_value import ValueSet
+    from jedi.inference.imports import Importer, import_module
 
-    from .tools import _filter_modules, get_handle
     from .common import Importer_redirects
-
-    from importlib.util import find_spec
-    from importlib import import_module
-    from itertools import repeat
-    from types import ModuleType
-
-    from sys import modules
-    from os.path import dirname
-    from os import listdir
-    import _bpy
-
-    org_follow = Importer.follow
+    from .tools import get_handle
+    import importlib
 
     def follow(self: Importer):
         if module := Importer_redirects.get(".".join(self._str_import_path)):
             return ValueSet((module,))
-        ret = org_follow(self)
-        return ret
+        return follow_orig(self)
 
-    Importer.follow = follow
+    follow_orig = _patch_function(Importer.follow, follow)
 
     # Overrides import completion names.
     def completion_names(self, inference_state, only_modules=False):
@@ -347,76 +384,17 @@ def patch_import_resolutions():
 
     # Required for builtin module import fallback when Jedi fails.
     def import_module_override(state, name, parent_module, sys_path, prefer_stubs):
-        ret = org_import_module(state, name, parent_module, sys_path, prefer_stubs)
+        ret = import_module(state, name, parent_module, sys_path, prefer_stubs)
         if not ret:
             try:
-                module = import_module(".".join(name))
-                access_handle = create_access(state, module)
+                module = importlib.import_module(".".join(name))
+                access_handle = get_handle(module)
                 ret = ValueSet((CompiledModule(state, access_handle),))
             except ImportError:
                 pass
         return ret
 
-    org_import_module = _patch_function(org_import_module, import_module_override)
-
-    module_getattr = ModuleType.__getattribute__
-    module_dict = ModuleType.__dict__["__dict__"].__get__
-    module_dir = ModuleType.__dir__
-
-    # SubModuleNames for CompiledModules are fetched once, then kept in cache.
-    sub_modules_cache = {}
-
-    # These don't have sub modules. Skip them.
-    excludes = {"builtins", "typing"}
-
-    # For all other compiled modules.
-    def get_submodule_names(self: CompiledModule, only_modules=True):
-        if self in sub_modules_cache:
-            return sub_modules_cache[self]
-
-        result = []
-        name = self.py__name__()
-
-        if name not in excludes:
-            m = self.access_handle.access._obj
-            assert isinstance(m, ModuleType)
-            exports = set()
-
-            # It's possible we're passing non-module objects.
-            if isinstance(m, ModuleType):
-                exports.update(module_dir(m) + list(module_dict(m)))
-
-                # ``__all__`` could be anything.
-                try:
-                    exports.update(module_getattr(m, "__all__"))
-                except:
-                    pass
-
-            else:
-                exports.update(object.__dir__(m))
-
-            # If the module is a file, find sub modules.
-            for path in module_getattr(m, "__path__", ()):
-                exports.update(_filter_modules(listdir(path)))
-
-            names = []
-            for e in filter(str.__instancecheck__, exports):
-
-                # Skip double-underscored names.
-                if e[:2] == "__" == e[-2:]:
-                    continue
-
-                if only_modules:
-                    full_name = f"{name}.{e}"
-                    if full_name not in modules:
-                        try:
-                            assert find_spec(full_name)
-                        except (ValueError, AssertionError, ModuleNotFoundError):
-                            continue
-                names += [e]
-
-            result = list(map(SubModuleName, repeat(self.as_context()), names))
-        return sub_modules_cache.setdefault(self, result)
+    import_module = _patch_function(import_module, import_module_override)
 
 
 # Fixes imports by redirecting them to virtual modules, because:
@@ -436,8 +414,7 @@ def patch_Importer_follow():
             return ValueSet((module,))
         return follow_orig(self)
 
-    follow_orig = Importer.follow
-    Importer.follow = follow
+    follow_orig = _patch_function(Importer.follow, follow)
 
 
 # Fixes completion for "import _bpy" and other file-less modules which
@@ -656,28 +633,28 @@ def patch_compiledvalue():
 
 
 
-    org_py__getattribute__ = CompiledInstance.py__getattribute__
-    def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
-        ret = org_py__getattribute__(self, name_or_str, name_context=name_context,
-                                     position=position, analysis_errors=analysis_errors)
-        # print(yellow("py_getattr"), name_or_str, yellow("on"), self)
-        if ret:
-            v, *_ = ret
-            if not v.is_instance():
-                obj = v.access_handle.access._obj
-                if obj in attr_lookup:
-                    # print("creating instance")
-                    obj = attr_lookup[obj]
-                    ret = make_instance(self, obj)
-                    # print("now", ret)
-                    ret = ValueSet([ret])
-                # else:
-                #     print("not instance, not in lookup")
-            # print("  found:", ret)
-        # else:
-        #     print("  nothing")
-        return ret
-    CompiledInstance.py__getattribute__ = py__getattribute__
+    # org_py__getattribute__ = CompiledInstance.py__getattribute__
+    # def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
+    #     ret = org_py__getattribute__(self, name_or_str, name_context=name_context,
+    #                                  position=position, analysis_errors=analysis_errors)
+    #     # print(yellow("py_getattr"), name_or_str, yellow("on"), self)
+    #     if ret:
+    #         v, *_ = ret
+    #         if not v.is_instance():
+    #             obj = v.access_handle.access._obj
+    #             if obj in attr_lookup:
+    #                 # print("creating instance")
+    #                 obj = attr_lookup[obj]
+    #                 ret = make_instance(self, obj)
+    #                 # print("now", ret)
+    #                 ret = ValueSet([ret])
+    #             # else:
+    #             #     print("not instance, not in lookup")
+    #         # print("  found:", ret)
+    #     # else:
+    #     #     print("  nothing")
+    #     return ret
+    # CompiledInstance.py__getattribute__ = py__getattribute__
 
 
 # XXX: This loads stub modules on startup.
@@ -780,7 +757,9 @@ def patch_StubFilter():
                     if isinstance(module, ModuleType):
                         ret = [k for k in get_dict(module) if is_str(k)]
             else:
-                ret = (n.string_name for v in values for n in next(v.get_filters()).values())
+                for v in values:
+                    for name in  next(v.get_filters()).values():
+                        ret += [name.string_name]
             return value in private_names_lookup_cache.setdefault(self, set(ret))
 
         return True
