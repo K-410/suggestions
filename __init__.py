@@ -20,6 +20,8 @@ separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
 
 BLF_BOLD = 1 << 11  # ``blf.enable(0, BLF_BOLD)`` adds bold effect.
 
+runtime = namespace(active_text=None, active_instance=None)
+
 
 class SuggestionsEntry(ListEntry):
     @property
@@ -287,12 +289,29 @@ def on_delete() -> None:
             bpy.ops.textension.suggestions_complete('INVOKE_DEFAULT')
 
 
-def get_interpreter():
+def get_interpreter(text):
     from .patches.optimizations.interpreter import Interpreter
-    return Interpreter(_context.edit_text.as_string(), [])
+    return Interpreter(text.as_string(), [])
 
     from jedi.api import Interpreter
-    return Interpreter(_context.edit_text.as_string(), [])
+    return Interpreter(text.as_string(), [])
+
+
+def complete():
+    instance = runtime.active_instance
+    text = runtime.active_text
+
+    line, col = text.cursor.focus
+    interp = get_interpreter(text)
+
+    ret = interp.complete(line + 1, col)
+    bpy.ret = ret  # For introspection
+    instance.lines = list(map(SuggestionsEntry, ret))
+
+    # TODO: Weak.
+    instance.is_visible = bool(instance.lines)
+    safe_redraw()
+    ui.idle_update()
 
 
 class TEXTENSION_OT_suggestions_complete(TextOperator):
@@ -300,29 +319,16 @@ class TEXTENSION_OT_suggestions_complete(TextOperator):
 
     poll = utils.text_poll
 
-    def execute(self, context):
-        text = context.edit_text
-        line, col = text.cursor.focus
-
+    def invoke(self, context, event):
         instance = get_instance()
         instance.sync_cursor()
+        runtime.active_instance = instance
 
-        interp = get_interpreter()
+        runtime.active_text = context.edit_text
 
-        ret = interp.complete(line + 1, col)
-        bpy.ret = ret  # For introspection
-        instance.lines = list(map(SuggestionsEntry, ret))
-
-        # TODO: Weak.
-        instance.is_visible = bool(instance.lines)
-        safe_redraw()
-        ui.idle_update()
-        return {'CANCELLED'}
-
-    def invoke(self, context, event):
-        # Defer completion to the idle pass to make it appear.
-        override = dict(_context.copy(), space_data=_context.space_data)
-        utils.defer(bpy.ops.textension.suggestions_complete, override)
+        # This is needed because the operator catches exceptions when jedi
+        # throws it, making debugging useless in many cases.
+        utils.defer(complete, delay=0.01)
         return {'FINISHED'}
 
 

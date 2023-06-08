@@ -198,10 +198,11 @@ class BpyTextBlockIO(KnownContentFileIO, FileIOFolderMixin):
     read = PyInstanceMethod_New(attrgetter("_content"))
 
     def __init__(self, content: list[str]):
+        from .. import runtime
         try:
             # We can't pass the text to the initializer because we want to
             # make a compatible interface.
-            self.path = Path("/".join((bpy.data.filepath, _context.edit_text.name)))
+            self.path = Path("/".join((bpy.data.filepath, runtime.active_text.name)))
         except AttributeError:
             self.path = None
         
