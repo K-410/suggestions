@@ -1,20 +1,37 @@
-# This module implements various utilities
+# This module implements various utilities for Suggestions.
 
-import functools
+from jedi.inference.compiled.value import CompiledValue, CompiledValueName, create_cached_compiled_value
+from jedi.inference.value.instance import CompiledInstance, ValueSet
+import jedi.api as api
+
+from parso.python.tree import Name
+from parso.grammar import load_grammar
+from parso.tree import BaseNode
+
+from textension.utils import factory, namespace, inline, _check_type
+import textension
+
+import os
 import collections
-
-from textension.utils import factory, namespace
-from types import FunctionType
 from typing import Any
 
 
-from jedi.inference.compiled.value import CompiledValue, CompiledValueFilter, CompiledName, CompiledContext, SignatureParamName, CompiledValueName, create_cached_compiled_value
-from jedi.inference.value.instance import CompiledInstance, ValueSet, NO_VALUES, CompiledBoundMethod
+# Jedi's own module cache is broken. It stores empty value sets.
+class StateModuleCache(dict):
+    __getitem__ = None  # Don't allow subscript. Jedi doesn't use it.
 
+    def add(self, string_names: tuple[str], value_set):
+        # These checks are for when jedi is being a dummy
+        # and caches something that should not be cached.
+        _check_type(string_names, tuple)
+        _check_type(value_set, ValueSet)
 
-import jedi.api as api
-import textension
-import os
+        assert string_names, "Empty tuple"
+        assert value_set, "Empty ValueSet"
+
+        all(_check_type(s, str) for s in string_names)
+
+        self[string_names] = value_set
 
 
 # The inference state is made persistent, simplifying direct object access
@@ -29,10 +46,10 @@ project     = api.Project(os.path.dirname(textension.__file__))
 environment = api.InterpreterEnvironment()
 state       = api.InferenceState(project, environment, None)
 
-from parso.grammar import load_grammar
 state.grammar = state.latest_grammar = load_grammar()
+state.module_cache = StateModuleCache()
 
-api.InferenceState.__new__ = lambda *args, **kw: state
+api.InferenceState.__new__  = lambda *args, **kw: state
 api.InferenceState.__init__ = object.__init__
 
 state.analysis = collections.deque(maxlen=25)
@@ -51,9 +68,43 @@ _rtype_overrides = {}
 _value_overrides = {}
 
 
+@inline
+def is_basenode(node) -> bool:
+    return BaseNode.__instancecheck__
+
+
+@inline
+def is_namenode(node) -> bool:
+    return Name.__instancecheck__
+
+
+@inline
+def starchain(it):
+    from itertools import chain
+    return chain.from_iterable
+
+@inline
+def dict_items(d: dict):
+    return dict.items
+
+
 @factory
 def get_handle(obj: Any):
     return state.compiled_subprocess.get_or_create_access_handle
+
+
+def make_default_cache(default) -> dict:
+    """Usage:
+
+    @default_cache
+    def fallback(self, key):
+        result = do_something(key)
+        self[key] = result
+        return result
+    """
+    class cache(dict):
+        __missing__ = default
+    return cache
 
 
 @factory
