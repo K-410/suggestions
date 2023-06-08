@@ -21,10 +21,16 @@ from ._mathutils import float_vector_map
 import bpy
 import _bpy
 
+import types
 
-from types import GetSetDescriptorType, MemberDescriptorType, BuiltinFunctionType, FunctionType, MethodDescriptorType
-callable_types = GetSetDescriptorType, MemberDescriptorType, BuiltinFunctionType, FunctionType, MethodDescriptorType
 
+callable_types = (
+    types.GetSetDescriptorType,
+    types.MemberDescriptorType,
+    types.BuiltinFunctionType,
+    types.FunctionType,
+    types.MethodDescriptorType
+)
 
 context_rna_pointer = _context.as_pointer()
 _void = object()
