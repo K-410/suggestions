@@ -1,16 +1,16 @@
 # This module implements classes extending Jedi's inference capability.
+
 from jedi.inference.compiled.value import (CompiledValue, CompiledValueFilter,
     CompiledValueName, CompiledModule)
 from jedi.inference.value.instance import CompiledInstance
-from jedi.inference.context import CompiledContext, CompiledModuleContext
+from jedi.inference.context import CompiledContext
 from jedi.cache import memoize_method
 from jedi.inference.base_value import NO_VALUES, ValueSet
 from jedi.inference.lazy_value import LazyKnownValues
 
-from textension.utils import PyInstanceMethod_New, _forwarder, _context
+from textension.utils import PyInstanceMethod_New, _forwarder, _context, falsy_noargs, truthy_noargs
 from .tools import get_handle, make_instance, state, factory, _filter_modules
 from pathlib import Path
-from typing import Optional
 from types import ModuleType
 from operator import attrgetter
 
@@ -25,8 +25,8 @@ CompiledModule_redirects = {}
 
 
 class VirtualInstance(CompiledInstance):
-    is_stub      = False.__bool__
-    is_instance  = True.__bool__
+    is_stub      = falsy_noargs
+    is_instance  = falsy_noargs
 
     inference_state = state
     parent_context  = _forwarder("class_value.parent_context")
@@ -86,15 +86,15 @@ class VirtualFilter(CompiledValueFilter):
 
 
 class VirtualValue(CompiledValue):
-    is_compiled  = True.__bool__
-    is_class     = True.__bool__
+    is_compiled  = truthy_noargs
+    is_class     = truthy_noargs
 
-    is_namespace = False.__bool__
-    is_instance  = False.__bool__
-    is_module    = False.__bool__
-    is_stub      = False.__bool__
+    is_namespace = falsy_noargs
+    is_instance  = falsy_noargs
+    is_module    = falsy_noargs
+    is_stub      = falsy_noargs
 
-    is_builtins_module = False.__bool__
+    is_builtins_module = falsy_noargs
     as_context   = PyInstanceMethod_New(CompiledContext)
     obj          = _forwarder("access_handle.access._obj")
 
