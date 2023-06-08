@@ -86,7 +86,7 @@ def optimize_ValueContext_methods():
     ValueContext.py__name__ = _forwarder("_value.py__name__")
 
     ValueContext.get_qualified_names = _forwarder("_value.get_qualified_names")
-    ValueContext.get_value = _unbound_method(attrgetter("_value"))
+    ValueContext.get_value = _unbound_getter("_value")
 
     def __init__(self: ValueContext, value):
         self.predefined_names = {}

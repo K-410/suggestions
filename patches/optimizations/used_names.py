@@ -24,11 +24,11 @@ def optimize_Module_get_used_names():
     _NodesTreeNode.finish = finish
 
 
-def module_node_cache(self: dict, module):
+def node_cache_fallback(self: dict, module):
     return self.setdefault(module, NamesCache(module))
 
 
-NodeCache  = make_default_cache()
+NodeCache  = make_default_cache(node_cache_fallback)
 node_cache = NodeCache()
 
 
