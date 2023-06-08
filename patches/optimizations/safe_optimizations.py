@@ -44,9 +44,131 @@ def apply():
     optimize_iter_module_names()
     optimize_Context_methods()
     optimize_builtins_lifetime()
+    optimize_TreeInstance_get_annotated_class_object()
+    optimize_CompiledIntance_init()
+    optimize_Completion_init()
+
+    optimize_Node_methods()
+    optimize_ValueContext_methods()
+    optimize_ValueSet_methods()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
+
+
+def optimize_ValueSet_methods():
+    from jedi.inference.base_value import ValueSet
+    ValueSet.__iter__ = _forwarder("_set.__iter__")
+    del ValueSet.__bool__
+    ValueSet.__len__ = _forwarder("_set.__len__")
+    ValueSet.__eq__ = _forwarder("_set.__eq__")
+    ValueSet.__ne__ = _forwarder("_set.__ne__")
+    ValueSet.__hash__ = _forwarder("_set.__hash__")
+
+
+def optimize_ValueContext_methods():
+    from jedi.inference.context import ValueContext
+    from ..tools import state
+
+    ValueContext.inference_state = state
+
+    ValueContext.name = _forwarder("_value.name")
+    ValueContext.parent_context = _forwarder("_value.parent_context")
+    ValueContext.tree_node = _forwarder("_value.tree_node")
+
+    ValueContext.is_bound_method = _forwarder("_value.is_bound_method")
+    ValueContext.is_class = _forwarder("_value.is_class")
+    ValueContext.is_compiled = _forwarder("_value.is_compiled")
+    ValueContext.is_instance = _forwarder("_value.is_instance")
+    ValueContext.is_module = _forwarder("_value.is_module")
+    ValueContext.is_stub = _forwarder("_value.is_stub")
+    ValueContext.py__doc__ = _forwarder("_value.py__doc__")
+    ValueContext.py__name__ = _forwarder("_value.py__name__")
+
+    ValueContext.get_qualified_names = _forwarder("_value.get_qualified_names")
+    ValueContext.get_value = _unbound_method(attrgetter("_value"))
+
+    def __init__(self: ValueContext, value):
+        self.predefined_names = {}
+        self._value = value
+
+    ValueContext.__init__ = __init__
+
+
+def optimize_Node_methods():
+    from parso.tree import NodeOrLeaf
+
+    from operator import indexOf
+    from ..tools import is_basenode
+
+    def get_previous_leaf(self: NodeOrLeaf):
+        try:
+            while (i := indexOf(c := self.parent.children, self)) is 0:
+                self = self.parent
+        except AttributeError:
+            return None
+
+        self = c[i - 1]
+
+        while is_basenode(self):
+            self = self.children[-1]
+        return self
+
+    NodeOrLeaf.get_previous_leaf = get_previous_leaf
+
+
+# This just inlines the nested super().__init__ calls.
+def optimize_CompiledIntance_init():
+    from jedi.inference.value.instance import CompiledInstance
+
+    def __init__(self: CompiledInstance,
+                 inference_state,
+                 parent_context,
+                 class_value,
+                 arguments):
+        self.inference_state = inference_state
+        self.parent_context  = parent_context
+        self.class_value = class_value
+        self._arguments  = arguments
+
+    CompiledInstance.__init__ = __init__
+
+
+def optimize_Completion_init():
+    from jedi.api.classes import Completion
+    from jedi.api.keywords import KeywordName
+
+    is_keyword_name = KeywordName.__instancecheck__
+
+    def __init__(self: Completion,
+                 inference_state,
+                 name,
+                 stack,
+                 like_name_length,
+                 is_fuzzy,
+                 cached_name=None):
+
+        self._inference_state = inference_state
+        self._name = name
+        self.is_keyword = is_keyword_name(self._name)
+
+        self._like_name_length = like_name_length
+        self._stack = stack
+        self._is_fuzzy = is_fuzzy
+        self._cached_name = cached_name
+
+    Completion.__init__ = __init__
+
+
+# Optimizes TreeInstance to never call _get_annotated_class_object.
+def optimize_TreeInstance_get_annotated_class_object():
+    from jedi.inference.value.instance import TreeInstance
+
+    def get_annotated_class_object(self: TreeInstance):
+        return self.class_value
+    
+    TreeInstance.get_annotated_class_object = _unbound_method(attrgetter("class_value"))
+    TreeInstance.get_annotated_class_object = get_annotated_class_object
 
 
 def optimize_builtins_lifetime():
