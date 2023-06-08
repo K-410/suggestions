@@ -1,11 +1,12 @@
 # This adds optimizations for the Interpreter.
 
-from jedi.api.interpreter import MixedModuleContext
-from jedi.api import Script, Completion
+from jedi.inference.context import GlobalNameFilter
+from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
 
+from jedi.api import Script, Completion
 from jedi.inference.value.module import ModuleValue
 from jedi.inference import InferenceState
-
+from jedi.inference.filters import MergedFilter
 from ..tools import ensure_blank_eol, state
 from ..common import BpyTextBlockIO
 
@@ -14,9 +15,6 @@ from operator import attrgetter
 from typing import TypeVar
 
 Unused = TypeVar("Unused")
-
-
-import bpy
 
 
 def apply():
@@ -31,7 +29,7 @@ class BpyTextModuleValue(ModuleValue):
     __init__ = object.__init__
 
     _is_package = False
-    is_package  = False.__bool__
+    is_package  = bool
 
     # Overrides py__file__ to return the relative path instead of the
     # absolute one. On unix this doesn't matter. On Windows it erroneously
@@ -43,6 +41,8 @@ class BpyTextModuleValue(ModuleValue):
 class BpyTextModuleContext(MixedModuleContext):
     inference_state = state
     mixed_values = ()  # For mixed namespaces. Unused.
+
+    is_stub = bool
 
     def __init__(self):
         self._value = BpyTextModuleValue()
@@ -57,6 +57,20 @@ class BpyTextModuleContext(MixedModuleContext):
         value.string_names = ("__main__",)
         value.code_lines = interp._code_lines
         value._path = value.file_io.path
+        self.filters = None
+
+    def get_filters(self, until_position=None, origin_scope=None):
+        if not self.filters:
+            # Main module filter.
+            tree_filter = MixedParserTreeFilter(self, None, until_position, origin_scope)
+            # Names of type ``global_stmt``. XXX: Incredibly inefficient.
+            global_filter = GlobalNameFilter(self)
+            self.filters = [MergedFilter(tree_filter, global_filter)]
+
+        return self.filters
+
+    def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
+        return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
 
 
 class Interpreter(Script):
