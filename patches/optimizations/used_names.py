@@ -10,7 +10,7 @@ from parso.python.diff import (_get_next_leaf_if_indentation,
                                 _PositionUpdatingFinished,
                                 _NodesTreeNode)
 
-from ..tools import is_basenode, is_namenode, dict_items, starchain, make_default_cache, inline
+from ..tools import is_basenode, is_namenode, dict_items, starchain, make_default_cache
 
 get_direct_node = attrgetter("tree_node.parent")
 
