@@ -11,7 +11,7 @@ from .imports import fix_bpy_imports
 import bpy
 
 from .optimizations import safe_optimizations, lookup, defined_names, used_names
-from .optimizations import interpreter, context, stubs, class_values, completions
+from .optimizations import interpreter, context, stubs, class_values, completions, flow_analysis
 
 def apply():
     _apply_optimizations()
@@ -54,6 +54,7 @@ def _apply_optimizations():
     class_values.apply()
     completions.apply()
     used_names.apply()
+    flow_analysis.apply()
 
 
 import gpu
