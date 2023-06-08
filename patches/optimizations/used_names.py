@@ -65,6 +65,8 @@ class NamesCache(dict):
         result = defaultdict(list)
         for name, names in starchain(self.values):
             result[name] += names
+
+        result.default_factory = None
         return result
 
 
