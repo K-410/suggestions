@@ -1,10 +1,12 @@
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter
-from jedi.inference.value.module import ModuleMixin, DictFilter
+from jedi.inference.value.module import DictFilter
+
+from textension.utils import make_default_cache
 
 
 class CachedStubFilter(StubFilter):
-    def __init__(self, *args, **kw):
-        super().__init__(*args, **kw)
+    def __init__(self, parent_context):
+        super().__init__(parent_context=parent_context)
         self.cache = {}
 
     def get(self, name):
@@ -14,24 +16,19 @@ class CachedStubFilter(StubFilter):
             return self.cache.setdefault(name, list(super().get(name)))
 
 
-class FilterCache(dict):
-    def __missing__(self, key):
-        module, origin_scope = key
+def on_missing_stub_filter(self: dict, module: StubModuleValue):
+    context = StubModuleContext(module)
 
-        main = CachedStubFilter(parent_context=module.as_context(),
-                                origin_scope=origin_scope)
-
-        self[key] = filters = [
-            main,
-           *module.iter_star_filters(),
-            DictFilter(module.sub_modules_dict()),
-            DictFilter(module._module_attributes_dict())
-        ]
-        return filters
+    self[module] = filters = [
+        CachedStubFilter(context),
+        *module.iter_star_filters(),
+        DictFilter(module.sub_modules_dict()),
+        DictFilter(module._module_attributes_dict())
+    ]
+    return filters
 
 
-# A cache of persistent stub filters.
-cache = FilterCache()
+stub_filter_cache = make_default_cache(on_missing_stub_filter)()
 
 
 def apply():
@@ -41,7 +38,7 @@ def apply():
 def optimize_StubModules():
 
     def get_filters(self: StubModuleValue, origin_scope=None):
-        yield from cache[self, origin_scope]
+        yield from stub_filter_cache[self]
 
     StubModuleValue.get_filters = get_filters
 
