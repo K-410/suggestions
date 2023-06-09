@@ -32,12 +32,8 @@ gpu_descriptor_data = (
 )
 
 
-def _apply_mathutils_overrides():
-    for obj, rtype in gpu_rtype_data:
-        _value_overrides[obj] = _rtype_override
-        _rtype_overrides[obj] = rtype
+def apply():
+    from .. import tools
 
-    for descriptor, rtype in gpu_descriptor_data:
-        obj = descriptor.__objclass__
-        _value_overrides[obj] = _descriptor_override
-        _descriptor_overrides[obj][descriptor.__name__] = rtype
+    tools._add_rtype_overrides(gpu_rtype_data)
+    tools._add_descriptor_overrides(gpu_descriptor_data)

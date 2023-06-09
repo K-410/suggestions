@@ -76,7 +76,7 @@ euler_descriptor_data = (
 
 
 
-def apply_mathutils_overrides():
+def apply():
     # Add swizzle descriptor overrides.
     for i in (2, 3, 4):
         swizzles = map("".join, product("xyzw", repeat=i))

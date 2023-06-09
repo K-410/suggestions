@@ -295,7 +295,7 @@ def deferred_complete():
 
 
 def get_interpreter(text):
-    from .patches.optimizations.interpreter import Interpreter
+    from .patches.opgroup.interpreter import Interpreter
     return Interpreter(text.as_string(), [])
 
     from jedi.api import Interpreter

@@ -1,17 +1,11 @@
 # This adds fixes for jedi to outright work.
 
-from textension.utils import _patch_function, _copy_function, _forwarder
+from textension.utils import _patch_function, _forwarder
 from .tools import state, _descriptor_overrides, _value_overrides, \
     _get_unbound_super_method
 
-from .modules._bpy_types import get_rna_value, patch_AnonymousParamName_infer
-from .modules._mathutils import apply_mathutils_overrides
-from .imports import fix_bpy_imports
-
 import bpy
 
-from .optimizations import safe_optimizations, lookup, defined_names, used_names
-from .optimizations import interpreter, context, stubs, class_values, completions, flow_analysis
 
 def apply():
     _apply_optimizations()
@@ -19,8 +13,11 @@ def apply():
 
 
 def _apply_patches():
-    fix_bpy_imports()
-    apply_mathutils_overrides()
+    from . import modules
+    modules._bpy_types.apply()
+    modules._mathutils.apply()
+    modules._gpu.apply()
+    modules._bpy.apply()
 
     patch_NameWrapper_getattr()
     patch_Completion_complete_inherited()
@@ -28,7 +25,6 @@ def _apply_patches():
     patch_fakelist_array_type()
     patch_import_resolutions()
     # patch_Importer_follow()
-    patch_AnonymousParamName_infer()
     patch_get_builtin_module_names()
     patch_compiledvalue()  # XXX: Not having this means tuple[X] isn't subscriptable.
     # patch_ClassMixin()  # XXX: This loads stub modules on startup.
@@ -45,16 +41,17 @@ def _apply_patches():
 
 
 def _apply_optimizations():
-    interpreter.apply()
-    lookup.apply()
-    safe_optimizations.apply()
-    defined_names.apply()
-    # context.apply()
-    stubs.apply()
-    class_values.apply()
-    completions.apply()
-    used_names.apply()
-    flow_analysis.apply()
+    from . import opgroup
+    opgroup.interpreter.apply()
+    opgroup.lookup.apply()
+    opgroup.safe_optimizations.apply()
+    opgroup.defined_names.apply()
+    # optimizations.context.apply()
+    opgroup.stubs.apply()
+    opgroup.class_values.apply()
+    opgroup.completions.apply()
+    opgroup.used_names.apply()
+    opgroup.flow_analysis.apply()
 
 
 import gpu
@@ -778,6 +775,7 @@ def patch_create_cached_compiled_value():
                                                create_cached_compiled_value,
                                                _normalize_create_args)
     from bpy_types import RNAMeta, StructRNA
+    from .modules._bpy_types import get_rna_value
 
     is_compiled_value = CompiledValue.__instancecheck__
     bpy_types = (RNAMeta, StructRNA, bpy.props._PropertyDeferred)

@@ -24,6 +24,10 @@ import _bpy
 import types
 
 
+def apply():
+    patch_AnonymousParamName_infer()
+
+
 callable_types = (
     types.GetSetDescriptorType,
     types.MemberDescriptorType,
