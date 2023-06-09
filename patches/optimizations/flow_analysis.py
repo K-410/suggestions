@@ -77,7 +77,7 @@ class LazyCache(set):
 
 def optimize_reachability_check():
     from jedi.inference.flow_analysis import reachability_check
-    from .flow_analysis import iter_flows
+    from .flow_analysis import iter_flows, LazyCache
     
     def reachability_check_new(context, value_scope, node, origin_scope=None):
         first_flow_scope = node_flow_scopes = None
