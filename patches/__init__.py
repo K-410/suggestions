@@ -39,6 +39,7 @@ def _apply_patches():
     patch_various_redirects()
     patch_SequenceLiteralValue()
     patch_load_from_file_system()
+    patch_complete_dict()
 
 
 def _apply_optimizations():
@@ -819,3 +820,15 @@ def patch_create_cached_compiled_value():
         return value
 
     _patch_function(create_cached_compiled_value, create_cached_compiled_value_p)
+
+
+# Patch strings.complete_dict because of a possible AttributeError.
+def patch_complete_dict():
+    from jedi.api.strings import complete_dict
+    def safe_wrapper(*args, **kw):
+        try:
+            return complete_dict(*args, **kw)
+        # ``before_bracket_leaf`` can be None, but Jedi doesn't test this.
+        except AttributeError:
+            return []
+    complete_dict = _patch_function(complete_dict, safe_wrapper)
