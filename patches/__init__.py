@@ -38,6 +38,7 @@ def _apply_patches():
     patch_create_cached_compiled_value()
     patch_various_redirects()
     patch_SequenceLiteralValue()
+    patch_load_from_file_system()
 
 
 def _apply_optimizations():
@@ -54,11 +55,17 @@ def _apply_optimizations():
     opgroup.flow_analysis.apply()
 
 
-import gpu
+# Fix unpickling errors jedi doesn't catch.
+def patch_load_from_file_system():
+    from parso.cache import _load_from_file_system
 
-_fallbacks = {
-    "GPUShader": gpu.types.GPUShader
-}
+    def safe_wrapper(*args, **kw):
+        try:
+            return _load_from_file_system(*args, **kw)
+        except ModuleNotFoundError:
+            return None  # Return None so jedi can re-save it.
+        
+    _load_from_file_system = _patch_function(_load_from_file_system, safe_wrapper)
 
 
 def patch_NameWrapper_getattr():
@@ -191,11 +198,7 @@ def patch_Value_py__getattribute__alternatives():
     from .tools import make_compiled_value
 
     def py__getattribute__alternatives(self: Value, name_or_str):
-        if obj := _fallbacks.get(name_or_str):
-            print("got gpu fallback")
-            return ValueSet((make_compiled_value(obj, self.as_context()),))
-        
-        elif isinstance(self, CompiledInstance):
+        if isinstance(self, CompiledInstance):
             value = self.class_value
             if desc_map := _descriptor_overrides.get(self.class_value.access_handle.access._obj):
                 if ret := desc_map.get(name_or_str):
