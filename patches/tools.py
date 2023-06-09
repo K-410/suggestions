@@ -93,20 +93,6 @@ def get_handle(obj: Any):
     return state.compiled_subprocess.get_or_create_access_handle
 
 
-def make_default_cache(default) -> dict:
-    """Usage:
-
-    @default_cache
-    def fallback(self, key):
-        result = do_something(key)
-        self[key] = result
-        return result
-    """
-    class cache(dict):
-        __missing__ = default
-    return cache
-
-
 @factory
 def _filter_modules():
     from importlib.machinery import all_suffixes
