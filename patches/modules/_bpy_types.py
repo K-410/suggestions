@@ -321,7 +321,7 @@ class RnaValue(VirtualValue):
         return doc
 
     def py__name__(self):
-        return self.obj.rna_type.identifier
+        return self.obj.bl_rna.identifier
 
 
 class RnaName(VirtualName):
