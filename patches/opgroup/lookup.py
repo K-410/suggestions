@@ -6,15 +6,10 @@ from operator import attrgetter
 
 
 def apply():
-    optimize_name_get_definition()
-
-    # optimize_Module_get_used_names()
-
     # The order of these is important because of inheritance, yay!
 
     # optimize_ParserTreeFilter_filter()  # XXX: Broken. itertools imports Any (doesn't exist)
     optimize_ParserTreeFilter_values()
-    # optimize_StubFilter_values()  # XXX: Broken. from itertools import X, nothing completes.
     # optimize_ClassFilter_values()
     optimize_GlobalNameFilter()
     # optimize_AbstractUsedNamesFilter()
@@ -258,109 +253,3 @@ def optimize_ClassFilter_values():
 
     # XXX: This is wrong. Why am i setting this on SelfAttributeFilter?????
     # SelfAttributeFilter.values = values_orig
-
-
-def optimize_StubFilter_values():
-    from jedi.inference.gradual.stub_value import StubFilter
-    from itertools import repeat, chain
-
-    from ..tools import is_basenode, is_namenode
-
-    stubfilter_names_cache = {}
-
-    def get_module_names(self: StubFilter):
-        stub_value = self.parent_context._value
-        try:
-            return stubfilter_names_cache[stub_value]
-        except:
-            keys = ()
-            for value in stub_value.non_stub_value_set:
-                if value.is_compiled():
-                    keys = (value.access_handle.access._obj.__dict__)
-                else:
-                    # For ModuleValue aka. ParserTree files.
-                    keys = (n.string_name for n in next(value.get_filters()).values())
-                break
-            if not keys:
-                print("Could not get module names for", stub_value)
-            return stubfilter_names_cache.setdefault(stub_value, set(chain.from_iterable(keys)))
-
-    def values(self: StubFilter):
-        module_names = get_module_names(self)
-
-        names = []
-        pool = [self._parser_scope]
-
-        for n in filter(is_basenode, pool):
-            pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
-
-        for n in filter(is_namenode, pool):
-            if n.value in module_names:
-                names += [n]
-
-        ret = self._filter(names)
-        return list(map(self.name_class, repeat(self.parent_context), ret))
-
-    StubFilter.values = values
-
-
-def optimize_name_get_definition():
-    from parso.python.tree import Name, _GET_DEFINITION_TYPES, _IMPORTS
-    from parso.python.tree import _defined_names
-
-    PythonNode_types = {'testlist_star_expr', 'testlist_comp', 'exprlist',
-                        'testlist', 'atom', 'star_expr', 'power', 'atom_expr'}
-    def get_definition(self: Name, import_name_always=False, include_setitem=False):
-        p = self.parent
-        type = p.type
-
-        if type in {"funcdef", "classdef", "except_clause"}:
-
-            # self is the class or function name.
-            children = p.children
-            if self is children[1]:  # Is the function/class name definition.
-                return p
-
-            # self is the e part of ``except X as e``.
-            elif type == "except_clause" and self is children[-1]:
-                return p.parent
-            return None
-
-        while p:
-            type = p.type
-            if type in _GET_DEFINITION_TYPES:
-                if type == "expr_stmt":
-                    children = p.children
-
-                    op = children[1]
-                    # Might be ``operator`` - most likely.
-                    if op.type == "operator":
-                        if op.value is "=":
-                            name = children[0]
-
-                            # PythonNode.
-                            if name.type in {"testlist_star_expr", "testlist_comp", "exprlist",
-                                             "testlist", "atom", "star_expr", "power", "atom_expr"}:
-                                if self in _defined_names(name, include_setitem):
-                                    return p
-                            # Name.
-                            elif name is self:
-                                return p
-
-                    # Must be ``annassign``.
-                    elif children[0] is self:
-                        return p
-
-                elif type in {"for_stmt", "sync_comp_for"}:
-                    node = p.children[1]
-                    if (node.type in PythonNode_types and self in _defined_names(node, include_setitem)) or \
-                            node is self:
-                        return p
-
-                elif self in p.get_defined_names(include_setitem) or \
-                        import_name_always and p.type in _IMPORTS:
-                    return p
-                return None
-            p = p.parent
-
-    Name.get_definition  = get_definition

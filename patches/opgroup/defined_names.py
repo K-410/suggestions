@@ -10,6 +10,7 @@ def apply():
     optimize_WithStmt_get_defined_names()
     optimize_WithStmt_get_defined_names()
     optimize_NamedExpr_get_defined_names()
+    optimize_Name_get_definition()
 
 
 def optimize_defined_names():
@@ -157,3 +158,66 @@ def optimize_ExprStmt_get_defined_names():
             i += 2
 
     ExprStmt.get_defined_names = get_defined_names
+
+
+def optimize_Name_get_definition():
+    from parso.python.tree import Name, _GET_DEFINITION_TYPES, _IMPORTS
+    from parso.python.tree import _defined_names
+
+    PythonNode_types = {'testlist_star_expr', 'testlist_comp', 'exprlist',
+                        'testlist', 'atom', 'star_expr', 'power', 'atom_expr'}
+
+    def get_definition(self: Name, import_name_always=False, include_setitem=False):
+        p = self.parent
+        type = p.type
+
+        if type in {"funcdef", "classdef", "except_clause"}:
+
+            # self is the class or function name.
+            children = p.children
+            if self is children[1]:  # Is the function/class name definition.
+                return p
+
+            # self is the e part of ``except X as e``.
+            elif type == "except_clause" and self is children[-1]:
+                return p.parent
+            return None
+
+        while p:
+            type = p.type
+            if type in _GET_DEFINITION_TYPES:
+                if type == "expr_stmt":
+                    children = p.children
+
+                    op = children[1]
+                    # Might be ``operator`` - most likely.
+                    if op.type == "operator":
+                        if op.value is "=":
+                            name = children[0]
+
+                            # PythonNode.
+                            if name.type in {"testlist_star_expr", "testlist_comp", "exprlist",
+                                             "testlist", "atom", "star_expr", "power", "atom_expr"}:
+                                if self in _defined_names(name, include_setitem):
+                                    return p
+                            # Name.
+                            elif name is self:
+                                return p
+
+                    # Must be ``annassign``.
+                    elif children[0] is self:
+                        return p
+
+                elif type in {"for_stmt", "sync_comp_for"}:
+                    node = p.children[1]
+                    if (node.type in PythonNode_types and self in _defined_names(node, include_setitem)) or \
+                            node is self:
+                        return p
+
+                elif self in p.get_defined_names(include_setitem) or \
+                        import_name_always and p.type in _IMPORTS:
+                    return p
+                return None
+            p = p.parent
+
+    Name.get_definition  = get_definition
