@@ -13,11 +13,13 @@ def optimize_SelfAttributeFilter_values():
     def values(self: SelfAttributeFilter):
         names   = []
         scope   = self._parser_scope
-        context = self.parent_context
 
-        # We only care about classes, and stubs never have self definitions.
-        if is_classdef(scope) and not context.is_stub():
-            with any.measure_total:
+        # We only care about classes.
+        if is_classdef(scope):
+            # Stubs never have self definitions.
+            context = self.parent_context
+
+            if not context.is_stub():
                 class_nodes = scope.children[-1].children
                 pool = []
 
@@ -33,8 +35,8 @@ def optimize_SelfAttributeFilter_values():
                     if n.get_definition(include_setitem=True):
                         names += [n]
 
-            names = list(self._filter(names))
-            names = list(map(self.name_class, repeat(context), names))
+                names = list(self._filter(names))
+                names = list(map(self.name_class, repeat(context), names))
         return names
 
     SelfAttributeFilter.values = values
