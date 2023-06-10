@@ -40,6 +40,7 @@ def _apply_patches():
     patch_SequenceLiteralValue()
     patch_load_from_file_system()
     patch_complete_dict()
+    patch_convert_values()
 
 
 def _apply_optimizations():
@@ -55,6 +56,19 @@ def _apply_optimizations():
     opgroup.used_names.apply()
     opgroup.flow_analysis.apply()
     opgroup.filters.apply()
+
+
+# This fixes jedi attempting to complete from both stubs and compiled modules,
+# which isn't allowed by PEP 484. It's either or.
+def patch_convert_values():
+    from jedi.inference.gradual.conversion import convert_values
+
+    # This makes ``prefer_stubs`` True by default and False if ``only_stubs`` is True.
+    def f(values, only_stubs=False, prefer_stubs=True, ignore_compiled=True):
+        if only_stubs:
+            prefer_stubs = False
+        return convert_values(values, only_stubs=only_stubs, prefer_stubs=prefer_stubs, ignore_compiled=ignore_compiled)
+    convert_values = _patch_function(convert_values, f)
 
 
 # Fix unpickling errors jedi doesn't catch.
