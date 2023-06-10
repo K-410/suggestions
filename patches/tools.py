@@ -79,6 +79,18 @@ def is_namenode(node) -> bool:
 
 
 @inline
+def is_funcdef(node) -> bool:
+    from parso.python.tree import Function
+    return Function.__instancecheck__
+
+
+@inline
+def is_classdef(node) -> bool:
+    from parso.python.tree import Class
+    return Class.__instancecheck__
+
+
+@inline
 def starchain(it):
     from itertools import chain
     return chain.from_iterable

@@ -203,12 +203,12 @@ def optimize_ParserTreeFilter_values():
         ret = list(map(self.name_class, repeat(self.parent_context), ret))
         return ret
 
+    # XXX: This breaks ``[0].``.
     # ParserTreeFilter.values = values
 
 
 def optimize_ClassFilter_values():
     from jedi.inference.value.klass import ClassFilter
-    from jedi.inference.value.instance import SelfAttributeFilter
     from jedi.inference.filters import ParserTreeFilter
     from itertools import repeat
     from ..tools import is_basenode, is_namenode
@@ -255,7 +255,9 @@ def optimize_ClassFilter_values():
     ClassFilter.values = values
 
     # XXX: Temporary. SelfAttributeFilter doesn't work with optimized ClassFilter.values().
-    SelfAttributeFilter.values = values_orig
+
+    # XXX: This is wrong. Why am i setting this on SelfAttributeFilter?????
+    # SelfAttributeFilter.values = values_orig
 
 
 def optimize_StubFilter_values():

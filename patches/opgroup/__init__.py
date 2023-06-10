@@ -4,6 +4,7 @@ from . import (
     context,
     defined_names,
     flow_analysis,
+    filters,
     interpreter,
     lookup,
     parser,

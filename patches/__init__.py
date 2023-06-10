@@ -54,6 +54,7 @@ def _apply_optimizations():
     opgroup.completions.apply()
     opgroup.used_names.apply()
     opgroup.flow_analysis.apply()
+    opgroup.filters.apply()
 
 
 # Fix unpickling errors jedi doesn't catch.
