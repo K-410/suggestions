@@ -464,23 +464,35 @@ class ContextInstance(RnaInstance):
         return self._filters
 
 
+def context_rna_name_from_string(string, context):
+    name_str, is_collection = context_type_map.get(string, ('', False))
+    if cls := getattr(bpy.types, name_str, None):
+        name = RnaName.from_object(cls.bl_rna, context, string, instance=True)
+        if is_collection:
+            name = make_instance_name(list[name], context, string)
+        return name
+    return None
+
+
 class ContextInstanceFilter(RnaFilter):
     def map_values(self, value, is_instance):
         mapping  = super().map_values(value, is_instance)
         context  = self.compiled_value.parent_context
-        sentinel = object()
 
         for name in _bpy.context_members()["screen"]:
-            name_str, is_collection = context_type_map.get(name, ('', False))
-            cls = getattr(bpy.types, name_str, sentinel)
-
-            if cls is sentinel:
-                continue
-
-            mapping[name] = RnaName.from_object(cls.bl_rna, context, name, instance=True)
-            if is_collection:
-                mapping[name] = make_instance_name(list[mapping[name]], context, name)
+            if rna_name := context_rna_name_from_string(name, context):
+                mapping[name] = rna_name
         return mapping
+
+    def get(self, string: str):
+        try:
+            return (self.mapping[string],)
+        except KeyError:
+            # These aren't part of the screen context.
+            if string in context_type_map:
+                context = self.compiled_value.parent_context
+                return (context_rna_name_from_string(string, context),)
+        return ()
 
 
 # Patch jedi's anonymous parameter inference so that bpy.types.Operator
@@ -492,7 +504,7 @@ def patch_AnonymousParamName_infer():
     from ..tools import _get_unbound_super_method
 
     is_RnaValue = RnaValue.__instancecheck__
-    infer_orig = _get_unbound_super_method(AnonymousParamName, "infer")
+    infer_orig = AnonymousParamName.infer
 
     def infer_rna_param(rna_obj, meth_name, query_index):
         param_index = 0
@@ -504,6 +516,21 @@ def patch_AnonymousParamName_infer():
                     return param
                 param_index += 1
         return None
+    
+    def rna_value_from_tree_value(value, context):
+        if value.is_compiled():
+            return None
+
+        for c in (c for b in value.py__bases__() for c in b.infer()):
+            if not c.is_compiled():
+                continue
+            if not c.access_handle.access._obj is bpy.types.bpy_struct:
+                continue
+            cls_name = value.tree_node.children[1].value
+            if cls := getattr(bpy.types, cls_name, None):
+                return RnaValue(cls, context)
+        return None
+
 
     def infer(self: AnonymousParamName):
         if ret := infer_orig(self):
@@ -514,21 +541,31 @@ def patch_AnonymousParamName_infer():
         if not isinstance(func, BoundMethod):
             return NO_VALUES
 
-        meth_name = func.name.string_name
-        param = self.tree_name.search_ancestor("param")
+        meth_name = func._wrapped_value.tree_node.children[1].value
+        param = self.tree_name.parent
 
         # An RNA function doesn't include self in its parameters list.
         param_index = param.position_index - int(bool(func.is_bound_method()))
+        context = self.parent_context
 
-        for base in func.instance.class_value.py__bases__():
+        for value in (v for b in func.instance.class_value.py__bases__()
+                        for v in b.infer()):
 
-            # Only RnaValue parameters are inferred.
-            for cls in filter(is_RnaValue, base.infer()):
-                if param := infer_rna_param(cls.obj, meth_name, param_index):
-                    if param.identifier == "context":
-                        instance = get_context_instance(self.parent_context)
-                    else:
-                        instance = instance_from_rnadef(param, self.parent_context)
-                    return ValueSet((instance,))
+            # Support inferring Operator from ``bpy_types.py``. Since this is
+            # a tree node, we have to convert it into an RnaValue.
+            if rna := rna_value_from_tree_value(value, context):
+                value = rna
+
+            # Only RnaValue parameters are inferred for now.
+            if not is_RnaValue(value):
+                continue
+
+            if param := infer_rna_param(value.obj, meth_name, param_index):
+                if param.identifier == "context":
+                    instance = get_context_instance(self.parent_context)
+                else:
+                    instance = instance_from_rnadef(param, self.parent_context)
+                return ValueSet((instance,))
+
         return NO_VALUES
     AnonymousParamName.infer = infer
