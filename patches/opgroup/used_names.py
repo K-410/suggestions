@@ -1,5 +1,6 @@
-# This implements used names caching and partial updates.
-# Reduces times for 4k LOC from 100ms to 1.5ms.
+# This module implements optimizations for used names by caching and applying
+# partial updates to module tree nodes. Optimized filter methods that depend
+# on this optimization are also added here.
 
 from collections import defaultdict
 from operator import attrgetter
@@ -10,8 +11,9 @@ from parso.python.diff import (_get_next_leaf_if_indentation,
                                 _PositionUpdatingFinished,
                                 _NodesTreeNode)
 
-from textension.utils import make_default_cache
-from ..tools import is_basenode, is_namenode, dict_items, starchain
+from textension.utils import instanced_default_cache, dict_items, starchain
+from ..tools import is_basenode, is_namenode
+
 
 get_direct_node = attrgetter("tree_node.parent")
 
@@ -29,8 +31,7 @@ def node_cache_fallback(self: dict, module):
     return self.setdefault(module, NamesCache(module))
 
 
-NodeCache  = make_default_cache(node_cache_fallback)
-node_cache = NodeCache()
+node_cache = instanced_default_cache(node_cache_fallback)
 
 
 class NamesCache(dict):
