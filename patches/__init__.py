@@ -28,7 +28,6 @@ def _apply_patches():
     patch_get_builtin_module_names()
     patch_compiledvalue()  # XXX: Not having this means tuple[X] isn't subscriptable.
     # patch_misc()  # XXX: This is very experimental.
-    patch_StubFilter()
     patch_is_pytest_func()
     patch_paths_from_list_modifications()
 
@@ -450,65 +449,8 @@ def patch_compiledvalue():
     org_py__call__ = CompiledValue.py__call__
     def py__call__(self, arguments):
         return py__call__extended(self, arguments) or org_py__call__(self, arguments)
+
     CompiledValue.py__call__ = py__call__
-
-
-# Patch StubFilter to lookup names starting with underscore using the stub's
-# compiled counterpart, if it currently exists, as fallback.
-# This specifically fixes completing sys._getframe, which jedi simply filters
-# out in the default implementation.
-def patch_StubFilter():
-    from jedi.inference.gradual.stub_value import StubFilter
-    from types import ModuleType
-    from builtins import set
-
-    super_meth = _get_unbound_super_method(StubFilter, "_is_name_reachable")
-    get_dict = ModuleType.__dict__["__dict__"].__get__
-    is_str = str.__instancecheck__
-
-    # This cache stores the string names defined in compiled modules and
-    # persists for the duration of the application for performance reasons.
-    private_names_lookup_cache = {}
-
-    # Omit import aliases (eg. import X as _X) from stub modules.
-    def is_import_alias(name):
-        if definition := name.get_definition():
-            if definition.type in {"import_from", "import_name"}:
-                if name.parent.type not in {"import_as_name", "dotted_as_name"}:
-                    return True
-        return False
-
-    def _is_name_reachable_p(self: StubFilter, name):
-        # TODO: StubFilters are static so caching could be done here.
-
-        if not super_meth(self, name) or is_import_alias(name):
-            return False
-
-        value = name.value
-
-        # Allow *some* private names from stub modules, if they exist
-        # on the compiled module. Assuming a compiled module even exists.
-        if value[0] is "_" and (value[:2] != "__" != value[-2:]):
-            if self in private_names_lookup_cache:
-                return value in private_names_lookup_cache[self]
-
-            ret = []
-            values = self.parent_context._value.non_stub_value_set
-            if self.parent_context.is_compiled():
-                for v in values:
-                    module = v.access_handle.access._obj
-                    if isinstance(module, ModuleType):
-                        ret = [k for k in get_dict(module) if is_str(k)]
-            else:
-                for v in values:
-                    for name in  next(v.get_filters()).values():
-                        ret += [name.string_name]
-            return value in private_names_lookup_cache.setdefault(self, set(ret))
-
-        return True
-
-
-    StubFilter._is_name_reachable = _is_name_reachable_p
 
 
 # Patches handle-to-CompiledValue creation to intercept compiled objects.
