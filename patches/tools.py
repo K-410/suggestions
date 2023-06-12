@@ -27,7 +27,8 @@ class StateModuleCache(dict):
         _check_type(value_set, ValueSet)
 
         assert string_names, "Empty tuple"
-        assert value_set, "Empty ValueSet"
+        if not value_set:
+            print("Warning: Empty ValueSet for", string_names)
 
         all(_check_type(s, str) for s in string_names)
 
@@ -88,16 +89,6 @@ def is_funcdef(node) -> bool:
 def is_classdef(node) -> bool:
     from parso.python.tree import Class
     return Class.__instancecheck__
-
-
-@inline
-def starchain(it):
-    from itertools import chain
-    return chain.from_iterable
-
-@inline
-def dict_items(d: dict):
-    return dict.items
 
 
 @factory
