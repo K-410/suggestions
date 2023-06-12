@@ -167,7 +167,7 @@ def optimize_Name_get_definition():
     PythonNode_types = {'testlist_star_expr', 'testlist_comp', 'exprlist',
                         'testlist', 'atom', 'star_expr', 'power', 'atom_expr'}
 
-    def get_definition(self: Name, import_name_always=False, include_setitem=False):
+    def get_definition(self: Name, import_name_always=False, include_setitem=True):
         p = self.parent
         type = p.type
 
