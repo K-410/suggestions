@@ -565,15 +565,14 @@ def optimize_iter_module_names():
     from jedi.inference.compiled.subprocess.functions import _iter_module_names
     from importlib.machinery import all_suffixes
     from os import scandir, DirEntry
-    from itertools import chain
+
+    from textension.utils import starchain
 
     is_dir = DirEntry.is_dir
     endswith = str.endswith
     isidentifier = str.isidentifier
-    from_iterable = chain.from_iterable
     rsplit = str.rsplit
     suffixes = tuple(set(all_suffixes() + [".pyi"]))
-    # org__iter_module_names = _copy_func(_iter_module_names)  # XXX: Keep.
 
     cache = {}
 
@@ -590,9 +589,9 @@ def optimize_iter_module_names():
 
         while True:
             try:
-                entries += from_iterable(map(scandir, _paths))
+                entries += starchain(map(scandir, _paths))
                 break
-            except (FileNotFoundError, NotADirectoryError) as e:
+            except (FileNotFoundError, NotADirectoryError):
                 pass
 
         for entry in entries:
