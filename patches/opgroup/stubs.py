@@ -1,6 +1,6 @@
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter
 
-from textension.utils import make_default_cache, truthy_noargs
+from textension.utils import instanced_default_cache, truthy_noargs
 from jedi.inference.flow_analysis import reachability_check, UNREACHABLE
 
 from itertools import repeat
@@ -9,9 +9,27 @@ from ..tools import is_basenode, is_namenode
 from sys import modules as _sys_modules
 from types import ModuleType
 from jedi.inference.value.module import ModuleValue
+from parso.python.tree import Name
+
+from parso.python.tree import Name, BaseNode
+from jedi.inference.names import TreeNameDefinition
 
 
-stubfilter_names_cache = {}
+stubfilter_names_cache   = {}
+module_definitions_cache = {}
+
+
+definition_types = {
+    'expr_stmt',
+    'sync_comp_for',
+    'with_stmt',
+    'for_stmt',
+    'import_name',
+    'import_from',
+    'param',
+    'del_stmt',
+    'namedexpr_test',
+}
 
 
 def apply():
@@ -72,7 +90,7 @@ def on_missing_module_names(self: dict, stub):
     return keys
 
 
-module_names_cache = make_default_cache(on_missing_module_names)()
+module_names_cache = instanced_default_cache(on_missing_module_names)
 from operator import attrgetter
 get_start_pos = attrgetter("line", "column")
 
@@ -128,9 +146,9 @@ class CachedStubFilter(StubFilter):
                 yield name
 
     def get(self, name):
-        names = [n for n in self._used_names.get(name) if n.get_definition(include_setitem=True)]
-        names = self._filter(names)
-        names = self._convert_names(names)
+        if names := self._used_names.get(name, []):
+            names = self._filter(filter(Name.get_definition, names))
+            names = self._convert_names(names)
         return names
 
     # This check is different from how jedi implements it.
@@ -167,6 +185,88 @@ class CachedStubModuleContext(StubModuleContext):
     def get_filters(self, until_position=None, origin_scope=None):
         return list(self._value.get_filters())
 
+    def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
+        if namedef := find_definition(self, name_or_str, position):
+            return namedef.infer()
+        print("Stub py__getattribute__ failed for", name_or_str)
+        return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
+
+
+def get_definition(ref: Name):
+    p = ref.parent
+    type  = p.type
+    value = ref.value
+
+    if type in {"funcdef", "classdef", "except_clause"}:
+
+        # self is the class or function name.
+        children = p.children
+        if value == children[1].value:  # Is the function/class name definition.
+            return children[1]
+
+        # self is the e part of ``except X as e``.
+        elif type == "except_clause" and value == children[-1].value:
+            return children[-1]
+
+    while p:
+        if p.type in definition_types:
+            for n in p.get_defined_names(True):
+                if value == n.value:
+                    return n
+        elif p.type == "file_input":
+            for n in get_module_definitions(p):
+                if value == n.value:
+                    return n
+        p = p.parent
+
+
+def get_module_definitions(module):
+    if module not in module_definitions_cache or \
+       module_definitions_cache[module][0] != id(module._used_names):
+        
+        definitions = []
+        module_definitions_cache[module] = (id(module._used_names), definitions)
+
+        pool = [module]
+
+        for n in filter(is_basenode, pool):
+            pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
+
+        for n in filter(is_namenode, pool):
+            if n.get_definition(include_setitem=True):
+                definitions += [n]
+    return module_definitions_cache[module][1]
+
+
+def find_definition(context, ref, position):
+    if namedef := get_definition(ref):
+        return TreeNameDefinition(context, namedef)
+
+    # Inlined position adjustment from _get_global_filters_for_name.
+    if position:
+        n = ref
+        lambdef = None
+        while n := n.parent:
+            if n.type not in {"classdef", "funcdef", "lambdef"}:
+                continue
+            elif n.type == "lambdef":
+                lambdef = n
+            elif position < n.children[-2].start_pos:
+                if not lambdef or position < lambdef.children[-2].start_pos:
+                    position = n.start_pos
+                break
+
+    p = ref
+    while p := p.parent:
+
+        # We're on the dot operator.
+        if p.type == "error_node":
+            continue
+
+        for name in filter(is_namenode, p.children):
+            if name.value == ref.value and name is not ref:
+                return TreeNameDefinition(context, name)
+    return None
 
 
 def on_missing_stub_filter(self: dict, module: StubModuleValue):
@@ -182,7 +282,7 @@ def on_missing_stub_filter(self: dict, module: StubModuleValue):
 
 
 def optimize_StubModules():
-    stub_filter_cache = make_default_cache(on_missing_stub_filter)()
+    stub_filter_cache = instanced_default_cache(on_missing_stub_filter)
 
     def get_filters(self: StubModuleValue, origin_scope=None):
         yield from stub_filter_cache[self]
