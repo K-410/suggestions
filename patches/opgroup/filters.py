@@ -2,6 +2,7 @@
 from jedi.inference.flow_analysis import reachability_check, UNREACHABLE
 from jedi.inference.value.klass import ClassFilter
 from itertools import repeat
+from operator import attrgetter
 
 from ..tools import is_basenode, is_namenode
 
@@ -10,6 +11,7 @@ def apply():
     optimize_SelfAttributeFilter_values()
     optimize_ClassFilter_values()
     optimize_AnonymousMethodExecutionFilter()
+    optimize_ParserTreeFilter_values()
 
 
 # Optimizes SelfAttributeFilter.values to search within the class scope.
@@ -66,9 +68,9 @@ def get_scope_name_definitions(self: ClassFilter, scope, context):
 
 
 # This version differs from the stock ``_check_flows`` by:
-# - Doesn't sort entries. Not applicable in class filter contexts.
-# - Doesn't break after first hit. The stock version is was designed to
-#   process like-named sequences. Here we process *all* names in one go.
+# - Doesn't break after first hit. The stock version is designed to process
+#   like-named sequences. Here we process *all* names in one go.
+# - No pre-sorting. It's not applicable unless we break out of the loop.
 def _check_flows(self, names):
     context = self._node_context
     value_scope = self._parser_scope
@@ -125,3 +127,79 @@ def optimize_AnonymousMethodExecutionFilter():
 
     AnonymousMethodExecutionFilter.get = get
     AnonymousMethodExecutionFilter._check_flows = _check_flows
+
+
+def optimize_ParserTreeFilter_values():
+    from jedi.inference.filters import ParserTreeFilter
+
+    def values(self: ParserTreeFilter):
+        scope   = self._parser_scope
+        context = self.parent_context
+
+        names = get_scope_name_definitions(self, scope, context)
+        return self._convert_names(names)
+    
+    ParserTreeFilter.values = values
+    ParserTreeFilter._check_flows = _check_flows
+
+
+def optimize_ParserTreeFilter_filter():
+    from jedi.inference.flow_analysis import reachability_check
+    from jedi.inference.filters import flow_analysis, ParserTreeFilter
+    from itertools import compress, takewhile, repeat
+    from builtins import map
+
+    get_start = attrgetter("start_pos")
+
+    not_unreachable = flow_analysis.UNREACHABLE.__ne__
+    not_reachable   = flow_analysis.REACHABLE.__ne__
+
+    def _filter(self: ParserTreeFilter, names):
+        if end := self._until_position:
+            names = compress(names, map(end.__gt__, map(get_start, names)))
+
+        scope = self._parser_scope
+
+        for name in names:
+            if name.parent.type in {"classdef", "funcdef"}:
+                if get_parent_scope_fast(name.parent) is not scope:
+                    print("not in scope (function)")
+            else:
+                if get_parent_scope_fast(name) is not scope:
+                    print("not in scope")
+
+        if names:
+            to_check = map(reachability_check,
+                           repeat(self._node_context),
+                           repeat(self._parser_scope),
+                           names,
+                           repeat(self._origin_scope))
+            selectors = takewhile(not_reachable, map(not_unreachable, to_check))
+            return compress(names, selectors)
+        return []
+
+    ParserTreeFilter._filter = _filter
+
+
+get_start_pos = attrgetter("line", "column")
+# TAG: get_parent_scope_fast
+# This version doesn't include flow checks nor read or write to cache.
+def get_parent_scope_fast(node):
+    if scope := node.parent:
+        pt = scope.type
+
+        either = (pt == 'tfpdef' and scope.children[0] == node) or \
+                 (pt == 'param'  and scope.name == node)
+
+        while True:
+            stype = scope.type
+            if stype in {"classdef", "funcdef", "lambdef", "file_input", "sync_comp_for", "comp_for"}:
+
+                if stype in {"file_input", "sync_comp_for", "comp_for"}:
+                    if stype != "comp_for" or scope.children[1].type != "sync_comp_for":
+                        break
+
+                elif either or get_start_pos(scope.children[-2]) < node.start_pos:
+                    break
+            scope = scope.parent
+    return scope
