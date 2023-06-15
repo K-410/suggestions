@@ -44,19 +44,18 @@ def optimize_Completion_complete():
 
         cached_name, completion_names = self._complete_python(leaf)
 
-        completions = filter_names(self._inference_state, completion_names,
-            self.stack, self._like_name, self._fuzzy, cached_name=cached_name)
+        completions = list(filter_names(self._inference_state, completion_names,
+            self.stack, self._like_name, self._fuzzy, cached_name=cached_name))
 
         lower = str.lower
         def sorter(x):
-            name = lower(x.name)
+            name = lower(x._name.string_name)
             return name[:2] == "__", name[0] is "_", name
 
         if prefixed_completions:
+            # XXX/TODO: The return value isn't used, so wtaf is this?
             _remove_duplicates(prefixed_completions, completions)
 
-        # Removing duplicates mostly to remove False/True/None duplicates.
-        # return prefixed_completions + sorted(completions, key=sorter)
         return prefixed_completions + sorted(completions, key=sorter)
 
     _patch_function(Completion.complete, complete)
@@ -79,7 +78,6 @@ def optimize_filter_names():
         complete = property(noop_noargs)
         _inference_state = state
 
-    _len = len
     fuzzy_match = _fuzzy_match
     startswith = str.startswith
     lower = str.lower
@@ -89,7 +87,8 @@ def optimize_filter_names():
     get_name = attrgetter("string_name")
 
     def filter_names_o(inference_state, completion_names, stack, like_name, fuzzy, cached_name):
-        like_name_len = _len(like_name)
+        like_name_len = len(like_name)
+
         if fuzzy:
             match_func = fuzzy_match
             completion_base = FuzzyCompletion
