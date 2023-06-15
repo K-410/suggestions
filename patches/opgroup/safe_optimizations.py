@@ -51,6 +51,7 @@ def apply():
     optimize_Node_methods()
     optimize_ValueContext_methods()
     optimize_ValueSet_methods()
+    optimize_getattr_static()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -415,6 +416,84 @@ def optimize_shadowed_dict():
         return _sentinel
 
     _patch_function(getattr_static._shadowed_dict, _shadowed_dict)
+
+
+def optimize_getattr_static():
+    from jedi.inference.compiled.getattr_static import (
+        _sentinel,
+        _shadowed_dict,
+        _check_instance,
+        _safe_hasattr,
+        _safe_is_data_descriptor,
+        _static_getmro,
+        getattr_static as _getattr_static
+    )
+    from types import MemberDescriptorType, ModuleType
+    from builtins import type
+    common_dicts = {
+        type: type.__dict__["__dict__"].__get__,
+        object: type.__dict__["__dict__"].__get__,
+        ModuleType: ModuleType.__dict__["__dict__"].__get__
+    }
+    excludes = {ModuleType.__mro__}
+
+    def getattr_static(obj, attr, default=_sentinel):
+        instance_result = _sentinel
+
+        if not isinstance(obj, type):
+            cls = type(obj)
+            if cls in common_dicts:
+                mro = cls.__mro__
+                try:
+                    # Some modules like bpy.types use custom __getattr__.
+                    instance_result = common_dicts[cls](obj)[attr]
+                except KeyError:
+                    pass
+            else:
+                mro = _static_getmro(cls)
+                dict_attr = _shadowed_dict(cls)
+                if (dict_attr is _sentinel or type(dict_attr) is MemberDescriptorType):
+                    instance_result = _check_instance(obj, attr)
+        else:
+            cls = obj
+            mro = _static_getmro(cls)
+
+        cls_result = _sentinel
+
+        # Skip checking known types.
+        if mro not in excludes:
+            for entry in mro:
+                if _shadowed_dict(type(entry)) is _sentinel:
+                    try:
+                        cls_result = entry.__dict__[attr]
+                        break
+                    except KeyError:
+                        pass
+
+        if instance_result is not _sentinel and cls_result is not _sentinel:
+            if _safe_hasattr(cls_result, '__get__') \
+                    and _safe_is_data_descriptor(cls_result):
+                # A get/set descriptor has priority over everything.
+                return cls_result, True
+
+        if instance_result is not _sentinel:
+            return instance_result, False
+        if cls_result is not _sentinel:
+            return cls_result, _safe_hasattr(cls_result, '__get__')
+
+        if obj is cls:
+            # for types we check the metaclass too
+            for entry in _static_getmro(type(cls)):
+                if _shadowed_dict(type(entry)) is _sentinel:
+                    try:
+                        return entry.__dict__[attr], False
+                    except KeyError:
+                        pass
+        if default is not _sentinel:
+            return default, False
+        raise AttributeError(attr)
+
+    _patch_function(_getattr_static, getattr_static)
 
 
 # Optimizes _static_getmro to read mro.__class__.
