@@ -37,6 +37,7 @@ def _apply_patches():
     patch_load_from_file_system()
     patch_complete_dict()
     patch_convert_values()
+    patch_get_user_context()
 
 
 def _apply_optimizations():
@@ -52,6 +53,30 @@ def _apply_optimizations():
     opgroup.used_names.apply()
     opgroup.flow_analysis.apply()
     opgroup.filters.apply()
+
+
+# Jedi doesn't consider the indentation at the completion site potentially
+# giving the wrong scope at the last line of the scope. This fixes that.
+def patch_get_user_context():
+    from jedi.api import completion
+
+    def get_user_context(module_context, pos):
+        leaf = module_context.tree_node.get_leaf_for_position(pos, include_prefixes=True)
+
+        if leaf.type == "newline":
+            parent = leaf.parent
+            if parent.get_last_leaf() is leaf and pos[1] < parent.start_pos[1]:
+                leaf = leaf.get_next_leaf()
+
+        elif leaf.start_pos > pos or leaf.type == "endmarker":
+            if last := leaf.get_previous_leaf():
+                 if last.type == "newline":
+                    if pos[1] == last.parent.start_pos[1]:
+                        leaf = last
+
+        return module_context.create_context(leaf)
+
+    _patch_function(completion.get_user_context, get_user_context)
 
 
 # This fixes jedi attempting to complete from both stubs and compiled modules,
