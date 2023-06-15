@@ -1,10 +1,16 @@
 # This module implements optimizations for various filter types.
+from jedi.inference.compiled.value import CompiledName
 from jedi.inference.flow_analysis import reachability_check, UNREACHABLE
 from jedi.inference.value.klass import ClassFilter
+from jedi.inference.compiled.getattr_static import getattr_static
+from jedi.inference.compiled.access import ALLOWED_DESCRIPTOR_ACCESS
+from jedi.inference.base_value import ValueSet
+
 from itertools import repeat
 from operator import attrgetter
 
-from ..tools import is_basenode, is_namenode
+from textension.utils import _named_index
+from ..tools import is_basenode, is_namenode, state
 
 
 def apply():
@@ -12,6 +18,72 @@ def apply():
     optimize_ClassFilter_values()
     optimize_AnonymousMethodExecutionFilter()
     optimize_ParserTreeFilter_values()
+    optimize_CompiledValueFilter_values()
+
+
+def is_allowed_getattr(obj, name):
+    try:
+        attr, is_get_descriptor = getattr_static(obj, name)
+    except AttributeError:
+        return False, False
+    else:
+        if is_get_descriptor and type(attr) not in ALLOWED_DESCRIPTOR_ACCESS:
+            return True, True
+    return True, False
+
+
+# CompiledName, but better.
+# - Tuple-initialized to skip the construction overhead
+# - Getattr static happens only when we actually need it.
+class DeferredCompiledName(tuple, CompiledName):
+    __init__ = object.__init__
+    
+    _inference_state = state
+
+    parent_context = _named_index(0)  # parent_value.as_context()
+    _parent_value  = _named_index(1)  # parent_value
+    string_name    = _named_index(2)  # name
+
+    def py__doc__(self):
+        if value := self.infer_compiled_value():
+            return value.py__doc__()
+        return ""
+
+    @property
+    def api_type(self):
+        if value := self.infer_compiled_value():
+            return value.api_type
+        return "unknown"  # XXX: Not really valid.
+
+    def infer(self):
+        has_attribute, is_descriptor = is_allowed_getattr(self._parent_value, self.string_name)
+        return ValueSet([self.infer_compiled_value()])
+
+
+
+# Optimizes ``values`` to not access attributes off a compiled value when
+# converting them into names. Instead they are read only when inferred.
+def optimize_CompiledValueFilter_values():
+    from jedi.inference.compiled.value import CompiledValueFilter
+    from itertools import repeat, chain
+
+    def values(self: CompiledValueFilter):
+        from jedi.inference.compiled import builtin_from_name
+        names = []
+        obj = self.compiled_value.access_handle.access._obj
+
+        value = self.compiled_value
+        sequences = zip(repeat(value), repeat(value.as_context()), dir(obj))
+        names = map(DeferredCompiledName, sequences)
+
+        if isinstance(obj, type) and obj is not type:
+            # return chain(names, )
+            for filter in builtin_from_name(self._inference_state, 'type').get_filters():
+                names = chain(names, filter.values())
+        #         names += filter.values()
+        return names
+
+    CompiledValueFilter.values = values
 
 
 # Optimizes SelfAttributeFilter.values to search within the class scope.
