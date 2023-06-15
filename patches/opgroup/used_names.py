@@ -20,11 +20,54 @@ get_direct_node = attrgetter("tree_node.parent")
 
 def apply():
     optimize_Module_get_used_names()
+    optimize_GlobalNameFilter_values()
 
 
 def optimize_Module_get_used_names():
     Module.get_used_names = get_used_names
     _NodesTreeNode.finish = finish
+
+
+def optimize_GlobalNameFilter_values():
+    from jedi.inference.filters import GlobalNameFilter
+    from itertools import repeat, compress
+    from builtins import filter, map
+    from ..tools import is_basenode
+
+    get_position = attrgetter("line", "column")
+
+    def is_valid(stmt, branch):
+        pool = branch.children[:]
+        for n in filter(is_basenode, pool):
+            if stmt in filter(is_basenode, n.children):
+                return True
+            pool += filter(is_basenode, n.children)
+        return False
+
+    def get_direct_node(node):
+        while (node := node.parent).parent:
+            pass
+        return node
+
+    def values(self: GlobalNameFilter):
+        nodes = node_cache[self._parser_scope]
+        globs = nodes.globals
+        names = []
+
+        for glob in reversed(globs):
+            node = get_direct_node(glob)
+
+            if node in nodes and is_valid(glob, node):
+                names += glob.children[1::2]
+            else:
+                globs.remove(glob)
+
+        # Only for BpyTextModule, as in, the module being completed.
+        if pos := self._until_position:
+            names = compress(names, map(pos.__gt__, map(get_position, names)))
+        return map(self.name_class, repeat(self.parent_context), names)
+
+    GlobalNameFilter.values = values
 
 
 def node_cache_fallback(self: dict, module):
@@ -41,6 +84,7 @@ class NamesCache(dict):
         self.updates = set()   # Nodes tagged for update by the diff parser.
 
         self.values  = self.values()  # For faster dict.values() access.
+        self.globals = []
 
     def update(self):
         # Get the current module base nodes.
@@ -50,12 +94,17 @@ class NamesCache(dict):
         for node in self.nodes - nodes:
             del self[node]
 
+        globals_ = self.globals
+
         # Map the names. Only new and updated nodes are mapped.
         for node in nodes - self.nodes | self.updates:
             names = defaultdict(list)
             pool  = node.children[:]
             for n in filter(is_basenode, pool):
                 pool += n.children
+                if n.type == "global_stmt":
+                    globals_ += [n]
+
             for n in filter(is_namenode, pool):
                 names[n.value] += [n]
             self[node] = dict_items(names)
