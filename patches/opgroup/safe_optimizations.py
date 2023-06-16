@@ -52,9 +52,53 @@ def apply():
     optimize_ValueContext_methods()
     optimize_ValueSet_methods()
     optimize_getattr_static()
+    optimize_BaseNode_get_leaf_for_position()
+    optimize_remove_del_stmt()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
+
+
+def optimize_remove_del_stmt():
+    from jedi.inference import finder
+
+    def _remove_del_stmt(names):
+        for name in names:
+            if name.tree_name.parent.type != "del_stmt":
+                yield name
+
+    _patch_function(finder._remove_del_stmt, _remove_del_stmt)
+
+
+def optimize_BaseNode_get_leaf_for_position():
+    from parso.tree import BaseNode
+    from ..tools import is_basenode
+
+    def get_leaf_for_position(self, position, include_prefixes=False):
+        if not ((1, 0) <= position <= self.children[-1].end_pos):
+            raise ValueError('Please provide a position that exists within this node.')
+
+        elem = self
+        while is_basenode(elem):
+            children = elem.children
+
+            lo = 0
+            hi = len(children) - 1
+
+            while lo != hi:
+                i = (lo + hi) >> 1
+                if position <= children[i].end_pos:
+                    hi = i
+                else:
+                    lo = i + 1
+
+            elem = children[lo]
+
+            if not include_prefixes and position < elem.start_pos:
+                return None
+        return elem
+
+    BaseNode.get_leaf_for_position = get_leaf_for_position
 
 
 def optimize_ValueSet_methods():
