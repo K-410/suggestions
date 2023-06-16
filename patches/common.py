@@ -279,3 +279,25 @@ def get_submodule_names():
             result = list(map(SubModuleName, repeat(self.as_context()), names))
         return result
     return get_submodule_names
+
+
+
+# This version differs from the stock ``_check_flows`` by:
+# - Doesn't break after first hit. The stock version is designed to process
+#   like-named sequences. Here we process *all* names in one go.
+# - No pre-sorting. It's not applicable unless we break out of the loop.
+@factory
+def _check_flows(self, names):
+    from jedi.inference.flow_analysis import reachability_check, UNREACHABLE
+
+    def _check_flows(self, names):
+        context = self._node_context
+        value_scope = self._parser_scope
+        origin_scope = self._origin_scope
+        for name in names:
+            if reachability_check(context=context,
+                                  value_scope=value_scope,
+                                  node=name,
+                                  origin_scope=origin_scope) is not UNREACHABLE:
+                yield name
+    return _check_flows

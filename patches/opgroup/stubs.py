@@ -1,5 +1,4 @@
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter
-from jedi.inference.flow_analysis import reachability_check, UNREACHABLE
 
 from itertools import repeat
 from operator import attrgetter
@@ -11,7 +10,7 @@ from parso.python.tree import Name
 
 from textension.utils import instanced_default_cache, truthy_noargs
 from ..tools import is_basenode, is_namenode
-
+from ..common import _check_flows
 
 stubfilter_names_cache   = {}
 module_definitions_cache = {}
@@ -111,6 +110,7 @@ def get_parent_scope_fast(node):
 
 class CachedStubFilter(StubFilter):
     _parso_cache_node = None
+    _check_flows = _check_flows
 
     def __init__(self, parent_context):
         self._until_position = None
@@ -126,17 +126,6 @@ class CachedStubFilter(StubFilter):
             return self.cache[name]
         except KeyError:
             return self.cache.setdefault(name, list(super().get(name)))
-
-    def _check_flows(self, names):
-        for name in names:
-            check = reachability_check(
-                context=self._node_context,
-                value_scope=self._parser_scope,
-                node=name,
-                origin_scope=self._origin_scope
-            )
-            if check is not UNREACHABLE:
-                yield name
 
     def get(self, name):
         if names := self._used_names.get(name, []):

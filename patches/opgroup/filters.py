@@ -11,7 +11,7 @@ from operator import attrgetter
 
 from textension.utils import _named_index
 from ..tools import is_basenode, is_namenode, state
-
+from ..common import _check_flows
 
 def apply():
     optimize_SelfAttributeFilter_values()
@@ -137,20 +137,6 @@ def get_scope_name_definitions(self: ClassFilter, scope, context):
             names += [n]
 
     return list(self._filter(names))
-
-
-# This version differs from the stock ``_check_flows`` by:
-# - Doesn't break after first hit. The stock version is designed to process
-#   like-named sequences. Here we process *all* names in one go.
-# - No pre-sorting. It's not applicable unless we break out of the loop.
-def _check_flows(self, names):
-    context = self._node_context
-    value_scope = self._parser_scope
-    origin_scope = self._origin_scope
-    for name in names:
-        check = reachability_check(context=context, value_scope=value_scope, node=name, origin_scope=origin_scope)
-        if check is not UNREACHABLE:
-            yield name
 
 
 def optimize_ClassFilter_values():
