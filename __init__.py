@@ -328,7 +328,8 @@ class TEXTENSION_OT_suggestions_complete(TextOperator):
             # TODO: Weak.
             instance.is_visible = bool(instance.lines)
             safe_redraw()
-            ui.idle_update()
+            # XXX: Causes inconsistent repeated typing. Disable for now.
+            # ui.idle_update()
         finally:
             return {'FINISHED'}
 
