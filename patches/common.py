@@ -6,7 +6,7 @@ from jedi.inference.value.instance import CompiledInstance
 from jedi.inference.base_value import NO_VALUES, ValueSet
 from jedi.inference.lazy_value import LazyKnownValues
 from jedi.inference.context import CompiledContext
-from jedi.inference.names import TreeNameDefinition
+from jedi.inference.names import TreeNameDefinition, StubName
 from jedi.cache import memoize_method
 
 from operator import attrgetter
@@ -316,7 +316,7 @@ def state_cache_kw(func):
 # A modified version of reachability check used by various optimizations.
 @factory
 def trace_flow(node, origin_scope):
-    from jedi.inference.flow_analysis import REACHABLE, UNREACHABLE, get_flow_branch_keyword, _break_check
+    from jedi.inference.flow_analysis import get_flow_branch_keyword, _break_check
     from parso.python.tree import Keyword
     from itertools import compress, count
 
@@ -362,14 +362,14 @@ def trace_flow(node, origin_scope):
         return None
 
     @state_cache
-    def trace_flow(node, origin_scope):
+    def trace_flow(name, origin_scope):
         first_flow_scope = None
 
         if origin_scope is not None:
             branch_matches = True
             for flow_scope in iter_flows(origin_scope, False):
-                if flow_scope in iter_flows(node, False):
-                    node_keyword   = get_flow_branch_keyword(flow_scope, node)
+                if flow_scope in iter_flows(name, False):
+                    node_keyword   = get_flow_branch_keyword(flow_scope, name)
                     origin_keyword = get_flow_branch_keyword(flow_scope, origin_scope)
 
                     if branch_matches := node_keyword == origin_keyword:
@@ -377,21 +377,21 @@ def trace_flow(node, origin_scope):
 
                     elif flow_scope.type == "if_stmt" or \
                         (flow_scope.type == "try_stmt" and origin_keyword == 'else' and node_keyword == 'except'):
-                            return UNREACHABLE
+                            return False
 
-            first_flow_scope = next(iter_flows(node, True), None)
+            first_flow_scope = next(iter_flows(name, True), None)
 
             if branch_matches:
                 while origin_scope:
                     if first_flow_scope is origin_scope:
-                        return REACHABLE
+                        return name
                     origin_scope = origin_scope.parent
 
         # XXX: For testing. What's the point of break check?
         # if first_flow_scope is None:
-        #     first_flow_scope = next(iter_flows(node, True), None)
-        # return _break_check(context, value_scope, first_flow_scope, node)
-        return REACHABLE
+        #     first_flow_scope = next(iter_flows(name, True), None)
+        # return _break_check(context, value_scope, first_flow_scope, name)
+        return name
     return trace_flow
 
 
@@ -401,19 +401,27 @@ def trace_flow(node, origin_scope):
 # - No pre-sorting. It's not applicable unless we break out of the loop.
 @factory
 def _check_flows(self, names):
-    from jedi.inference.flow_analysis import UNREACHABLE
+    from itertools import repeat
     from .common import trace_flow
+    from builtins import filter, map
 
     def _check_flows_o(self, names):
-        origin_scope = self._origin_scope
-        for name in names:
-            if trace_flow(name, origin_scope) is not UNREACHABLE:
-                yield name
+        if origin_scope := self._origin_scope:
+            return filter(None, map(trace_flow, names, repeat(origin_scope)))
+        # There's nothing to trace if origin scope is None.
+        return names
     return _check_flows_o
 
 
 
 class DeferredDefinition(tuple, TreeNameDefinition):
+    __init__ = tuple.__init__
+
+    parent_context = _named_index(0)
+    tree_name      = _named_index(1)
+
+
+class DeferredStubName(tuple, StubName):
     __init__ = tuple.__init__
 
     parent_context = _named_index(0)

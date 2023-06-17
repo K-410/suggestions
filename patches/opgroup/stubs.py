@@ -5,7 +5,7 @@ from jedi.inference.names import TreeNameDefinition
 from parso.python.tree import Name
 
 from textension.utils import instanced_default_cache, truthy_noargs
-from ..common import _check_flows
+from ..common import _check_flows, DeferredStubName
 from ..tools import is_basenode, is_namenode
 
 from sys import modules as _sys_modules
@@ -94,7 +94,7 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
             names += [n]
 
     ret = stub_filter._filter(names)
-    ret = self[stub_filter] = list(map(stub_filter.name_class, repeat(context), ret))
+    ret = self[stub_filter] = list(map(DeferredStubName, zip(repeat(context), ret)))
     return ret
 
 
@@ -143,13 +143,8 @@ class CachedStubFilter(StubFilter):
             return names
         return []
 
-    # This check is different from how jedi implements it.
-    def _is_name_reachable(self, name):
-        parent = name.parent
-        if parent.type == 'trailer':
-            return False
-        base_node = parent if parent.type in ('classdef', 'funcdef') else name
-        return get_parent_scope_fast(base_node) is self._parser_scope
+    def _filter(self, names):
+        return self._check_flows(names)
 
     def values(self: StubFilter):
         return stub_values_cache[self]
@@ -162,8 +157,12 @@ class CachedStubModuleContext(StubModuleContext):
     def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
         if namedef := find_definition(self, name_or_str, position):
             return namedef.infer()
-        print("Stub py__getattribute__ failed for", name_or_str)
-        return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
+        ret = super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
+        if ret:
+            print("CachedStubModuleContext.py__getattribute__ failed for", name_or_str, "but found on super()")
+        else:
+            print("CachedStubModuleContext.py__getattribute__ failed for", name_or_str, "and super() failed")
+        return ret
 
 
 def get_definition(ref: Name):

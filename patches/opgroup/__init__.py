@@ -10,5 +10,5 @@ from . import (
     parser,
     safe_optimizations,
     stubs,
-    used_names
+    used_names,
 )

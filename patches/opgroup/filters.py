@@ -199,22 +199,16 @@ def optimize_ParserTreeFilter_values():
 
 
 def optimize_ParserTreeFilter_filter():
-    from jedi.inference.filters import flow_analysis, ParserTreeFilter
-    from itertools import compress, takewhile, repeat
+    from jedi.inference.filters import ParserTreeFilter
+    from itertools import compress
     from builtins import map
-    from ..common import trace_flow
+    from ..common import _check_flows
 
     get_start = attrgetter("start_pos")
-
-    not_unreachable = flow_analysis.UNREACHABLE.__ne__
-    not_reachable   = flow_analysis.REACHABLE.__ne__
 
     def _filter(self: ParserTreeFilter, names):
         if end := self._until_position:
             names = compress(names, map(end.__gt__, map(get_start, names)))
-
-        to_check  = map(trace_flow, names, repeat(self._origin_scope))
-        selectors = takewhile(not_reachable, map(not_unreachable, to_check))
-        return compress(names, selectors)
+        return _check_flows(self, names)
 
     ParserTreeFilter._filter = _filter

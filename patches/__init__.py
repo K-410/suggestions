@@ -500,8 +500,6 @@ def patch_create_cached_compiled_value():
 
         if context:
             assert not is_compiled_value(context)
-            if isinstance(obj, type(callable)):
-                pass
             if isinstance(obj, bpy_types):
                 return get_rna_value(obj, context)
             value = CompiledValue(state, handle, context)
