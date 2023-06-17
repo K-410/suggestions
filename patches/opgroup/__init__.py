@@ -3,7 +3,6 @@ from . import (
     completions,
     context,
     defined_names,
-    flow_analysis,
     filters,
     interpreter,
     lookup,
