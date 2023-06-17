@@ -68,7 +68,13 @@ class VirtualInstance(CompiledInstance):
         return VirtualName(self, self.class_value.name.string_name)
 
 
-class VirtualFilter(CompiledValueFilter):
+class VirtualFilter(tuple, CompiledValueFilter):
+    __init__ = tuple.__init__
+
+    _inference_state = state
+    compiled_value   = _named_index(0)
+    is_instance      = _named_index(1)
+
     values = _forwarder("mapping.values")
 
     def map_values(self, value, is_instance):
@@ -134,7 +140,7 @@ class VirtualValue(CompiledValue):
         return ValueSet((self.instance_cls(self, arguments),))
 
     def get_filters(self, is_instance=False, origin_scope=None):
-        return (self.filter_cls(state, self, is_instance),)
+        yield self.filter_cls((self, is_instance))
 
     # XXX: Override me.
     def get_param_names(self):

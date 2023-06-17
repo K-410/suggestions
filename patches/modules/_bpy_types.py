@@ -454,10 +454,10 @@ class ContextInstance(RnaInstance):
         self.class_value = RnaValue(obj, context)
         self._arguments  = None
 
-        self._filters = (ContextInstanceFilter(state, self.class_value, is_instance=True),)
+        self.filter = ContextInstanceFilter((self.class_value, True))
 
     def get_filters(self, *_, **__):
-        return self._filters
+        yield self.filter
 
 
 def context_rna_name_from_string(string, context):
