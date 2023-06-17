@@ -39,8 +39,8 @@ class DeferredCompiledName(tuple, CompiledName):
     
     _inference_state = state
 
-    parent_context = _named_index(0)  # parent_value.as_context()
-    _parent_value  = _named_index(1)  # parent_value
+    _parent_value  = _named_index(0)  # parent_value
+    parent_context = _named_index(1)  # parent_value.as_context()
     string_name    = _named_index(2)  # name
 
     def py__doc__(self):
