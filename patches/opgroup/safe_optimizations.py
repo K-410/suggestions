@@ -55,9 +55,33 @@ def apply():
     optimize_BaseNode_get_leaf_for_position()
     optimize_remove_del_stmt()
     optimize_infer_node_if_inferred()
+    optimize_try_to_load_stub_cached()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
+
+
+# Removes sys_path argument when trying to load stubs. It's just terrible.
+def optimize_try_to_load_stub_cached():
+    from jedi.inference.gradual.typeshed import try_to_load_stub_cached, _try_to_load_stub
+    from ..tools import state
+
+    stub_module_cache = state.stub_module_cache
+
+    def try_to_load_stub_cached_o(inference_state, import_names, *args, **kwargs):
+        assert import_names, f"Why even pass invalid import_names? -> {repr(import_names)}"
+
+        if import_names not in stub_module_cache:
+            # If sys.path is even remotely populated, jedi wil thrash the
+            # disk looking for stub files that don't exist. No thanks!
+            if "sys_path" in kwargs:
+                kwargs["sys_path"] = []
+            else:
+                args = args[:-1] + ([],)
+            stub_module_cache[import_names] = _try_to_load_stub(inference_state, import_names, *args, **kwargs)
+        return stub_module_cache[import_names]
+    
+    _patch_function(try_to_load_stub_cached, try_to_load_stub_cached_o)
 
 
 def optimize_infer_node_if_inferred():
