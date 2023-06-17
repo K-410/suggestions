@@ -1,19 +1,15 @@
 
 
-from jedi.inference.compiled.value import CompiledValue, CompiledValueFilter, CompiledContext, SignatureParamName, CompiledValueName, create_cached_compiled_value
-from jedi.inference.value.instance import CompiledInstance, ValueSet, NO_VALUES
+from jedi.inference.compiled.value import CompiledValueFilter, SignatureParamName
+from jedi.inference.value.instance import ValueSet, NO_VALUES
 from jedi.inference.signature import AbstractSignature
 from jedi.inference.lazy_value import LazyKnownValues
 
-from jedi.cache import memoize_method
-
-from functools import reduce
-from operator import or_
 from inspect import Parameter
 from itertools import chain
 
-from textension.utils import PyInstanceMethod_New, _forwarder, _context
-from ..tools import runtime, get_handle, state, make_instance_name, make_compiled_name, make_compiled_value, make_instance
+from textension.utils import _context
+from ..tools import runtime, state, make_instance_name, make_compiled_name, make_compiled_value, make_instance
 
 from ..common import VirtualFilter, VirtualInstance, VirtualName, VirtualValue, get_mro_dict
 from ._mathutils import float_vector_map

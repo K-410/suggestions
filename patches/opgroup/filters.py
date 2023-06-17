@@ -1,17 +1,16 @@
 # This module implements optimizations for various filter types.
-from jedi.inference.compiled.value import CompiledName
-from jedi.inference.flow_analysis import reachability_check, UNREACHABLE
-from jedi.inference.value.klass import ClassFilter
 from jedi.inference.compiled.getattr_static import getattr_static
 from jedi.inference.compiled.access import ALLOWED_DESCRIPTOR_ACCESS
-from jedi.inference.base_value import ValueSet
+from jedi.inference.compiled.value import CompiledName, ValueSet
+from jedi.inference.value.klass import ClassFilter
 
 from itertools import repeat
 from operator import attrgetter
 
 from textension.utils import _named_index
+from ..common import _check_flows, state_cache
 from ..tools import is_basenode, is_namenode, state
-from ..common import _check_flows
+
 
 def apply():
     optimize_SelfAttributeFilter_values()
@@ -77,16 +76,15 @@ def optimize_CompiledValueFilter_values():
         names = map(DeferredCompiledName, sequences)
 
         if isinstance(obj, type) and obj is not type:
-            # return chain(names, )
             for filter in builtin_from_name(self._inference_state, 'type').get_filters():
                 names = chain(names, filter.values())
-        #         names += filter.values()
         return names
 
     CompiledValueFilter.values = values
 
 
-# Optimizes SelfAttributeFilter.values to search within the class scope.
+# Optimizes SelfAttributeFilter.values to exclude stubs and limit the search
+# for self-assigned definitions to within a class' methods.
 def optimize_SelfAttributeFilter_values():
     from jedi.inference.value.instance import SelfAttributeFilter
     from ..tools import is_basenode, is_namenode, is_funcdef, is_classdef
@@ -98,9 +96,9 @@ def optimize_SelfAttributeFilter_values():
 
         # We only care about classes.
         if is_classdef(scope):
-            # Stubs never have self definitions.
             context = self.parent_context
 
+            # Stubs don't have self definitions.
             if not context.is_stub():
                 class_nodes = scope.children[-1].children
                 pool = []
@@ -124,7 +122,8 @@ def optimize_SelfAttributeFilter_values():
     SelfAttributeFilter.values = values
 
 
-def get_scope_name_definitions(self: ClassFilter, scope, context):
+@state_cache
+def get_scope_name_definitions(scope):
     names = []
     pool  = scope.children[:]
 
@@ -136,11 +135,12 @@ def get_scope_name_definitions(self: ClassFilter, scope, context):
         if n.get_definition(include_setitem=True):
             names += [n]
 
-    return list(self._filter(names))
+    return names
 
 
 def optimize_ClassFilter_values():
     from ..tools import is_classdef
+    from ..common import DeferredDefinition
 
     stub_classdef_cache = {}
 
@@ -153,13 +153,17 @@ def optimize_ClassFilter_values():
             # The class suite.
             scope = scope.children[-1]
 
-            if context.is_stub():
+            # A user defined class' base can be a stub value, although the
+            # context still is non-stub. So we check the node context also
+            # to determine whether the class filter values can be cached.
+            if context.is_stub() or self._node_context.is_stub():
                 if scope not in stub_classdef_cache:
-                    stub_classdef_cache[scope] = get_scope_name_definitions(self, scope, context)
+                    stub_classdef_cache[scope] = self._filter(get_scope_name_definitions(scope))
                 names = stub_classdef_cache[scope]
             else:
-                names = get_scope_name_definitions(self, scope, context)
-        return list(map(self.name_class, repeat(context), names))
+                names = self._filter(get_scope_name_definitions(scope))
+
+        return list(map(DeferredDefinition, zip(repeat(context), names)))
 
     ClassFilter.values = values
     ClassFilter._check_flows = _check_flows
@@ -167,19 +171,12 @@ def optimize_ClassFilter_values():
 
 def optimize_AnonymousMethodExecutionFilter():
     from jedi.inference.value.instance import AnonymousMethodExecutionFilter
-    from ..tools import is_funcdef
 
-    cache = {}
-
-    def get(self: AnonymousMethodExecutionFilter, name):
-        # ret = get_orig(self, name)
+    def get(self: AnonymousMethodExecutionFilter, name_string):
         scope = self._parser_scope
-        assert is_funcdef(scope)
 
-        if scope not in cache:
-            cache[scope] = get_scope_name_definitions(self, scope, self.parent_context)
-
-        names = [n for n in cache[scope] if n.value == name]
+        names = self._filter(get_scope_name_definitions(scope))
+        names = [n for n in names if n.value == name_string]
         names = self._convert_names(names)
         return names
 
@@ -192,9 +189,9 @@ def optimize_ParserTreeFilter_values():
 
     def values(self: ParserTreeFilter):
         scope   = self._parser_scope
-        context = self.parent_context
 
-        names = get_scope_name_definitions(self, scope, context)
+        names = get_scope_name_definitions(scope)
+        names = self._filter(names)
         return self._convert_names(names)
     
     ParserTreeFilter.values = values
@@ -202,10 +199,10 @@ def optimize_ParserTreeFilter_values():
 
 
 def optimize_ParserTreeFilter_filter():
-    from jedi.inference.flow_analysis import reachability_check
     from jedi.inference.filters import flow_analysis, ParserTreeFilter
     from itertools import compress, takewhile, repeat
     from builtins import map
+    from ..common import trace_flow
 
     get_start = attrgetter("start_pos")
 
@@ -216,48 +213,8 @@ def optimize_ParserTreeFilter_filter():
         if end := self._until_position:
             names = compress(names, map(end.__gt__, map(get_start, names)))
 
-        scope = self._parser_scope
-
-        for name in names:
-            if name.parent.type in {"classdef", "funcdef"}:
-                if get_parent_scope_fast(name.parent) is not scope:
-                    print("not in scope (function)")
-            else:
-                if get_parent_scope_fast(name) is not scope:
-                    print("not in scope")
-
-        if names:
-            to_check = map(reachability_check,
-                           repeat(self._node_context),
-                           repeat(self._parser_scope),
-                           names,
-                           repeat(self._origin_scope))
-            selectors = takewhile(not_reachable, map(not_unreachable, to_check))
-            return compress(names, selectors)
-        return []
+        to_check  = map(trace_flow, names, repeat(self._origin_scope))
+        selectors = takewhile(not_reachable, map(not_unreachable, to_check))
+        return compress(names, selectors)
 
     ParserTreeFilter._filter = _filter
-
-
-get_start_pos = attrgetter("line", "column")
-# TAG: get_parent_scope_fast
-# This version doesn't include flow checks nor read or write to cache.
-def get_parent_scope_fast(node):
-    if scope := node.parent:
-        pt = scope.type
-
-        either = (pt == 'tfpdef' and scope.children[0] == node) or \
-                 (pt == 'param'  and scope.name == node)
-
-        while True:
-            stype = scope.type
-            if stype in {"classdef", "funcdef", "lambdef", "file_input", "sync_comp_for", "comp_for"}:
-
-                if stype in {"file_input", "sync_comp_for", "comp_for"}:
-                    if stype != "comp_for" or scope.children[1].type != "sync_comp_for":
-                        break
-
-                elif either or get_start_pos(scope.children[-2]) < node.start_pos:
-                    break
-            scope = scope.parent
-    return scope

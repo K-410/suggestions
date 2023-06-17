@@ -1,16 +1,18 @@
+# Implements stub optimizations.
+
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter
-
-from itertools import repeat
-from operator import attrgetter
-from types import ModuleType
-
-from sys import modules as _sys_modules
 from jedi.inference.names import TreeNameDefinition
 from parso.python.tree import Name
 
 from textension.utils import instanced_default_cache, truthy_noargs
-from ..tools import is_basenode, is_namenode
 from ..common import _check_flows
+from ..tools import is_basenode, is_namenode
+
+from sys import modules as _sys_modules
+
+from itertools import repeat
+from operator import attrgetter
+from types import ModuleType
 
 stubfilter_names_cache   = {}
 module_definitions_cache = {}
@@ -33,12 +35,10 @@ def apply():
     optimize_StubModules()
 
 
-def cache_module_names(self: dict, stub_module):
-    
+def get_module_names(stub_module):
     # If the real counterpart exists for a stub and has already been
     # imported, we use its keys for names instead of parsing the stub.
     real_module = _sys_modules.get(stub_module.name.string_name)
-
     if isinstance(real_module, ModuleType):
         keys = set(real_module.__dict__)
 
@@ -66,26 +66,42 @@ def cache_module_names(self: dict, stub_module):
                         # Non-alias imports are not allowed to be exported.
                         if parent.type not in {"import_as_name", "dotted_as_name"}:
                             continue
-
                         # Aliased imports allowed only if it matches the name.
                         name, alias_name = parent.children[::2]
                         if name.value != alias_name.value:
                             continue
-
                     # Exclude names with a single underscore.
                     if value[0] is "_" != value[:2][-1]:
                         continue
 
                     add_key(value)
-
-    self[stub_module] = keys
     return keys
 
 
-module_names_cache = instanced_default_cache(cache_module_names)
+def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
+    context = stub_filter.parent_context
+    value   = context._value
+    module_names = get_module_names(value)
+
+    names = []
+    pool  = [value.tree_node]
+
+    for n in filter(is_basenode, pool):
+        pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
+
+    for n in filter(is_namenode, pool):
+        if n.value in module_names:
+            names += [n]
+
+    ret = stub_filter._filter(names)
+    ret = self[stub_filter] = list(map(stub_filter.name_class, repeat(context), ret))
+    return ret
+
+
+stub_values_cache = instanced_default_cache(get_stub_values)
 get_start_pos = attrgetter("line", "column")
 
-# TAG: get_parent_scope_fast
+
 # This version doesn't include flow checks nor read or write to cache.
 def get_parent_scope_fast(node):
     if scope := node.parent:
@@ -118,20 +134,14 @@ class CachedStubFilter(StubFilter):
         self.parent_context  = parent_context
         self._node_context   = parent_context
         self._parser_scope   = parent_context.tree_node
-        self._used_names = parent_context.tree_node.get_root_node().get_used_names()
+        self._used_names     = parent_context.tree_node.get_root_node().get_used_names()
         self.cache = {}
 
     def get(self, name):
-        try:
-            return self.cache[name]
-        except KeyError:
-            return self.cache.setdefault(name, list(super().get(name)))
-
-    def get(self, name):
-        if names := self._used_names.get(name, []):
-            names = self._filter(filter(Name.get_definition, names))
-            names = self._convert_names(names)
-        return names
+        if name := get_module_definition_by_name(self._parser_scope, name):
+            names = self._convert_names((name,))
+            return names
+        return []
 
     # This check is different from how jedi implements it.
     def _is_name_reachable(self, name):
@@ -142,22 +152,7 @@ class CachedStubFilter(StubFilter):
         return get_parent_scope_fast(base_node) is self._parser_scope
 
     def values(self: StubFilter):
-        context = self.parent_context
-        value   = context._value
-
-        names = []
-        pool  = [value.tree_node]
-
-        for n in filter(is_basenode, pool):
-            pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
-
-        module_names = module_names_cache[value]
-        for n in filter(is_namenode, pool):
-            if n.value in module_names:
-                names += [n]
-
-        ret = self._filter(names)
-        return map(self.name_class, repeat(context), ret)
+        return stub_values_cache[self]
 
 
 class CachedStubModuleContext(StubModuleContext):
@@ -193,9 +188,8 @@ def get_definition(ref: Name):
                 if value == n.value:
                     return n
         elif p.type == "file_input":
-            for n in get_module_definitions(p):
-                if value == n.value:
-                    return n
+            if n := get_module_definition_by_name(p, value):
+                return n
         p = p.parent
 
 
@@ -217,6 +211,27 @@ def get_module_definitions(module):
     return module_definitions_cache[module][1]
 
 
+definition_cache = {}
+
+
+def get_module_definition_by_name(module, string_name):
+    key = module, string_name
+    if key not in definition_cache:
+        pool = [module]
+
+        for n in filter(is_basenode, pool):
+            pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
+
+        for n in filter(is_namenode, pool):
+            if n.value == string_name and n.get_definition(include_setitem=True):
+                break
+        else:
+            n = None
+        definition_cache[key] = n
+    return definition_cache[key]
+
+
+# TODO: This exists in two places now...
 def find_definition(context, ref, position):
     if namedef := get_definition(ref):
         return TreeNameDefinition(context, namedef)
@@ -226,25 +241,22 @@ def find_definition(context, ref, position):
         n = ref
         lambdef = None
         while n := n.parent:
-            if n.type not in {"classdef", "funcdef", "lambdef"}:
-                continue
-            elif n.type == "lambdef":
-                lambdef = n
-            elif position < n.children[-2].start_pos:
-                if not lambdef or position < lambdef.children[-2].start_pos:
-                    position = n.start_pos
-                break
+            type = n.type
+            if type in {"classdef", "funcdef", "lambdef"}:
+                if type == "lambdef":
+                    lambdef = n
+                elif position < n.children[-2].start_pos:
+                    if not lambdef or position < lambdef.children[-2].start_pos:
+                        position = n.start_pos
+                    break
 
-    p = ref
-    while p := p.parent:
-
-        # We're on the dot operator.
-        if p.type == "error_node":
-            continue
-
-        for name in filter(is_namenode, p.children):
-            if name.value == ref.value and name is not ref:
-                return TreeNameDefinition(context, name)
+    node = ref
+    while node := node.parent:
+        # Skip the dot operator.
+        if node.type != "error_node":
+            for name in filter(is_namenode, node.children):
+                if name.value == ref.value and name is not ref:
+                    return TreeNameDefinition(context, name)
     return None
 
 

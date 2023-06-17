@@ -7,6 +7,7 @@ from . import (
     filters,
     interpreter,
     lookup,
+    memo,
     parser,
     safe_optimizations,
     stubs,

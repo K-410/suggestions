@@ -1,23 +1,27 @@
 # This module implements classes extending Jedi's inference capability.
 
-from jedi.inference.compiled.value import (CompiledValue, CompiledValueFilter,
-    CompiledValueName, CompiledModule)
+from jedi.inference.compiled.value import (
+    CompiledValue, CompiledValueFilter, CompiledValueName, CompiledModule)
 from jedi.inference.value.instance import CompiledInstance
-from jedi.inference.context import CompiledContext
-from jedi.cache import memoize_method
 from jedi.inference.base_value import NO_VALUES, ValueSet
 from jedi.inference.lazy_value import LazyKnownValues
+from jedi.inference.context import CompiledContext
+from jedi.inference.names import TreeNameDefinition
+from jedi.cache import memoize_method
 
-from textension.utils import PyInstanceMethod_New, _forwarder, _context, falsy_noargs, truthy_noargs
-from .tools import get_handle, make_instance, state, factory, _filter_modules
-from pathlib import Path
-from types import ModuleType
 from operator import attrgetter
+from types import ModuleType
+from pathlib import Path
 
 from parso.file_io import KnownContentFileIO
 from jedi.file_io import FileIOFolderMixin
 
+from textension.utils import PyInstanceMethod_New, _forwarder, _context, falsy_noargs, truthy_noargs
+from textension.utils import set_name, _named_index
+from .tools import get_handle, make_instance, state, factory, _filter_modules
+
 import bpy
+
 
 # For VirtualModule overrides. Assumes patch_Importer_follow was called.
 Importer_redirects = {}
@@ -281,6 +285,115 @@ def get_submodule_names():
     return get_submodule_names
 
 
+def state_cache(func):
+    memo = state.memoize_cache[func] = {}
+
+    @set_name(func.__name__ + " (state_cache)")
+    def wrapper(*args):
+        if args not in memo:
+            memo[args] = func(*args)
+        return memo[args]
+
+    return wrapper
+
+
+def state_cache_kw(func):
+    from textension.utils import dict_items
+    from builtins import tuple
+
+    memo = state.memoize_cache[func] = {}
+
+    @set_name(func.__name__ + " (state_cache_kw)")
+    def wrapper(*args, **kw):
+        key = (args, tuple(dict_items(kw)))
+        if key not in memo:
+            memo[key] = func(*args, **kw)
+        return memo[key]
+
+    return wrapper
+
+
+# A modified version of reachability check used by various optimizations.
+@factory
+def trace_flow(node, origin_scope):
+    from jedi.inference.flow_analysis import REACHABLE, UNREACHABLE, get_flow_branch_keyword, _break_check
+    from parso.python.tree import Keyword
+    from itertools import compress, count
+
+    flows  = {"for_stmt", "if_stmt", "try_stmt", "while_stmt", "with_stmt"}
+    scopes = {"classdef", "comp_for", "file_input", "funcdef",  "lambdef",
+              "sync_comp_for"}
+
+    any_scope = scopes | flows
+    is_keyword = Keyword.__instancecheck__
+
+    @state_cache
+    def iter_flows(node, include_scopes):
+        if include_scopes and (parent := node.parent):
+            type = parent.type
+            is_param = (type == 'tfpdef' and parent.children[0] == node) or \
+                       (type == 'param'  and parent.name == node)
+
+        scope = node
+        while scope := scope.parent:
+            t = scope.type
+            if t in any_scope:
+                if t in scopes:
+                    if not include_scopes:
+                        break
+                    if t in {"classdef", "funcdef", "lambdef"}:
+                        if not is_param and scope.children[-2].start_pos >= node.start_pos:  # type: ignore
+                            continue
+                    elif t == "comp_for" and scope.children[1].type != "sync_comp_for":
+                        continue
+
+                elif t == "if_stmt":
+                    children = scope.children
+                    for index in compress(count(), map(is_keyword, children)):
+                        if children[index].value != "else":
+                            n = children[index + 1]
+                            start = node.start_pos
+                            if start >= n.start_pos and start < n.end_pos:
+                                break
+                    else:
+                        yield scope
+                    continue
+                yield scope
+        return None
+
+    @state_cache
+    def trace_flow(node, origin_scope):
+        first_flow_scope = None
+
+        if origin_scope is not None:
+            branch_matches = True
+            for flow_scope in iter_flows(origin_scope, False):
+                if flow_scope in iter_flows(node, False):
+                    node_keyword   = get_flow_branch_keyword(flow_scope, node)
+                    origin_keyword = get_flow_branch_keyword(flow_scope, origin_scope)
+
+                    if branch_matches := node_keyword == origin_keyword:
+                        break
+
+                    elif flow_scope.type == "if_stmt" or \
+                        (flow_scope.type == "try_stmt" and origin_keyword == 'else' and node_keyword == 'except'):
+                            return UNREACHABLE
+
+            first_flow_scope = next(iter_flows(node, True), None)
+
+            if branch_matches:
+                while origin_scope:
+                    if first_flow_scope is origin_scope:
+                        return REACHABLE
+                    origin_scope = origin_scope.parent
+
+        # XXX: For testing. What's the point of break check?
+        # if first_flow_scope is None:
+        #     first_flow_scope = next(iter_flows(node, True), None)
+        # return _break_check(context, value_scope, first_flow_scope, node)
+        return REACHABLE
+    return trace_flow
+
 
 # This version differs from the stock ``_check_flows`` by:
 # - Doesn't break after first hit. The stock version is designed to process
@@ -288,16 +401,20 @@ def get_submodule_names():
 # - No pre-sorting. It's not applicable unless we break out of the loop.
 @factory
 def _check_flows(self, names):
-    from jedi.inference.flow_analysis import reachability_check, UNREACHABLE
+    from jedi.inference.flow_analysis import UNREACHABLE
+    from .common import trace_flow
 
-    def _check_flows(self, names):
-        context = self._node_context
-        value_scope = self._parser_scope
+    def _check_flows_o(self, names):
         origin_scope = self._origin_scope
         for name in names:
-            if reachability_check(context=context,
-                                  value_scope=value_scope,
-                                  node=name,
-                                  origin_scope=origin_scope) is not UNREACHABLE:
+            if trace_flow(name, origin_scope) is not UNREACHABLE:
                 yield name
-    return _check_flows
+    return _check_flows_o
+
+
+
+class DeferredDefinition(tuple, TreeNameDefinition):
+    __init__ = tuple.__init__
+
+    parent_context = _named_index(0)
+    tree_name      = _named_index(1)

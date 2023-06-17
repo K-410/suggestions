@@ -1,16 +1,18 @@
 # This adds optimizations for the Interpreter.
 
+from jedi.inference.value.module import ModuleValue
 from jedi.inference.context import GlobalNameFilter
 from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
-
-from jedi.api import Script, Completion
-from jedi.inference.value.module import ModuleValue
+from jedi.inference.names import TreeNameDefinition
 from jedi.inference import InferenceState
-from jedi.inference.filters import MergedFilter
-from ..tools import ensure_blank_eol, state
-from ..common import BpyTextBlockIO
+from jedi.api import Script, Completion
 
-from textension.utils import PyInstanceMethod_New, _context
+from parso.python.tree import Name
+
+from ..common import BpyTextBlockIO, state_cache
+from ..tools import ensure_blank_eol, state, is_basenode, is_namenode
+
+from textension.utils import PyInstanceMethod_New
 from operator import attrgetter
 from typing import TypeVar
 
@@ -61,16 +63,100 @@ class BpyTextModuleContext(MixedModuleContext):
 
     def get_filters(self, until_position=None, origin_scope=None):
         if not self.filters:
-            # Main module filter.
-            tree_filter = MixedParserTreeFilter(self, None, until_position, origin_scope)
-            # Names of type ``global_stmt``. XXX: Incredibly inefficient.
+            # Skip the merged filter.
+            # It's pointless since we're already returning A LIST OF FILTERS.
+            tree_filter   = MixedParserTreeFilter(self, None, until_position, origin_scope)
             global_filter = GlobalNameFilter(self)
-            self.filters = [MergedFilter(tree_filter, global_filter)]
-
+            self.filters  = [tree_filter, global_filter]
         return self.filters
 
     def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
+        if namedef := find_definition(self, name_or_str, position):
+            return namedef.infer()
+        print("BpyTextModuleContext py__getattribute__ failed for", name_or_str)
         return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
+
+
+
+def find_definition(context, ref, position):
+    if namedef := get_definition(ref):
+        return TreeNameDefinition(context, namedef)
+
+    # Inlined position adjustment from _get_global_filters_for_name.
+    if position:
+        n = ref
+        lambdef = None
+        while n := n.parent:
+            type = n.type
+            if type in {"classdef", "funcdef", "lambdef"}:
+                if type == "lambdef":
+                    lambdef = n
+                elif position < n.children[-2].start_pos:
+                    if not lambdef or position < lambdef.children[-2].start_pos:
+                        position = n.start_pos
+                    break
+
+    node = ref
+    while node := node.parent:
+        # Skip the dot operator.
+        if node.type != "error_node":
+            for name in filter(is_namenode, node.children):
+                if name.value == ref.value and name is not ref:
+                    return TreeNameDefinition(context, name)
+    return None
+
+
+definition_types = {
+    'expr_stmt',
+    'sync_comp_for',
+    'with_stmt',
+    'for_stmt',
+    'import_name',
+    'import_from',
+    'param',
+    'del_stmt',
+    'namedexpr_test',
+}
+
+
+@state_cache
+def get_module_definition_by_name(module, string_name):
+    for name in get_all_module_names(module):
+        if name.value == string_name and name.get_definition(include_setitem=True):
+            return name
+
+
+@state_cache
+def get_all_module_names(module):
+    pool = [module]
+    for n in filter(is_basenode, pool):
+        pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
+    return list(filter(is_namenode, pool))
+
+
+def get_definition(ref: Name):
+    p = ref.parent
+    type  = p.type
+    value = ref.value
+
+    if type in {"funcdef", "classdef", "except_clause"}:
+        # self is the class or function name.
+        children = p.children
+        if value == children[1].value:  # Is the function/class name definition.
+            return children[1]
+        # self is the e part of ``except X as e``.
+        elif type == "except_clause" and value == children[-1].value:
+            return children[-1]
+
+    while p:
+        if p.type in definition_types:
+            for n in p.get_defined_names(True):
+                if value == n.value:
+                    return n
+        elif p.type == "file_input":
+            if n := get_module_definition_by_name(p, value):
+                return n
+        p = p.parent
 
 
 class Interpreter(Script):
@@ -80,8 +166,9 @@ class Interpreter(Script):
     _get_module_context = PyInstanceMethod_New(attrgetter("context"))
 
     def __init__(self, code: str, _: Unused = None):
-        # Avoid memory leaks.
-        state.memoize_cache.clear()
+        # The memoize cache stores a dict of dicts keyed to functions.
+        # The first level is never cleared. This lowers the cache overhead.
+        any(map(dict.clear, state.memoize_cache.values()))
 
         state.reset_recursion_limitations()
         state.inferred_element_counts = {}

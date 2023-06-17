@@ -51,8 +51,8 @@ def _apply_optimizations():
     opgroup.class_values.apply()
     opgroup.completions.apply()
     opgroup.used_names.apply()
-    opgroup.flow_analysis.apply()
     opgroup.filters.apply()
+    opgroup.memo.apply()
 
 
 # Jedi doesn't consider the indentation at the completion site potentially

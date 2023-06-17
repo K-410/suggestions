@@ -54,9 +54,38 @@ def apply():
     optimize_getattr_static()
     optimize_BaseNode_get_leaf_for_position()
     optimize_remove_del_stmt()
+    optimize_infer_node_if_inferred()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
+
+
+def optimize_infer_node_if_inferred():
+    from jedi.inference.syntax_tree import _infer_node
+    from jedi.inference import syntax_tree
+    from ..common import state, state_cache
+
+    cache = state.memoize_cache
+
+    @state_cache
+    def _infer_node_if_inferred(context, element):
+        # Unlikely.
+        if predefined_names := context.predefined_names:
+            parent = element
+            while parent := parent.parent:
+                if predefined_names.get(parent):
+                    return _infer_node(context, element)
+                
+        key = context, element
+        if key in memo:
+            return memo[key]
+        memo[key] = NO_VALUES
+        memo[key] = ret = _infer_node(context, element)
+        return ret
+
+    memo = cache[_infer_node] = {}
+
+    _patch_function(syntax_tree._infer_node_if_inferred, _infer_node_if_inferred)
 
 
 def optimize_remove_del_stmt():
@@ -64,26 +93,29 @@ def optimize_remove_del_stmt():
 
     def _remove_del_stmt(names):
         for name in names:
-            if name.tree_name.parent.type != "del_stmt":
-                yield name
+            if n := name.tree_name:
+                if n.parent.type == "del_stmt":
+                    continue
+            yield name
 
     _patch_function(finder._remove_del_stmt, _remove_del_stmt)
 
 
+# Optimize to use iterative (not recursive) binary search.
 def optimize_BaseNode_get_leaf_for_position():
     from parso.tree import BaseNode
+    from builtins import len
     from ..tools import is_basenode
 
     def get_leaf_for_position(self, position, include_prefixes=False):
-        if not ((1, 0) <= position <= self.children[-1].end_pos):
+        if position > self.children[-1].end_pos or position < (1, 0):
+        # if not ((1, 0) <= position <= self.children[-1].end_pos):
             raise ValueError('Please provide a position that exists within this node.')
 
         elem = self
         while is_basenode(elem):
-            children = elem.children
-
             lo = 0
-            hi = len(children) - 1
+            hi = len(children := elem.children) - 1
 
             while lo != hi:
                 i = (lo + hi) >> 1
@@ -93,7 +125,6 @@ def optimize_BaseNode_get_leaf_for_position():
                     lo = i + 1
 
             elem = children[lo]
-
             if not include_prefixes and position < elem.start_pos:
                 return None
         return elem
@@ -103,12 +134,13 @@ def optimize_BaseNode_get_leaf_for_position():
 
 def optimize_ValueSet_methods():
     from jedi.inference.base_value import ValueSet
-    ValueSet.__iter__ = _forwarder("_set.__iter__")
+
     del ValueSet.__bool__
-    ValueSet.__len__ = _forwarder("_set.__len__")
-    ValueSet.__eq__ = _forwarder("_set.__eq__")
-    ValueSet.__ne__ = _forwarder("_set.__ne__")
+    ValueSet.__eq__   = _forwarder("_set.__eq__")
     ValueSet.__hash__ = _forwarder("_set.__hash__")
+    ValueSet.__iter__ = _forwarder("_set.__iter__")
+    ValueSet.__len__  = _forwarder("_set.__len__")
+    ValueSet.__ne__   = _forwarder("_set.__ne__")
 
 
 def optimize_ValueContext_methods():
@@ -117,21 +149,21 @@ def optimize_ValueContext_methods():
 
     ValueContext.inference_state = state
 
-    ValueContext.name = _forwarder("_value.name")
-    ValueContext.parent_context = _forwarder("_value.parent_context")
-    ValueContext.tree_node = _forwarder("_value.tree_node")
+    ValueContext.name            = _forwarder("_value.name")
+    ValueContext.parent_context  = _forwarder("_value.parent_context")
+    ValueContext.tree_node       = _forwarder("_value.tree_node")
 
     ValueContext.is_bound_method = _forwarder("_value.is_bound_method")
-    ValueContext.is_class = _forwarder("_value.is_class")
-    ValueContext.is_compiled = _forwarder("_value.is_compiled")
-    ValueContext.is_instance = _forwarder("_value.is_instance")
-    ValueContext.is_module = _forwarder("_value.is_module")
-    ValueContext.is_stub = _forwarder("_value.is_stub")
-    ValueContext.py__doc__ = _forwarder("_value.py__doc__")
-    ValueContext.py__name__ = _forwarder("_value.py__name__")
+    ValueContext.is_class        = _forwarder("_value.is_class")
+    ValueContext.is_compiled     = _forwarder("_value.is_compiled")
+    ValueContext.is_instance     = _forwarder("_value.is_instance")
+    ValueContext.is_module       = _forwarder("_value.is_module")
+    ValueContext.is_stub         = _forwarder("_value.is_stub")
+    ValueContext.py__doc__       = _forwarder("_value.py__doc__")
+    ValueContext.py__name__      = _forwarder("_value.py__name__")
 
     ValueContext.get_qualified_names = _forwarder("_value.get_qualified_names")
-    ValueContext.get_value = _unbound_getter("_value")
+    ValueContext.get_value       = _unbound_getter("_value")
 
     def __init__(self: ValueContext, value):
         self.predefined_names = {}
@@ -142,7 +174,6 @@ def optimize_ValueContext_methods():
 
 def optimize_Node_methods():
     from parso.tree import NodeOrLeaf
-
     from operator import indexOf
     from ..tools import is_basenode
 
@@ -165,13 +196,15 @@ def optimize_Node_methods():
 # This just inlines the nested super().__init__ calls.
 def optimize_CompiledIntance_init():
     from jedi.inference.value.instance import CompiledInstance
+    from ..tools import state
+
+    CompiledInstance.inference_state = state
 
     def __init__(self: CompiledInstance,
                  inference_state,
                  parent_context,
                  class_value,
                  arguments):
-        self.inference_state = inference_state
         self.parent_context  = parent_context
         self.class_value = class_value
         self._arguments  = arguments
@@ -182,7 +215,9 @@ def optimize_CompiledIntance_init():
 def optimize_Completion_init():
     from jedi.api.classes import Completion
     from jedi.api.keywords import KeywordName
+    from ..tools import state
 
+    Completion._inference_state = state
     is_keyword_name = KeywordName.__instancecheck__
 
     def __init__(self: Completion,
@@ -229,10 +264,11 @@ def optimize_builtins_lifetime():
 def optimize_Context_methods():
     from jedi.inference.context import ModuleContext, GlobalNameFilter
 
-    ModuleContext.py__file__ = _forwarder("_value.py__file__")
-    ModuleContext.get_global_filter = _unbound_method(GlobalNameFilter)
+    ModuleContext.py__file__   = _forwarder("_value.py__file__")
     ModuleContext.string_names = _forwarder("_value.string_names")
-    ModuleContext.code_lines = _forwarder("_value.code_lines")
+    ModuleContext.code_lines   = _forwarder("_value.code_lines")
+    ModuleContext.get_global_filter = _unbound_method(GlobalNameFilter)
+
 
 # Optimizes various methods on Value that return a fixed value.
 # This makes them faster and debug stepping in Jedi more bearable.
@@ -265,25 +301,25 @@ def optimize_ImportFrom_get_defined_names():
     def get_defined_names_o(self: ImportFrom, include_setitem=False):
         last = self.children[-1]
 
-        if last == ')':
+        if last == ")":
             last = self.children[-2]
-        elif last == '*':
+        elif last == "*":
             return  # No names defined directly.
 
-        if last.type == 'import_as_names':
+        if last.type == "import_as_names":
             as_names = islice(last.children, None, None, 2)
         else:
             as_names = [last]
 
         for name in as_names:
-            if name.type != 'name':
+            if name.type != "name":
                 name = name.children[-1]
             yield name
 
     ImportFrom.get_defined_names = get_defined_names_o
 
 
-# Optimizes to eliminate excessive os.stat calls and add heuristics.
+# Eliminate excessive os.stat calls and add heuristics.
 def optimize_create_stub_map():
     from jedi.inference.gradual.typeshed import _create_stub_map, PathInfo
     from os import listdir, access, F_OK
@@ -373,7 +409,7 @@ def optimize_ClassMixin():
 
 # Optimizes Compiled**** classes to use forwarding descriptors.
 def optimize_Compiled_methods():
-    from jedi.inference.compiled.value import CompiledValue, CompiledContext, CompiledModule, CompiledModuleContext, CompiledName
+    from jedi.inference.compiled.value import CompiledValue, CompiledContext, CompiledModule, CompiledModuleContext
 
     CompiledValue.get_qualified_names = _forwarder("access_handle.get_qualified_names")
 
@@ -403,9 +439,11 @@ def optimize_Compiled_methods():
 # and instead make it on-demand.
 def optimize_CompiledName():
     from jedi.inference.compiled.value import CompiledName
+    from ..tools import state
 
-    def __init__(self, inference_state, parent_value, name):
-        self._inference_state = inference_state
+    CompiledName._inference_state = state
+
+    def __init__(self: CompiledName, inference_state, parent_value, name):
         self._parent_value = parent_value
         self.string_name = name
 
@@ -415,8 +453,8 @@ def optimize_CompiledName():
 # Optimizes TreeContextMixin
 # Primarily binds 'infer_node' as a method.
 def optimize_TreeContextMixin():
-    from jedi.inference.context import TreeContextMixin
     from jedi.inference.syntax_tree import infer_node
+    from jedi.inference.context import TreeContextMixin
 
     TreeContextMixin.infer_node = _unbound_method(infer_node)
 
@@ -424,15 +462,14 @@ def optimize_TreeContextMixin():
 # Optimizes MergedFilter methods to use functional style calls.
 def optimize_MergedFilter():
     from jedi.inference.filters import MergedFilter
+    from textension.utils import starchain
     from builtins import list, map
-    from itertools import chain
 
-    from_iterable = chain.from_iterable
     call_values = methodcaller("values")
 
     @_unbound_method
     def values(self: MergedFilter):
-        return list(from_iterable(map(call_values, self._filters)))
+        return list(starchain(map(call_values, self._filters)))
 
     MergedFilter.values = values
 
@@ -440,8 +477,8 @@ def optimize_MergedFilter():
 def optimize_shadowed_dict():
     from jedi.inference.compiled.getattr_static import _sentinel
     from jedi.inference.compiled import getattr_static
-    from types import GetSetDescriptorType
     from builtins import type
+    from types import GetSetDescriptorType
 
     get_dict = type.__dict__["__dict__"].__get__
     get_mro = type.__dict__["__mro__"].__get__
@@ -462,6 +499,7 @@ def optimize_shadowed_dict():
     _patch_function(getattr_static._shadowed_dict, _shadowed_dict)
 
 
+# Eliminates unnecessary checks for known types.
 def optimize_getattr_static():
     from jedi.inference.compiled.getattr_static import (
         _sentinel,
@@ -472,8 +510,10 @@ def optimize_getattr_static():
         _static_getmro,
         getattr_static as _getattr_static
     )
+
+    from builtins import isinstance, type
     from types import MemberDescriptorType, ModuleType
-    from builtins import type
+
     common_dicts = {
         type: type.__dict__["__dict__"].__get__,
         object: type.__dict__["__dict__"].__get__,
@@ -491,7 +531,7 @@ def optimize_getattr_static():
                 try:
                     # Some modules like bpy.types use custom __getattr__.
                     instance_result = common_dicts[cls](obj)[attr]
-                except KeyError:
+                except:  # KeyError
                     pass
             else:
                 mro = _static_getmro(cls)
@@ -511,7 +551,7 @@ def optimize_getattr_static():
                     try:
                         cls_result = entry.__dict__[attr]
                         break
-                    except KeyError:
+                    except:  # KeyError
                         pass
 
         if instance_result is not _sentinel and cls_result is not _sentinel:
@@ -531,7 +571,7 @@ def optimize_getattr_static():
                 if _shadowed_dict(type(entry)) is _sentinel:
                     try:
                         return entry.__dict__[attr], False
-                    except KeyError:
+                    except:  # KeyError
                         pass
         if default is not _sentinel:
             return default, False
@@ -543,8 +583,8 @@ def optimize_getattr_static():
 # Optimizes _static_getmro to read mro.__class__.
 def optimize_static_getmro():
     from jedi.inference.compiled import getattr_static
-    from builtins import type, list
     from jedi.debug import warning
+    from builtins import tuple, type, list
 
     get_mro = type.__dict__['__mro__'].__get__
 
@@ -581,19 +621,18 @@ def optimize_BaseName_properties():
 
 
 def optimize_complete_global_scope():
-    from itertools import chain
-    from builtins import map
     from jedi.api.completion import Completion, \
         get_user_context, get_flow_scope_node, get_global_filters
+    from textension.utils import starchain
+    from builtins import map
 
     get_values = methodcaller("values")
-    from_iterable = chain.from_iterable
 
     def _complete_global_scope(self: Completion):
         context = get_user_context(self._module_context, self._position)
         flow_scope_node = get_flow_scope_node(self._module_node, self._position)
         filters = get_global_filters(context, self._position, flow_scope_node)
-        return from_iterable(map(get_values, filters))
+        return starchain(map(get_values, filters))
 
     # Completion._complete_global_scope = _complete_global_scope
 
@@ -613,6 +652,7 @@ def optimize_Leaf():
         self.line, self.column = start_pos
         self.prefix = prefix
         self.parent = None
+
     Leaf.__init__ = __init__
 
 
