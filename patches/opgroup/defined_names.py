@@ -142,9 +142,10 @@ def optimize_ExprStmt_get_defined_names():
 
         if children[1].type == "annassign":
             # ``children[0]`` is the only definition of an annotation.
-            yield children[0]
+            return [children[0]]
 
-        i = 1
+        i   = 1
+        ret = []
         for c in children[1:len(children) - 1:2]:
 
             # ``c`` is an assignment operator.
@@ -152,10 +153,11 @@ def optimize_ExprStmt_get_defined_names():
                 name = children[i - 1]
                 if name.type not in {'testlist_star_expr', 'testlist_comp', 'exprlist',
                                      'testlist', 'atom', 'star_expr', 'power', 'atom_expr'}:
-                    yield name
+                    ret += [name]
                 else:
-                    yield from _defined_names(name, include_setitem)
+                    ret += _defined_names(name, include_setitem)
             i += 2
+        return ret
 
     ExprStmt.get_defined_names = get_defined_names
 
