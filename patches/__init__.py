@@ -454,10 +454,8 @@ def patch_compiledvalue():
     # as RNA instances instead of classes.
     def py__call__extended(self: CompiledValue, arguments):
         obj = self.access_handle.access._obj
-        if hasattr(obj, "bl_rna"):
-            return ValueSet((RnaValue(obj, self.parent_context).instance,))
 
-        elif isinstance(obj, GenericAlias):
+        if isinstance(obj, GenericAlias):
             a = create_access_path(self.inference_state, convert_alias(obj))
             return create_from_access_path(self.inference_state, a).execute_annotation()
 

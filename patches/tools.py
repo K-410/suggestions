@@ -8,7 +8,7 @@ from parso.python.tree import Name
 from parso.grammar import load_grammar
 from parso.tree import BaseNode
 
-from textension.utils import factory, namespace, inline, _check_type
+from textension.utils import factory, namespace, inline, _check_type, consume
 import textension
 
 import os
@@ -30,8 +30,7 @@ class StateModuleCache(dict):
         if not value_set:
             print("Warning: Empty ValueSet for", string_names)
 
-        all(_check_type(s, str) for s in string_names)
-
+        consume(_check_type(s, str) for s in string_names)
         self[string_names] = value_set
 
 

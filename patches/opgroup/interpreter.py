@@ -12,11 +12,13 @@ from parso.python.tree import Name
 from ..common import BpyTextBlockIO, state_cache
 from ..tools import ensure_blank_eol, state, is_basenode, is_namenode
 
-from textension.utils import PyInstanceMethod_New
+from textension.utils import PyInstanceMethod_New, consume
 from operator import attrgetter
 from typing import TypeVar
 
+
 Unused = TypeVar("Unused")
+state_values = state.memoize_cache.values()
 
 
 def apply():
@@ -168,7 +170,7 @@ class Interpreter(Script):
     def __init__(self, code: str, _: Unused = None):
         # The memoize cache stores a dict of dicts keyed to functions.
         # The first level is never cleared. This lowers the cache overhead.
-        any(map(dict.clear, state.memoize_cache.values()))
+        consume(map(dict.clear, state_values))
 
         state.reset_recursion_limitations()
         state.inferred_element_counts = {}

@@ -1,17 +1,12 @@
 # This module implements auto-completions.
 
-from textension.utils import TextOperator, factory, _check_type, km_def, \
-    safe_redraw, is_spacetext, _context, _system, namespace
-from textension.ui.widgets import ListBox, ListEntry, TextView
-from textension import utils
-from textension import ui
+from textension.utils import _context, _system
+from textension import utils, ui
 
 from operator import attrgetter, methodcaller
-from itertools import chain
 
 import os
 import sys
-import time
 import bpy
 
 
@@ -21,7 +16,7 @@ separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
 BLF_BOLD = 1 << 11  # ``blf.enable(0, BLF_BOLD)`` adds bold effect.
 
 
-class SuggestionsEntry(ListEntry):
+class SuggestionsEntry(ui.widgets.ListEntry):
     @property
     def string(self):
         return self.completion.name
@@ -30,11 +25,11 @@ class SuggestionsEntry(ListEntry):
         self.completion = completion
 
 
-class Description(TextView):
+class Description(ui.widgets.TextView):
     pass
 
 
-class Suggestions(ListBox):
+class Suggestions(ui.widgets.ListBox):
     st:  bpy.types.SpaceTextEditor
 
     is_visible: bool        = False
@@ -63,7 +58,7 @@ class Suggestions(ListBox):
     match_foreground_color = (0.87, 0.60, 0.25, 1.0)
 
     def __init__(self, st: bpy.types.SpaceTextEditor):
-        _check_type(st, bpy.types.SpaceTextEditor)
+        utils._check_type(st, bpy.types.SpaceTextEditor)
 
         super().__init__(parent=None)
         self.update_uniforms(shadow=(0, 0, 0, 0.5))
@@ -125,14 +120,14 @@ class Suggestions(ListBox):
     def dismiss(self):
         if self.is_visible:
             self.is_visible = False
-            safe_redraw()
+            utils.safe_redraw()
             ui.idle_update()
 
     def hit_test(self, x, y):
         return self.description.hit_test(x, y) or super().hit_test(x, y)
 
 
-@factory
+@utils.factory
 def get_instance() -> Suggestions:
     return utils.make_space_data_instancer(Suggestions)
 
@@ -153,13 +148,13 @@ def draw_suggestions():
 
 @classmethod
 def instance_poll(cls, context):
-    if is_spacetext(context.space_data):
+    if isinstance(context.space_data, bpy.types.SpaceTextEditor):
         return get_instance().poll()
     return False
 
 
-class TEXTENSION_OT_suggestions_commit(TextOperator):
-    km_def("Text Generic", 'RET', 'PRESS')
+class TEXTENSION_OT_suggestions_commit(utils.TextOperator):
+    utils.km_def("Text Generic", 'RET', 'PRESS')
     bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
 
     poll = instance_poll
@@ -200,8 +195,8 @@ class TEXTENSION_OT_suggestions_commit(TextOperator):
         return {'PASS_THROUGH'}
 
 
-class TEXTENSION_OT_suggestions_dismiss(TextOperator):
-    km_def("Text", 'ESC', 'PRESS')
+class TEXTENSION_OT_suggestions_dismiss(utils.TextOperator):
+    utils.km_def("Text", 'ESC', 'PRESS')
     bl_options = {'INTERNAL'}
 
     def execute(self, context):
@@ -215,11 +210,11 @@ class TEXTENSION_OT_suggestions_dismiss(TextOperator):
 
 # TODO: Make this generic and move to ui module.
 # TODO: This requires implementing widget focus.
-class TEXTENSION_OT_suggestions_navigate(TextOperator):
-    km_def("Text Generic", 'UP_ARROW', 'PRESS', repeat=True, action='UP')
-    km_def("Text Generic", 'DOWN_ARROW', 'PRESS', repeat=True, action='DOWN')
-    km_def("Text Generic", 'PAGE_UP', 'PRESS', repeat=True, action='PAGE_UP')
-    km_def("Text Generic", 'PAGE_DOWN', 'PRESS', repeat=True, action='PAGE_DOWN')
+class TEXTENSION_OT_suggestions_navigate(utils.TextOperator):
+    utils.km_def("Text Generic", 'UP_ARROW', 'PRESS', repeat=True, action='UP')
+    utils.km_def("Text Generic", 'DOWN_ARROW', 'PRESS', repeat=True, action='DOWN')
+    utils.km_def("Text Generic", 'PAGE_UP', 'PRESS', repeat=True, action='PAGE_UP')
+    utils.km_def("Text Generic", 'PAGE_DOWN', 'PRESS', repeat=True, action='PAGE_DOWN')
 
     bl_options = {'INTERNAL'}
 
@@ -302,8 +297,8 @@ def get_interpreter(text):
     return Interpreter(text.as_string(), [])
 
 
-class TEXTENSION_OT_suggestions_complete(TextOperator):
-    km_def("Text Generic", 'SPACE', 'PRESS', ctrl=1)
+class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
+    utils.km_def("Text Generic", 'SPACE', 'PRESS', ctrl=1)
 
     poll = utils.text_poll
 
@@ -327,7 +322,7 @@ class TEXTENSION_OT_suggestions_complete(TextOperator):
 
             # TODO: Weak.
             instance.is_visible = bool(instance.lines)
-            safe_redraw()
+            utils.safe_redraw()
             # XXX: Causes inconsistent repeated typing. Disable for now.
             # ui.idle_update()
         finally:
@@ -343,7 +338,7 @@ def reset_entries(self, context):
     utils.redraw_editors()
 
 
-@factory
+@utils.factory
 def _set_runtime_uniforms():
     def retself(obj): return obj
 
@@ -386,13 +381,13 @@ def update_resize_highlights(self, context):
     ui.EdgeResizer.show_resize_handles = getattr(self, "show_resize_handles")
     get_sizers = attrgetter("resizer.sizers")
     zero_alpha = methodcaller("set_alpha", 0.0)
-    any(map(zero_alpha, chain.from_iterable(map(get_sizers, _instances))))
+    utils.consume(map(zero_alpha, utils.starchain(map(get_sizers, _instances))))
 
 
 def update_resizer_colors(self: "TEXTENSION_PG_suggestions", context):
     get_sizer_rects = attrgetter("resizer.horz.rect", "resizer.vert.rect")
     color = tuple(self.resizer_color) + (0.0,)
-    for rect in chain.from_iterable(map(get_sizer_rects, _instances)):
+    for rect in utils.starchain(map(get_sizer_rects, _instances)):
         rect.background_color = color
         rect.border_color = color
 
