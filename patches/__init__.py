@@ -46,7 +46,6 @@ def _apply_optimizations():
     opgroup.lookup.apply()
     opgroup.safe_optimizations.apply()
     opgroup.defined_names.apply()
-    # optimizations.context.apply()
     opgroup.stubs.apply()
     opgroup.class_values.apply()
     opgroup.completions.apply()

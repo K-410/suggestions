@@ -1,7 +1,6 @@
 from . import (
     class_values,
     completions,
-    context,
     defined_names,
     filters,
     interpreter,
