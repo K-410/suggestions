@@ -1,11 +1,9 @@
 # Implements stub optimizations.
 
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter
-from jedi.inference.names import TreeNameDefinition
-from parso.python.tree import Name
 
 from textension.utils import instanced_default_cache, truthy_noargs
-from ..common import _check_flows, DeferredStubName
+from ..common import _check_flows, DeferredStubName, find_definition
 from ..tools import is_basenode, is_namenode
 
 from sys import modules as _sys_modules
@@ -99,29 +97,6 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
 
 
 stub_values_cache = instanced_default_cache(get_stub_values)
-get_start_pos = attrgetter("line", "column")
-
-
-# This version doesn't include flow checks nor read or write to cache.
-def get_parent_scope_fast(node):
-    if scope := node.parent:
-        pt = scope.type
-
-        either = (pt == 'tfpdef' and scope.children[0] == node) or \
-                 (pt == 'param'  and scope.name == node)
-
-        while True:
-            stype = scope.type
-            if stype in {"classdef", "funcdef", "lambdef", "file_input", "sync_comp_for", "comp_for"}:
-
-                if stype in {"file_input", "sync_comp_for", "comp_for"}:
-                    if stype != "comp_for" or scope.children[1].type != "sync_comp_for":
-                        break
-
-                elif either or get_start_pos(scope.children[-2]) < node.start_pos:
-                    break
-            scope = scope.parent
-    return scope
 
 
 class CachedStubFilter(StubFilter):
@@ -165,51 +140,6 @@ class CachedStubModuleContext(StubModuleContext):
         return ret
 
 
-def get_definition(ref: Name):
-    p = ref.parent
-    type  = p.type
-    value = ref.value
-
-    if type in {"funcdef", "classdef", "except_clause"}:
-
-        # self is the class or function name.
-        children = p.children
-        if value == children[1].value:  # Is the function/class name definition.
-            return children[1]
-
-        # self is the e part of ``except X as e``.
-        elif type == "except_clause" and value == children[-1].value:
-            return children[-1]
-
-    while p:
-        if p.type in definition_types:
-            for n in p.get_defined_names(True):
-                if value == n.value:
-                    return n
-        elif p.type == "file_input":
-            if n := get_module_definition_by_name(p, value):
-                return n
-        p = p.parent
-
-
-def get_module_definitions(module):
-    if module not in module_definitions_cache or \
-       module_definitions_cache[module][0] != id(module._used_names):
-        
-        definitions = []
-        module_definitions_cache[module] = (id(module._used_names), definitions)
-
-        pool = [module]
-
-        for n in filter(is_basenode, pool):
-            pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
-
-        for n in filter(is_namenode, pool):
-            if n.get_definition(include_setitem=True):
-                definitions += [n]
-    return module_definitions_cache[module][1]
-
-
 definition_cache = {}
 
 
@@ -228,35 +158,6 @@ def get_module_definition_by_name(module, string_name):
             n = None
         definition_cache[key] = n
     return definition_cache[key]
-
-
-# TODO: This exists in two places now...
-def find_definition(context, ref, position):
-    if namedef := get_definition(ref):
-        return TreeNameDefinition(context, namedef)
-
-    # Inlined position adjustment from _get_global_filters_for_name.
-    if position:
-        n = ref
-        lambdef = None
-        while n := n.parent:
-            type = n.type
-            if type in {"classdef", "funcdef", "lambdef"}:
-                if type == "lambdef":
-                    lambdef = n
-                elif position < n.children[-2].start_pos:
-                    if not lambdef or position < lambdef.children[-2].start_pos:
-                        position = n.start_pos
-                    break
-
-    node = ref
-    while node := node.parent:
-        # Skip the dot operator.
-        if node.type != "error_node":
-            for name in filter(is_namenode, node.children):
-                if name.value == ref.value and name is not ref:
-                    return TreeNameDefinition(context, name)
-    return None
 
 
 def on_missing_stub_filter(self: dict, module: StubModuleValue):

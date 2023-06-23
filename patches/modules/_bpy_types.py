@@ -1,27 +1,53 @@
-
+# This module implements RNA type inference.
 
 from jedi.inference.compiled.value import CompiledValueFilter, SignatureParamName
 from jedi.inference.value.instance import ValueSet, NO_VALUES
-from jedi.inference.signature import AbstractSignature
 from jedi.inference.lazy_value import LazyKnownValues
+from jedi.inference.signature import AbstractSignature
+from jedi.inference.compiled import builtin_from_name
 
+from itertools import chain, repeat
 from inspect import Parameter
-from itertools import chain
 
-from textension.utils import _context
-from ..tools import runtime, state, make_instance_name, make_compiled_name, make_compiled_value, make_instance
+from textension.utils import _context, _forwarder, inline
 
-from ..common import VirtualFilter, VirtualInstance, VirtualName, VirtualValue, get_mro_dict
 from ._mathutils import float_vector_map
+from ..common import VirtualFilter, VirtualInstance, VirtualName, VirtualValue, get_mro_dict, state_cache
+from ..tools import runtime, state, make_compiled_value, make_instance
 
 import bpy
 import _bpy
-
 import types
+
+from bpy_types import RNAMeta, StructRNA
+
+
+rnadef_types = bpy.types.Property, bpy.types.Function
+rna_types = RNAMeta, StructRNA
 
 
 def apply():
     patch_AnonymousParamName_infer()
+
+
+@inline
+def is_bpy_func(obj) -> bool:
+    return bpy.types.Function.__instancecheck__
+
+
+@inline
+def is_bpy_struct(obj) -> bool:
+    return bpy.types.bpy_struct.__instancecheck__
+
+
+@inline
+def is_id(obj) -> bool:
+    return bpy.types.ID.__instancecheck__
+
+
+@inline
+def is_bpy_struct_subclass(obj) -> bool:
+    return bpy.types.bpy_struct.__subclasscheck__
 
 
 callable_types = (
@@ -43,7 +69,7 @@ context_type_map = {
     "active_annotation_layer": ("GPencilLayer", False),
     "active_bone": ("EditBone", False),
     "active_file": ("FileSelectEntry", False),
-    "active_gpencil_frame": ("GreasePencilLayer", True),
+    "active_gpencil_frame": ("GPencilFrame", True),  # Was GreasePencilLayer (wrong).
     "active_gpencil_layer": ("GPencilLayer", True),
     "active_node": ("Node", False),
     "active_object": ("Object", False),
@@ -152,70 +178,23 @@ rna_py_type_map = {
     "FLOAT": float
 }
 
-def get_context_instance(value_context):
+
+def get_context_instance():
     if not runtime.context_rna:
-        runtime.context_rna = ContextInstance(bpy.types.Context.bl_rna, value_context)
+        runtime.context_rna = ContextInstance(bpy.types.Context.bl_rna)
     return runtime.context_rna
 
 
-def get_rna_value(obj, value_context):
+def get_rna_value(obj, parent_value):
     if isinstance(obj, bpy.props._PropertyDeferred):
-        return PropertyValue(getattr(bpy.types, obj.function.__name__), value_context)
+        return PropertyValue((getattr(bpy.types, obj.function.__name__), parent_value))
     if not isinstance(obj, type) and obj.as_pointer() == context_rna_pointer:
-        return get_context_instance(value_context)
-    return RnaValue(obj, value_context)
-
-
-def instance_from_rnadef(rnadef, context):
-    name = rnadef.identifier
-    if isinstance(rnadef, bpy.types.Function):
-        return RnaFunction(rnadef, context).instance
-
-    type = rnadef.type
-    if type == 'POINTER':
-        return RnaValue(rnadef.fixed_type, context).instance
-
-    elif type == 'COLLECTION':
-        return PropCollectionValue(rnadef, context).instance
-
-    elif type in rna_py_type_map:
-        # INT, FLOAT and BOOLEAN are only types that define ``array_length``.
-        if type not in {'STRING', 'ENUM'} and rnadef.array_length != 0:
-            if rnadef.subtype in float_vector_map:
-                return MathutilsValue(float_vector_map[rnadef.subtype], context).instance
-            return PropArrayValue(rna_py_type_map[type], context).instance
-
-        return VirtualValue(rna_py_type_map[type], context).instance
-
-    else:
-        assert False, f"RnaFilter.values unhandled: {name} {type}"
-
-def make_instance_name_from_rnadef(rnadef, context):
-    return instance_from_rnadef(rnadef, context).as_name(rnadef.identifier)
+        return get_context_instance()
+    return RnaValue((obj.bl_rna, parent_value))
 
 
 get_dict = type.__dict__["__dict__"].__get__
 get_mro = type.__dict__["__mro__"].__get__
-
-
-def map_rna_instance_names(obj, context, is_instance):
-    mapping = {}
-
-    for name, value in get_mro_dict(obj).items():
-        if isinstance(value, bpy.types.bpy_struct):
-            mapping[name] = RnaValue(value.rna_type, context).instance.as_name(name)
-        elif not is_instance or isinstance(value, callable_types):
-            mapping[name] = make_compiled_name(value, context, name)
-        else:
-            mapping[name] = make_instance_name(value, context, name)
-    return mapping
-
-
-def map_rna(rna, context):
-    mapping = {}
-    for name, rnadef in chain(rna.functions.items(), rna.properties.items()):
-        mapping[name] = instance_from_rnadef(rnadef, context).as_name(rnadef.identifier)
-    return mapping
 
 
 property_instance_map = {
@@ -232,42 +211,140 @@ property_instance_map = {
 }
 
 
+# TODO: Is this needed?
 class PropertyFilter(VirtualFilter):
-    def map_values(self, value, is_instance):
-        if is_instance:
-            name = value.obj.bl_rna.identifier
-            obj = property_instance_map[name]
-            assert obj
-        return map_rna_instance_names(obj, value.as_context(), True)
+    pass
 
 
+# TODO: Is this needed?
 class PropertyInstance(VirtualInstance):
     pass
 
 
+# TODO: Is this needed?
 class PropertyValue(VirtualValue):
     filter_cls   = PropertyFilter
     instance_cls = PropertyInstance
 
 
+def rnadef_to_value(rnadef, parent):
+    if is_bpy_func(rnadef):
+        return RnaFunction((rnadef, parent))
+    
+    assert is_bpy_struct(rnadef), f"rnadef_to_value failed for {rnadef} ({parent})"
+
+    type = rnadef.type
+
+    if type == 'POINTER':
+        return RnaValue((rnadef.fixed_type, parent))
+    elif type == 'COLLECTION':
+        return PropCollectionValue((rnadef, parent))
+    
+    assert type in rna_py_type_map, f"rnadef_to_value failed for {rnadef} ({parent}), type: {type}"
+
+    # ``INT``, ``FLOAT`` and ``BOOLEAN`` can be vectors.
+    if type not in {'STRING', 'ENUM'} and rnadef.array_length != 0:
+        if rnadef.subtype in float_vector_map:
+            return make_compiled_value(float_vector_map[rnadef.subtype], parent.as_context())
+            # return MathutilsValue((float_vector_map[rnadef.subtype], parent))
+        return PropArrayValue((rna_py_type_map[type], parent))
+    return builtin_from_name(state, rna_py_type_map[type].__name__)
+
+
+rna_fallbacks = {}
+
+
+# TODO: Implement using callbacks.
+def add_Object_member_fallbacks():
+    items = rna_fallbacks["Object"] = {}
+    items["children"] = list[bpy.types.Object]
+    items["children_recursive"] = list[bpy.types.Object]
+
+
+add_Object_member_fallbacks()
+
+
+
+def get_id_data(value: "RnaValue"):
+    while value and isinstance(value, RnaValue) and not is_id(value.obj):
+        value = value.parent_value
+    return value
+
+
+def rna_fallback_value(parent, name):
+    if overrides := rna_fallbacks.get(parent.name.string_name):
+        if rtype := overrides.get(name):
+            # TODO: Still needs implementation.
+            from jedi.inference.value.iterable import FakeTuple
+            from jedi.inference.lazy_value import LazyKnownValue
+            v = LazyKnownValue(RnaValue((bpy.types.Object, parent)))
+            return ValueSet([FakeTuple(state, [v])])
+
+
+# An RnaName doesn't have to infer to an RnaValue. It just means the name
+# is an RnaValue member name.
+class RnaName(VirtualName):
+    def infer(self):
+        parent = self.parent_value
+        name  = self.string_name
+        obj = parent.members[name]
+
+        if isinstance(parent, ContextInstance) and isinstance(obj, type):
+            value = RnaValue((obj.bl_rna, parent))
+
+        elif isinstance(obj, rnadef_types):
+            value = rnadef_to_value(obj, parent) or make_compiled_value(obj, parent.as_context())
+
+        elif name == "id_data":
+            value = get_id_data(parent)
+            # If this fails, some rna values aren't struct definitions.
+            assert value, f"Unhandled id_data object: {obj} ({name})"
+
+        elif tmp := rna_fallback_value(parent, name):
+            value = tmp
+
+        else:
+            if name == "bl_rna":
+                value = RnaValue((obj, parent))
+            else:
+                value = make_compiled_value(obj, parent.as_context())
+                print(f"RnaName: Unhandled member '{parent.name.string_name}.{name}'")
+            return ValueSet((value,))
+        return value.py__call__(None)
+
+    def __repr__(self):
+        return f"{repr(self.parent_value)}.{self.string_name}"
+
+
 # This class implements the RNA value lookup.
 class RnaFilter(VirtualFilter):
-    def map_values(self, value, is_instance):
-        rna = value.obj
+    name_cls = RnaName
 
-        if rna != rna.bl_rna:  # Likely an RNA instance.
-            rna = rna.bl_rna
-            is_instance = True
+    @state_cache
+    def values(self):
+        parent = self.compiled_value
+        bl_rna = parent.obj
 
-        elif not is_instance:
-            rna = bpy.types.Struct.bl_rna
+        if instanced := self.is_instance or bl_rna != bl_rna.bl_rna:
+            # Instances get everything
+            members = parent.members
 
-        context = value.as_context()
-        return map_rna(rna, context) | map_rna_instance_names(rna, context, is_instance)
+        else:
+            # Non-instances get bpy.types.Struct members and class members.
+            members  = RnaValue((bpy.types.Struct.bl_rna, parent)).members
+            members |= get_mro_dict(bl_rna)
+
+        data = zip(repeat(parent), members, repeat(instanced))
+        return list(map(RnaName, data))
+
+    def __repr__(self):
+        return f"RnaFilter({self.compiled_value.obj.identifier})"
 
 
-# Represents an instance of an RnaValue.
+# Represents an instance of an RnaValue or RnaFunction.
 class RnaInstance(VirtualInstance):
+    obj = _forwarder("class_value.obj")
+
     @property
     def api_type(self):
         if isinstance(self.class_value.obj, bpy.types.Function):
@@ -275,17 +352,25 @@ class RnaInstance(VirtualInstance):
         return super().api_type
 
     # For eg ``bpy.data.objects[0].copy().``.
+    # XXX: Arguments aren't used for now.
     def py__call__(self, arguments):
         if self.api_type == "function":
+
+            # bpy_struct.copy() has ``bpy.types.ID`` as its return type,
+            # so we need to map it to the real value.
+            if self.obj.identifier == "copy":
+                return self.class_value.parent_value.py__call__(None)
+
             for rnadef in self.class_value.obj.parameters:
                 if rnadef.is_output:
-                    return ValueSet((make_instance_name_from_rnadef(rnadef, self.parent_context)._value,))
+                    return rnadef_to_value(rnadef, self.class_value).py__call__(None)
+        print("RnaInstance.py__call__ returned nothing for", self)
         return NO_VALUES
 
     # Implements subscript for bpy_prop_collections.
     def py__simple_getitem__(self, index):
         if isinstance(self.class_value, PropCollectionValue):
-            instance = RnaValue(self.class_value.obj.fixed_type, self.parent_context).instance
+            instance = RnaValue((self.class_value.obj.fixed_type, self.class_value)).instance
             return ValueSet((instance,))
         return NO_VALUES
 
@@ -293,6 +378,9 @@ class RnaInstance(VirtualInstance):
         if isinstance(self.class_value, RnaFunction):
             return self.class_value.get_signatures()
         return ()
+
+    def __repr__(self):
+        return f"RnaInstance({self.class_value.obj.identifier})"
 
 
 # RNA value created from struct RNA definition.
@@ -312,21 +400,48 @@ class RnaValue(VirtualValue):
         return ()
 
     def py__doc__(self):
-        if not (doc := self.rna.description):
+        if not (doc := self.obj.description):
             print(f"Missing ``description`` for {self.rna}")
         return doc
 
     def py__name__(self):
-        return self.obj.bl_rna.identifier
+        return self.obj.identifier
+
+    @property
+    @state_cache
+    def members(self):
+        rna = self.obj
+
+        # It's possible we're accessing a real instance like bpy.data.
+        # ``bl_rna`` is self-referencing so this is the safest way.
+        if rna != rna.bl_rna:
+            print("passing RnaValue as real rnas!:", rna, "vs", rna.bl_rna)
+        rna = rna.bl_rna
+
+        return get_mro_dict(rna) | dict(chain(rna.functions.items(), rna.properties.items()))
+
+    def __repr__(self):
+        return f"RnaValue({self.obj.identifier})"
+
+    def py__mro__(self):
+        assert is_bpy_struct(self.obj)
+        context = self.as_context()
+
+        yield self
+
+        for obj in type(self.obj.bl_rna).__mro__:
+            if is_bpy_struct_subclass(obj) and obj is not StructRNA:
+                yield RnaValue((obj.bl_rna, self))
+            else:
+                yield make_compiled_value(obj, context)
+
+    def py__doc__(self):
+        return self.obj.description
 
 
-class RnaName(VirtualName):
-    value_type = RnaValue
-
-
+# TODO: Is this needed?
 class RnaFunctionFilter(VirtualFilter):
-    def map_values(self, value, is_instance):
-        return map_rna_instance_names(bpy.types.bpy_func, value.as_context(), is_instance)
+    pass
 
 
 class RnaFunction(RnaValue):
@@ -343,12 +458,14 @@ class RnaFunction(RnaValue):
             ret += [p]
 
         for param in self.obj.parameters:
-            if param.is_output:
-                continue
-
-            p = RnaFunctionParamName(value=self, param_rna=param,)
-            ret += [p]
+            if not param.is_output:
+                ret += [RnaFunctionParamName(value=self, param_rna=param,)]
         return ret
+
+    @property
+    @state_cache
+    def members(self):
+        return get_mro_dict(bpy.types.bpy_func)
 
 
 class RnaFunctionParamName(SignatureParamName):
@@ -408,87 +525,81 @@ class RnaFunctionSignature(AbstractSignature):
 
 
 class MathutilsValue(VirtualValue):
-    filter_cls = CompiledValueFilter
-
-
-class PropArrayFilter(VirtualFilter):
-    def map_values(self, value: "PropArrayValue", is_instance):
-        return map_rna_instance_names(value.obj, value.as_context(), is_instance)
+    def get_filters(self, is_instance=False, origin_scope=None):
+        yield CompiledValueFilter(state, self, is_instance)
 
 
 # bpy.types.Object.[bound_box | rotation_axis_angle | etc.]
 class PropArrayValue(VirtualValue):
-    filter_cls = PropArrayFilter
-
-    def __init__(self, getitem_type, context):
-        super().__init__(bpy.types.bpy_prop_array, context)
-        self.getitem_type = getitem_type
-
-    # Implements subscript.
+    # Implements subscript for bpy_prop_array types.
     def py__simple_getitem__(self, index):
-        return ValueSet((make_instance(self.getitem_type, self.parent_context),))
+        return ValueSet((make_instance(self.obj, self.parent_context),))
 
-    # Implements for loop inference.
+    # Implements for loop variable inference.
     def py__iter__(self, contextualized_node=None):
         return ValueSet((LazyKnownValues(self.py__simple_getitem__(None)),))
 
+    @property
+    @state_cache
+    def members(self):
+        return get_mro_dict(bpy.types.bpy_prop_array)
+
 
 class PropCollectionFilter(VirtualFilter):
-    def map_values(self, value, is_instance):
-        obj     = value.obj
-        context = value.as_context()
-        mapping = map_rna_instance_names(bpy.types.bpy_prop_collection, context, is_instance)
-        mapping |= map_rna_instance_names(obj, context, is_instance)
-
-        if is_instance and obj.srna:
-            mapping |= map_rna(obj.srna, context)
-        return mapping
+    name_cls = RnaName
 
 
 class PropCollectionValue(RnaValue):
     filter_cls = PropCollectionFilter
 
+    @property
+    @state_cache
+    def members(self):
+        mapping = get_mro_dict(bpy.types.bpy_prop_collection)
+        if srna := self.obj.srna:
+            mapping |= dict(chain(srna.functions.items(), srna.properties.items()))
+        return mapping
+
 
 class ContextInstance(RnaInstance):
-    def __init__(self, obj, context):
-        self.class_value = RnaValue(obj, context)
-        self._arguments  = None
+    parent_context = _forwarder("_parent_context")
 
-        self.filter = ContextInstanceFilter((self.class_value, True))
+    # The context is static so make members an attribute.
+    members: dict = None
+
+    def __init__(self, obj):
+        self._arguments  = None
+        self.filter = ContextInstanceFilter((self, True))
+        from ._bpy import Importer_redirects
+
+        module = Importer_redirects["bpy"]
+        self._parent_context = module.as_context()
+
+        class_value = RnaValue((obj, module))
+        context_members = class_value.members.copy()
+
+        for member in _bpy.context_members()["screen"]:
+            attr, is_sequence = context_type_map.get(member, ("", False))
+            if obj := getattr(bpy.types, attr, None):
+                context_members[member] = obj if not is_sequence else list[obj]
+            else:
+                pass  # Could print a warning. This is a bug.
+
+        self.members = context_members
+        self.class_value = class_value
 
     def get_filters(self, *_, **__):
         yield self.filter
 
-
-def context_rna_name_from_string(string, context):
-    name_str, is_collection = context_type_map.get(string, ('', False))
-    if cls := getattr(bpy.types, name_str, None):
-        name = RnaName.from_object(cls.bl_rna, context, string, instance=True)
-        if is_collection:
-            name = make_instance_name(list[name], context, string)
-        return name
-    return None
+    def _get_value_filters(self, *_):
+        return (self.filter,)
 
 
 class ContextInstanceFilter(RnaFilter):
-    def map_values(self, value, is_instance):
-        mapping  = super().map_values(value, is_instance)
-        context  = self.compiled_value.parent_context
-
-        for name in _bpy.context_members()["screen"]:
-            if rna_name := context_rna_name_from_string(name, context):
-                mapping[name] = rna_name
-        return mapping
-
-    def get(self, string: str):
-        try:
-            return (self.mapping[string],)
-        except KeyError:
-            # These aren't part of the screen context.
-            if string in context_type_map:
-                context = self.compiled_value.parent_context
-                return (context_rna_name_from_string(string, context),)
-        return ()
+    def values(self):
+        ret = super().values()
+        data = zip(repeat(self.compiled_value), _bpy.context_members()["screen"])
+        return ret + list(map(RnaName, data))
 
 
 # Patch jedi's anonymous parameter inference so that bpy.types.Operator
@@ -497,23 +608,20 @@ def patch_AnonymousParamName_infer():
     from jedi.inference.names import AnonymousParamName, NO_VALUES, ValueSet
     from jedi.inference.value.instance import BoundMethod
 
-    from ..tools import _get_unbound_super_method
-
     is_RnaValue = RnaValue.__instancecheck__
     infer_orig = AnonymousParamName.infer
 
-    def infer_rna_param(rna_obj, meth_name, query_index):
-        param_index = 0
-        if rna_func := rna_obj.bl_rna.functions.get(meth_name):
+    def infer_rna_param(rna_obj, func_name, param_index):
+        if rna_func := rna_obj.bl_rna.functions.get(func_name):
+            index = 0
             for param in rna_func.parameters:
-                if param.is_output:
-                    continue
-                elif param_index == query_index:
-                    return param
-                param_index += 1
+                if not param.is_output:
+                    if index == param_index:
+                        return param
+                    index += 1
         return None
-    
-    def rna_value_from_tree_value(value, context):
+
+    def rna_value_from_tree_value(value, parent_value):
         if value.is_compiled():
             return None
 
@@ -524,9 +632,8 @@ def patch_AnonymousParamName_infer():
                 continue
             cls_name = value.tree_node.children[1].value
             if cls := getattr(bpy.types, cls_name, None):
-                return RnaValue(cls, context)
+                return RnaValue((cls, parent_value))
         return None
-
 
     def infer(self: AnonymousParamName):
         if ret := infer_orig(self):
@@ -537,7 +644,7 @@ def patch_AnonymousParamName_infer():
         if not isinstance(func, BoundMethod):
             return NO_VALUES
 
-        meth_name = func._wrapped_value.tree_node.children[1].value
+        func_name = func._wrapped_value.tree_node.children[1].value
         param = self.tree_name.parent
 
         # An RNA function doesn't include self in its parameters list.
@@ -556,11 +663,12 @@ def patch_AnonymousParamName_infer():
             if not is_RnaValue(value):
                 continue
 
-            if param := infer_rna_param(value.obj, meth_name, param_index):
+            parent = value
+            if param := infer_rna_param(parent.obj, func_name, param_index):
                 if param.identifier == "context":
-                    instance = get_context_instance(self.parent_context)
+                    instance = get_context_instance()
                 else:
-                    instance = instance_from_rnadef(param, self.parent_context)
+                    instance, = rnadef_to_value(param, parent).py__call__(None)
                 return ValueSet((instance,))
 
         return NO_VALUES

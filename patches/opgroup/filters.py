@@ -2,7 +2,6 @@
 from jedi.inference.compiled.getattr_static import getattr_static
 from jedi.inference.compiled.access import ALLOWED_DESCRIPTOR_ACCESS
 from jedi.inference.compiled.value import CompiledName, ValueSet
-from jedi.inference.value.klass import ClassFilter
 
 from itertools import repeat
 from operator import attrgetter
@@ -15,6 +14,7 @@ from ..tools import is_basenode, is_namenode, state
 def apply():
     optimize_SelfAttributeFilter_values()
     optimize_ClassFilter_values()
+    optimize_ClassFilter_filter()
     optimize_AnonymousMethodExecutionFilter()
     optimize_ParserTreeFilter_values()
     optimize_CompiledValueFilter_values()
@@ -74,8 +74,9 @@ def optimize_CompiledValueFilter_values():
         value = self.compiled_value
         sequences = zip(repeat(value), repeat(value.as_context()), dir(obj))
         names = map(DeferredCompiledName, sequences)
-
-        if isinstance(obj, type) and obj is not type:
+ 
+        # It doesn't make sense to add type completions if the object isn't a class.
+        if not self.is_instance and isinstance(obj, type) and obj is not type:
             for filter in builtin_from_name(self._inference_state, 'type').get_filters():
                 names = chain(names, filter.values())
         return names
@@ -139,11 +140,13 @@ def get_scope_name_definitions(scope):
 
 
 def optimize_ClassFilter_values():
+    from jedi.inference.value.klass import ClassFilter
+    from ..common import DeferredDefinition, state_cache
     from ..tools import is_classdef
-    from ..common import DeferredDefinition
 
     stub_classdef_cache = {}
 
+    @state_cache
     def values(self: ClassFilter):
         context = self.parent_context
         scope   = self._parser_scope
@@ -167,6 +170,30 @@ def optimize_ClassFilter_values():
 
     ClassFilter.values = values
     ClassFilter._check_flows = _check_flows
+
+
+def optimize_ClassFilter_filter():
+    from jedi.inference.value.klass import ClassFilter
+
+    def _filter(self: ClassFilter, names):
+        scope = self._parser_scope
+        tmp = []
+
+        for name in names:
+            parent = name.parent
+            parent_type = parent.type
+
+            if parent_type in {"funcdef", "classdef"}:
+                if parent.parent.parent is scope:
+                    tmp += [name]
+
+            elif parent_type == "expr_stmt":
+                if parent.parent.parent.parent is scope:
+                    if parent.children[1].type == "operator":
+                        tmp += [name]
+        return tmp
+
+    ClassFilter._filter = _filter
 
 
 def optimize_AnonymousMethodExecutionFilter():

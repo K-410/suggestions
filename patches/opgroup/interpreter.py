@@ -3,17 +3,13 @@
 from jedi.inference.value.module import ModuleValue
 from jedi.inference.context import GlobalNameFilter
 from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
-from jedi.inference.names import TreeNameDefinition
 from jedi.inference import InferenceState
 from jedi.api import Script, Completion
 
-from parso.python.tree import Name
+from ..common import BpyTextBlockIO, find_definition
+from ..tools import ensure_blank_eol, state
 
-from ..common import BpyTextBlockIO, state_cache
-from ..tools import ensure_blank_eol, state, is_basenode, is_namenode
-
-from textension.utils import PyInstanceMethod_New, consume
-from operator import attrgetter
+from textension.utils import consume, _unbound_getter
 from typing import TypeVar
 
 
@@ -39,7 +35,7 @@ class BpyTextModuleValue(ModuleValue):
     # absolute one. On unix this doesn't matter. On Windows it erroneously
     # prefixes a drive to the beginning of the path:
     # '/MyText' -> 'C:/MyText'.
-    py__file__ = PyInstanceMethod_New(attrgetter("_path"))
+    py__file__ = _unbound_getter("_path")
 
 
 class BpyTextModuleContext(MixedModuleContext):
@@ -79,93 +75,11 @@ class BpyTextModuleContext(MixedModuleContext):
         return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
 
 
-
-def find_definition(context, ref, position):
-    if namedef := get_definition(ref):
-        return TreeNameDefinition(context, namedef)
-
-    # Inlined position adjustment from _get_global_filters_for_name.
-    if position:
-        n = ref
-        lambdef = None
-        while n := n.parent:
-            type = n.type
-            if type in {"classdef", "funcdef", "lambdef"}:
-                if type == "lambdef":
-                    lambdef = n
-                elif position < n.children[-2].start_pos:
-                    if not lambdef or position < lambdef.children[-2].start_pos:
-                        position = n.start_pos
-                    break
-
-    node = ref
-    while node := node.parent:
-        # Skip the dot operator.
-        if node.type != "error_node":
-            for name in filter(is_namenode, node.children):
-                if name.value == ref.value and name is not ref:
-                    return TreeNameDefinition(context, name)
-    return None
-
-
-definition_types = {
-    'expr_stmt',
-    'sync_comp_for',
-    'with_stmt',
-    'for_stmt',
-    'import_name',
-    'import_from',
-    'param',
-    'del_stmt',
-    'namedexpr_test',
-}
-
-
-@state_cache
-def get_module_definition_by_name(module, string_name):
-    for name in get_all_module_names(module):
-        if name.value == string_name and name.get_definition(include_setitem=True):
-            return name
-
-
-@state_cache
-def get_all_module_names(module):
-    pool = [module]
-    for n in filter(is_basenode, pool):
-        pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
-    return list(filter(is_namenode, pool))
-
-
-def get_definition(ref: Name):
-    p = ref.parent
-    type  = p.type
-    value = ref.value
-
-    if type in {"funcdef", "classdef", "except_clause"}:
-        # self is the class or function name.
-        children = p.children
-        if value == children[1].value:  # Is the function/class name definition.
-            return children[1]
-        # self is the e part of ``except X as e``.
-        elif type == "except_clause" and value == children[-1].value:
-            return children[-1]
-
-    while p:
-        if p.type in definition_types:
-            for n in p.get_defined_names(True):
-                if value == n.value:
-                    return n
-        elif p.type == "file_input":
-            if n := get_module_definition_by_name(p, value):
-                return n
-        p = p.parent
-
-
 class Interpreter(Script):
     _inference_state = state
 
     # Needed by self.get_signatures.
-    _get_module_context = PyInstanceMethod_New(attrgetter("context"))
+    _get_module_context = _unbound_getter("context")
 
     def __init__(self, code: str, _: Unused = None):
         # The memoize cache stores a dict of dicts keyed to functions.

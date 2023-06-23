@@ -16,15 +16,6 @@ separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
 BLF_BOLD = 1 << 11  # ``blf.enable(0, BLF_BOLD)`` adds bold effect.
 
 
-class SuggestionsEntry(ui.widgets.ListEntry):
-    @property
-    def string(self):
-        return self.completion.name
-    
-    def __init__(self, completion):
-        self.completion = completion
-
-
 class Description(ui.widgets.TextView):
     pass
 
@@ -96,14 +87,15 @@ class Suggestions(ui.widgets.ListBox):
         super().draw()  # ListBox.draw
         # self.description.draw()
 
-    def draw_entry(self, entry: SuggestionsEntry, x: int, y: int):
-        length = entry.completion.get_completion_prefix_length()
+    def draw_entry(self, entry, x: int, y: int):
+        length = entry.get_completion_prefix_length()
+        string = entry.name
+
         if length == 0:
-            super().draw_entry(entry, x, y)
+            self.draw_string(string, x, y)
 
         else:
             import blf
-            string = entry.string
             prefix = string[:length]
 
             if self.use_bold_matches:
@@ -168,7 +160,7 @@ class TEXTENSION_OT_suggestions_commit(utils.TextOperator):
         line, col = text.cursor.focus
 
         # The selected completion.
-        completion = instance.lines[index].completion
+        completion = instance.lines[index]
 
         # The name which jedi is being asked to complete.
         word_start = col - completion.get_completion_prefix_length()
@@ -318,7 +310,7 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
             raise e from None
         else:
             bpy.ret = ret  # For introspection
-            instance.lines = list(map(SuggestionsEntry, ret))
+            instance.lines = ret
 
             # TODO: Weak.
             instance.is_visible = bool(instance.lines)

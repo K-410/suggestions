@@ -10,7 +10,7 @@ from itertools import repeat
 from operator import getitem
 
 from ._mathutils import float_vector_map
-from ._bpy_types import MathutilsValue, PropArrayValue, RnaValue
+from ._bpy_types import MathutilsValue, PropArrayValue, RnaValue, NO_VALUES
 from ..common import VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects
 
 
@@ -38,19 +38,26 @@ prop_names = (
 # Map of PropertyFunctions for custom property inference.
 prop_func_map: dict[str, "PropertyFunction"] = {}
 
-prop_type_map = {
-    "BoolProperty":       bool,
-    "EnumProperty":       str,
-    "FloatProperty":      float,
-    "IntProperty":        int,
-    "StringProperty":     str,
+simple_property_types = {
+    "BoolProperty":   bool,
+    "EnumProperty":   str,
+    "FloatProperty":  float,
+    "IntProperty":    int,
+    "StringProperty": str,
 }
 
+vector_property_types = {
+    "BoolVectorProperty",
+    "FloatVectorProperty",
+    "IntVectorProperty"
+}
+
+# TODO: CollectionProperty still needs implementation.
 # ``bpy_prop_collection_idprop`` isn't reachable anywhere else.
-for cls in bpy.types.bpy_prop_collection.__subclasses__():
-    if cls.__name__ == "bpy_prop_collection_idprop":
-        prop_type_map["CollectionProperty"] = cls
-        break
+# for cls in bpy.types.bpy_prop_collection.__subclasses__():
+#     if cls.__name__ == "bpy_prop_collection_idprop":
+#         simple_property_types["CollectionProperty"] = cls
+#         break
 
 
 def _as_module(obj, name):
@@ -61,16 +68,6 @@ def _as_module(obj, name):
         for name in dir(obj):
             m.__dict__[name] = getattr(obj, name)
     return m
-
-
-def infer_vector_from_arguments(self: "PropertyFunction", arguments, context):
-    for key, value in arguments.unpack():
-        if key == "subtype" and value.data.type == "string":
-            if obj := float_vector_map.get(value.data._get_payload()):
-                return (MathutilsValue(obj, context).instance,)
-
-    obj = prop_type_map[self.obj.__name__.replace("Vector", "")]
-    return (PropArrayValue(obj, context).instance,)
 
 
 # Needs to exist for import redirects.
@@ -106,25 +103,46 @@ class VirtualFunction(VirtualValue):
         return (instance,)
 
 
+def infer_vector_type(name, arguments, parent):
+    if value := dict(arguments.unpack()).get("subtype"):
+        if value.data.type == "string":
+            if obj := float_vector_map.get(value.data._get_payload()):
+                return MathutilsValue((obj, parent)).py__call__(None)
+
+    obj = simple_property_types[name.replace("Vector", "")]
+    return PropArrayValue((obj, parent)).py__call__(None)
+
+
+def infer_pointer_type(arguments):
+    if value := dict(arguments.unpack()).get("type"):
+        from ..opgroup.interpreter import find_definition
+        if namedef := find_definition(value.context, value.data, None):
+            for value in namedef.infer():
+                return value.py__call__(None)
+    return NO_VALUES
+
 
 class PropertyFunction(VirtualFunction):
     def py__call__(self, arguments):
-        instance = VirtualValue(bpy.props._PropertyDeferred, self.as_context()).instance
+        instance = VirtualValue((bpy.props._PropertyDeferred, self)).instance
         instance.py__call__ = lambda *_, **__: self.py_instance__call__(arguments)
         return (instance,)
 
     def py_instance__call__(self, arguments):
-        context = self.as_context()
         func_name = self.obj.__name__
 
-        if obj := prop_type_map.get(func_name):
-            return (VirtualValue(obj, context).instance,)
+        if func_name in simple_property_types:
+            obj = simple_property_types[func_name]
+            return VirtualValue((obj, self)).py__call__(arguments)
 
-        elif "Vector" in func_name:
-            return infer_vector_from_arguments(self, arguments, context)
+        elif func_name in vector_property_types:
+            return infer_vector_type(func_name, arguments, self)
+
+        elif func_name == "PointerProperty":
+            return infer_pointer_type(arguments)
 
         obj = getattr(bpy.types, func_name).bl_rna
-        return (RnaValue(obj, context).instance,)
+        return RnaValue((obj, self)).py__call__(arguments)
 
 
 def fix_bpy_imports():
@@ -143,11 +161,11 @@ def fix_bpy_imports():
     # Add bpy.props redirect.
     Importer_redirects["bpy.props"] = PropsModule(bpy.props)
     Importer_redirects["_bpy.props"] = Importer_redirects["bpy.props"]
-    context = Importer_redirects["bpy.props"].as_context()
 
     # Add property function redirects.
+    parent_value = Importer_redirects["bpy.props"]
     for name in prop_names:
-        prop_func_map[name] = PropertyFunction(getattr(bpy.props, name), context)
+        prop_func_map[name] = PropertyFunction((getattr(bpy.props, name), parent_value))
 
     # Add redirects for compiled value interceptions.
     for module in Importer_redirects.values():

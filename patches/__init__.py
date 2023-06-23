@@ -24,7 +24,7 @@ def _apply_patches():
     patch_Value_py__getattribute__alternatives()
     patch_fakelist_array_type()
     patch_import_resolutions()
-    # patch_Importer_follow()
+    patch_Importer_follow()
     patch_get_builtin_module_names()
     patch_compiledvalue()  # XXX: Not having this means tuple[X] isn't subscriptable.
     # patch_misc()  # XXX: This is very experimental.
@@ -57,17 +57,18 @@ def _apply_optimizations():
 # Jedi doesn't consider the indentation at the completion site potentially
 # giving the wrong scope at the last line of the scope. This fixes that.
 def patch_get_user_context():
+    from jedi.inference.context import ModuleContext
     from jedi.api import completion
 
-    def get_user_context(module_context, pos):
+    def get_user_context(module_context: ModuleContext, pos: tuple[int]):
         leaf = module_context.tree_node.get_leaf_for_position(pos, include_prefixes=True)
 
         if leaf.type == "newline":
-            parent = leaf.parent
-            if parent.get_last_leaf() is leaf and pos[1] < parent.start_pos[1]:
-                leaf = leaf.get_next_leaf()
+            if leaf is leaf.parent.get_last_leaf():
+                if pos[1] < leaf.parent.start_pos[1]:
+                    leaf = leaf.get_next_leaf()
 
-        elif leaf.start_pos > pos or leaf.type == "endmarker":
+        elif leaf.type == "endmarker" or leaf.start_pos > pos:
             if last := leaf.get_previous_leaf():
                  if last.type == "newline":
                     if pos[1] == last.parent.start_pos[1]:
@@ -81,14 +82,14 @@ def patch_get_user_context():
 # This fixes jedi attempting to complete from both stubs and compiled modules,
 # which isn't allowed by PEP 484. It's either or.
 def patch_convert_values():
-    from jedi.inference.gradual.conversion import convert_values
+    from jedi.inference.gradual import conversion
 
     # This makes ``prefer_stubs`` True by default and False if ``only_stubs`` is True.
-    def f(values, only_stubs=False, prefer_stubs=True, ignore_compiled=True):
+    def convert_values(values, only_stubs=False, prefer_stubs=True, ignore_compiled=True):
         if only_stubs:
             prefer_stubs = False
         return convert_values(values, only_stubs=only_stubs, prefer_stubs=prefer_stubs, ignore_compiled=ignore_compiled)
-    convert_values = _patch_function(convert_values, f)
+    convert_values = _patch_function(conversion.convert_values, convert_values)
 
 
 # Fix unpickling errors jedi doesn't catch.
@@ -107,28 +108,21 @@ def patch_load_from_file_system():
 def patch_NameWrapper_getattr():
     from jedi.inference.names import NameWrapper
 
-    # del NameWrapper.__getattr__
-
-    NameWrapper.public_name = _forwarder("_wrapped_name.public_name")
+    NameWrapper.public_name     = _forwarder("_wrapped_name.public_name")
     NameWrapper.get_public_name = _forwarder("_wrapped_name.get_public_name")
-    NameWrapper.string_name = _forwarder("_wrapped_name.string_name")
-    NameWrapper.parent_context = _forwarder("_wrapped_name.parent_context")
-    # NameWrapper.tree_name = _forwarder("_wrapped_name.tree_name")
+    NameWrapper.string_name     = _forwarder("_wrapped_name.string_name")
+    NameWrapper.parent_context  = _forwarder("_wrapped_name.parent_context")
 
 
 def patch_SequenceLiteralValue():
-    from jedi.inference.value.iterable import SequenceLiteralValue
     from jedi.inference.gradual.base import GenericClass, _LazyGenericBaseClass
-    from textension.utils import falsy_noargs, truthy_noargs
     from jedi.cache import memoize_method
 
     @memoize_method
     def py__bases__(self: GenericClass):
         ret = []
-        bases = list(self._wrapped_value.py__bases__())
-        for base in bases:
-            add = _LazyGenericBaseClass(self, base, self._generics_manager)
-            ret += [add]
+        for base in self._wrapped_value.py__bases__():
+            ret += [_LazyGenericBaseClass(self, base, self._generics_manager)]
         return ret
 
     GenericClass.py__bases__ = py__bases__
@@ -149,8 +143,8 @@ def patch_SequenceLiteralValue():
 # Removes calls to __getattr__ for dynamic forwarding. This is an effort to
 # eliminate most stack overflows during debugging.
 def patch_various_redirects():
-
     from jedi.inference.value.iterable import SequenceLiteralValue
+
     SequenceLiteralValue.parent_context = _forwarder("_wrapped_value.parent_context")
     SequenceLiteralValue.py__class__    = _forwarder("_wrapped_value.py__class__")
     SequenceLiteralValue._arguments     = _forwarder("_wrapped_value._arguments")
@@ -159,6 +153,7 @@ def patch_various_redirects():
     SequenceLiteralValue.is_instance    = _forwarder("_wrapped_value.is_instance")
 
     from jedi.inference.gradual.base import GenericClass
+
     GenericClass.parent_context      = _forwarder("_wrapped_value.parent_context")
     GenericClass.inference_state     = _forwarder("_wrapped_value.inference_state")
     GenericClass.get_metaclasses     = _forwarder("_wrapped_value.get_metaclasses")
@@ -171,8 +166,9 @@ def patch_various_redirects():
     GenericClass.is_instance         = _forwarder("_wrapped_value.is_instance")
     
     from jedi.inference.gradual.type_var import TypeVar, TypeVarClass
-    TypeVar.get_safe_value = _forwarder("_wrapped_value.get_safe_value")
-    TypeVar.is_compiled    = _forwarder("_wrapped_value.is_compiled")
+
+    TypeVar.get_safe_value       = _forwarder("_wrapped_value.get_safe_value")
+    TypeVar.is_compiled          = _forwarder("_wrapped_value.is_compiled")
     TypeVarClass.inference_state = _forwarder("_wrapped_value.inference_state")
     TypeVarClass.parent_context  = _forwarder("_wrapped_value.parent_context")
     TypeVarClass.is_bound_method = _forwarder("_wrapped_value.is_bound_method")
@@ -180,16 +176,19 @@ def patch_various_redirects():
     TypeVarClass.tree_node       = _forwarder("_wrapped_value.tree_node")
 
     from jedi.inference.gradual.stub_value import VersionInfo
+
     VersionInfo.get_safe_value = _forwarder("_wrapped_value.get_safe_value")
     VersionInfo.is_compiled    = _forwarder("_wrapped_value.is_compiled")
 
     from jedi.inference.gradual.typing import TypingClassWithGenerics
+
     TypingClassWithGenerics.is_compiled = _forwarder("_wrapped_value.is_compiled")
     TypingClassWithGenerics.tree_node   = _forwarder("_wrapped_value.tree_node")
     TypingClassWithGenerics.is_stub     = _forwarder("_wrapped_value.is_stub")
     TypingClassWithGenerics.is_instance = _forwarder("_wrapped_value.is_instance")
 
     from jedi.inference.compiled import ExactValue
+
     ExactValue.py__class__ = _forwarder("_wrapped_value.py__class__")
 
 
@@ -227,12 +226,13 @@ def patch_Completion_complete_inherited():
 
 # Fallback for py__getattribute__.
 def patch_Value_py__getattribute__alternatives():
-    from jedi.inference.value.instance import CompiledInstance
-    from jedi.inference.compiled.value import CompiledValue
-    from jedi.inference.base_value import Value, NO_VALUES, ValueSet
+    from jedi.inference.compiled.value import CompiledValue, Value, NO_VALUES
+    from jedi.inference.value.instance import CompiledInstance, ValueSet
 
     from .tools import make_compiled_value
 
+    # TODO: Make py__getattribute__alternatives for each (CompiledValue, CompiledInstance)
+    #       if this patch is still applicable.
     def py__getattribute__alternatives(self: Value, name_or_str):
         if isinstance(self, CompiledInstance):
             value = self.class_value
@@ -263,6 +263,7 @@ def patch_Value_py__getattribute__alternatives():
 # an exception and prevents further completions in the source from working.
 def patch_paths_from_list_modifications():
     from jedi.inference.sys_path import _paths_from_list_modifications
+
     def _safe_wrapper(*args, **kw):
         try:
             # Materialize so this generator can blow up at the call site.
@@ -277,6 +278,7 @@ def patch_paths_from_list_modifications():
 # compiled called ``test`` without jedi thinking it's somehow pytest related.
 def patch_is_pytest_func():
     from jedi.plugins.pytest import _is_pytest_func
+    
     _patch_function(_is_pytest_func, lambda *_: False)
 
 
@@ -286,8 +288,7 @@ def patch_is_pytest_func():
 # gpu, mathutils, etc. Names are obtained from compiled modules using safety
 # principles similar to how Jedi does things in getattr_static.
 def patch_import_resolutions():
-    from jedi.inference.compiled.value import CompiledModule
-    from jedi.inference.base_value import ValueSet
+    from jedi.inference.compiled.value import CompiledModule, ValueSet
     from jedi.inference.imports import Importer, import_module
 
     from .common import Importer_redirects
@@ -295,13 +296,6 @@ def patch_import_resolutions():
     import importlib
 
     module_cache = state.module_cache
-
-    def follow(self: Importer):
-        if module := Importer_redirects.get(".".join(self._str_import_path)):
-            return ValueSet((module,))
-        return follow_orig(self)
-
-    follow_orig = _patch_function(Importer.follow, follow)
 
     # Overrides import completion names.
     def completion_names(self, inference_state, only_modules=False):
@@ -314,10 +308,6 @@ def patch_import_resolutions():
 
     # Required for builtin module import fallback when Jedi fails.
     def import_module_override(state, name, parent_module, sys_path, prefer_stubs):
-        # XXX: This might fetch compiled module which breaks when jedi thinks it's stub.
-        # if ret := module_cache.get(name):
-        #     return ret
-
         ret = import_module(state, name, parent_module, sys_path, prefer_stubs)
         if not ret:
             try:
@@ -344,48 +334,46 @@ def patch_Importer_follow():
     from .common import Importer_redirects
 
     def follow(self: Importer):
-        path = ".".join(self._str_import_path)
-        if module := Importer_redirects.get(path):
+        if module := Importer_redirects.get(".".join(self._str_import_path)):
             return ValueSet((module,))
-        return follow_orig(self)
+        return follow(self)
 
-    follow_orig = _patch_function(Importer.follow, follow)
+    follow = _patch_function(Importer.follow, follow)
 
 
 # Fixes completion for "import _bpy" and other file-less modules which
 # are not listed in sys.builtin_module_names.
 def patch_get_builtin_module_names():
-    from jedi.inference.compiled.subprocess.functions import get_builtin_module_names
-    from builtins import set, map, getattr
-    from itertools import repeat, compress
-    from operator import and_, not_, contains
+    from jedi.inference.compiled.subprocess import functions
+    from builtins import set
     import sys
 
     builtin = {*sys.builtin_module_names}
+    module_items = sys.modules.items()
+    get = object.__getattribute__
 
-    module_names = sys.modules.keys()
-    modules = sys.modules.values()
+    def get_builtin_module_names(_):
+        tmp = []
+        for name, module in module_items:
+            if "." in name:
+                continue
 
-    file  = repeat("__file__")
-    false = repeat(False)
-    dot   = repeat(".")
-
-    def get_builtin_module_names_p(_):
-        # Skip modules with no __file__.
-        non_files = map(not_, map(getattr, modules, file, false))
-        # Skip modules with dot in their name.
-        non_dotted = map(not_, map(contains, module_names, dot))
-        # Composite with actual builtin modules.
-        return builtin | set(compress(module_names, map(and_, non_files, non_dotted)))
-
-    _patch_function(get_builtin_module_names, get_builtin_module_names_p)
+            try:
+                if get(module, "__file__"):
+                    continue
+            # TypeError or AttributeError.
+            except:
+                tmp += [name]
+        return builtin | set(tmp)
+    
+    _patch_function(functions.get_builtin_module_names, get_builtin_module_names)
 
 
 def patch_misc():
     from importlib import _bootstrap_external
     from importlib._bootstrap_external import path_sep, path_separators
-    from itertools import starmap, repeat
-    from builtins import zip, filter
+    from itertools import repeat
+    from builtins import filter
     import os
     import bpy
 
@@ -414,14 +402,15 @@ def patch_misc():
     rstrip = str.rstrip
 
     def _path_join(*parts):
-        return join(starmap(rstrip, zip(filter(None, parts), path_seps)))
+        return join(map(rstrip, filter(None, parts), path_seps))
     _patch_function(_bootstrap_external._path_join, _path_join)
 
 
 # Patches FakeList to have its 'array_type' class attribute fixed.
 def patch_fakelist_array_type():
     from jedi.inference.value.iterable import FakeList
-    FakeList.array_type = 'list'
+
+    FakeList.array_type = "list"
 
 
 # Patches CompiledValue to support inference and extended py__call.
@@ -429,50 +418,29 @@ def patch_fakelist_array_type():
 #                              ^
 def patch_compiledvalue():
     from jedi.inference.compiled.access import create_access_path
-    from jedi.inference.compiled.value import CompiledValue, \
-        create_from_access_path, ValueSet, NO_VALUES
+    from jedi.inference.compiled.value import CompiledValue, create_from_access_path
 
-    from .modules._bpy_types import RnaValue
-    
     import typing
-    from typing import GenericAlias, _GenericAlias, Hashable
 
-    is_hashable = Hashable.__instancecheck__
-    _AliasTypes = (GenericAlias, _GenericAlias)
+    AliasTypes = (typing.GenericAlias, typing._GenericAlias)
 
     # Try to convert GenericAlias into _GenericAlias, the old type.
     def convert_alias(alias):
-        if not isinstance(alias, _AliasTypes):
+        if not isinstance(alias, AliasTypes):
             return alias
         args = tuple(convert_alias(a) for a in getattr(alias, "__args__"))
         origin = getattr(typing, alias.__origin__.__name__.capitalize(), alias)
-        return _GenericAlias(origin, args)
+        return typing._GenericAlias(origin, args)
 
-    # This intercepts CompiledValue.py__call__ to check if it's an RNA class
-    # or instance and returns an RnaResolver. This makes bpy annotations work
-    # as RNA instances instead of classes.
-    def py__call__extended(self: CompiledValue, arguments):
+    def py__call__(self: CompiledValue, arguments):
         obj = self.access_handle.access._obj
 
-        if isinstance(obj, GenericAlias):
+        if isinstance(obj, typing.GenericAlias):
             a = create_access_path(self.inference_state, convert_alias(obj))
             return create_from_access_path(self.inference_state, a).execute_annotation()
+        return py__call__(self, arguments)
 
-        # Obviously non-hashable objects generally aren't useful to lookup.
-        if not is_hashable(obj):
-            return NO_VALUES
-
-        else:
-            ret = NO_VALUES
-        return ret
-
-    # This patch is meant to intercept py__call__ and force jedi to infer
-    # objects it doesn't handle out-of-the-box.
-    org_py__call__ = CompiledValue.py__call__
-    def py__call__(self, arguments):
-        return py__call__extended(self, arguments) or org_py__call__(self, arguments)
-
-    CompiledValue.py__call__ = py__call__
+    py__call__ = _patch_function(CompiledValue.py__call__, py__call__)
 
 
 # Patches handle-to-CompiledValue creation to intercept compiled objects.
@@ -498,7 +466,7 @@ def patch_create_cached_compiled_value():
         if context:
             assert not is_compiled_value(context)
             if isinstance(obj, bpy_types):
-                return get_rna_value(obj, context)
+                return get_rna_value(obj, context._value)
             value = CompiledValue(state, handle, context)
 
         else:
@@ -527,11 +495,13 @@ def patch_create_cached_compiled_value():
 
 # Patch strings.complete_dict because of a possible AttributeError.
 def patch_complete_dict():
-    from jedi.api.strings import complete_dict
-    def safe_wrapper(*args, **kw):
+    from jedi.api import strings
+
+    def complete_dict(*args, **kw):
         try:
             return complete_dict(*args, **kw)
-        # ``before_bracket_leaf`` can be None, but Jedi doesn't test this.
+        # ``before_bracket_leaf`` can be None, but Jedi doesn't check this.
         except AttributeError:
             return []
-    complete_dict = _patch_function(complete_dict, safe_wrapper)
+
+    complete_dict = _patch_function(strings.complete_dict, complete_dict)

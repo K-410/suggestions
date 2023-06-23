@@ -56,9 +56,54 @@ def apply():
     optimize_remove_del_stmt()
     optimize_infer_node_if_inferred()
     optimize_try_to_load_stub_cached()
+    optimize_imports_iter_module_names()
+    optimize_all_string_prefixes()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
+
+
+# Optimize to use keyword lookup table.
+def optimize_all_string_prefixes():
+    from parso.python import tokenize
+
+    # F and raw.
+    fr = frozenset({"", "f", "F", "fr", "Fr", "FR", "fR", "rf", "Rf", "RF", "rF"})
+
+    # Byte, raw and unicode
+    bru = frozenset({"", "b", "B", "r", "R", "u", "U", "br",
+           "Br", "BR", "bR", "rb", "Rb", "RB", "rB"})
+    
+    prefixes = ((bru, frozenset()), (frozenset(fr | bru), fr))
+
+    def _all_string_prefixes(*, include_fstring=False, only_fstring=False):
+        return prefixes[include_fstring][only_fstring]
+
+    _patch_function(tokenize._all_string_prefixes, _all_string_prefixes)
+
+
+def optimize_imports_iter_module_names():
+    from jedi.inference.imports import ImportName
+    from jedi.inference import imports
+    from jedi.inference.compiled.subprocess.functions import get_builtin_module_names, _iter_module_names
+    from textension.utils import _named_index
+    from itertools import chain
+
+    def iter_module_names(inference_state, module_context, search_path,
+                          module_cls=ImportName, add_builtin_modules=True):
+        
+        class module_name(module_cls, tuple):
+            __init__ = tuple.__init__
+            _from_module_context = module_context
+            string_name = _named_index(0)
+
+        ret = _iter_module_names(None, search_path)
+        # add builtin module names
+        if add_builtin_modules:
+            ret = chain(get_builtin_module_names(None), ret)
+        return list(map(module_name, zip(ret)))
+
+    _patch_function(imports.iter_module_names, iter_module_names)
 
 
 # Removes sys_path argument when trying to load stubs. It's just terrible.

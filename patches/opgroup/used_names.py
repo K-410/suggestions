@@ -62,7 +62,6 @@ def optimize_GlobalNameFilter_values():
             else:
                 globs.remove(glob)
 
-        # Only for BpyTextModule, as in, the module being completed.
         if pos := self._until_position:
             names = compress(names, map(pos.__gt__, map(get_position, names)))
         return map(self.name_class, repeat(self.parent_context), names)
