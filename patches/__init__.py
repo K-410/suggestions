@@ -24,7 +24,6 @@ def _apply_patches():
     patch_Value_py__getattribute__alternatives()
     patch_fakelist_array_type()
     patch_import_resolutions()
-    patch_Importer_follow()
     patch_get_builtin_module_names()
     patch_compiledvalue()  # XXX: Not having this means tuple[X] isn't subscriptable.
     # patch_misc()  # XXX: This is very experimental.
@@ -38,6 +37,8 @@ def _apply_patches():
     patch_complete_dict()
     patch_convert_values()
     patch_get_user_context()
+    patch_Importer()
+    patch_get_importer_names()
 
 
 def _apply_optimizations():
@@ -289,22 +290,12 @@ def patch_is_pytest_func():
 # principles similar to how Jedi does things in getattr_static.
 def patch_import_resolutions():
     from jedi.inference.compiled.value import CompiledModule, ValueSet
-    from jedi.inference.imports import Importer, import_module
+    from jedi.inference.imports import import_module
 
-    from .common import Importer_redirects
     from .tools import get_handle, state
     import importlib
 
     module_cache = state.module_cache
-
-    # Overrides import completion names.
-    def completion_names(self, inference_state, only_modules=False):
-        if module := Importer_redirects.get(".".join(self._str_import_path)):
-            return module.get_submodule_names(only_modules=only_modules)
-        return org_completion_names(self, inference_state, only_modules=only_modules)
-
-    org_completion_names = Importer.completion_names
-    Importer.completion_names = completion_names
 
     # Required for builtin module import fallback when Jedi fails.
     def import_module_override(state, name, parent_module, sys_path, prefer_stubs):
@@ -322,23 +313,87 @@ def patch_import_resolutions():
     import_module = _patch_function(import_module, import_module_override)
 
 
-# Fixes imports by redirecting them to virtual modules, because:
+# Patches Importer to fix several problems.
+# - Make ``_str_import_path`` more efficient to compute
+# - Remove workarounds for useless frameworks (flask)
+# - Support completing submodules from compiled modules
+# - Support completing non-modules (typing.io)
+# - Support intercepting imports to provide virtual modules.
+#
+# Virtual modules are needed because:
 # 1. bpy/__init__.py is inferred by source text, not its runtime members.
 # 2. bpy.app is not a module and relies on a loophole in import resolution.
 # 3. _bpy has no spec/loader causing module detection heuristics to fail.
 # 4. bpy.ops uses getattr and dynamic modules implying code execution.
 # All which are reasons for Jedi completing them partially or not at all.
 # So instead of addressing each problem differently, we use virtual modules.
-def patch_Importer_follow():
+def patch_Importer():
+    from jedi.inference.gradual.conversion import convert_values
     from jedi.inference.imports import Importer, ValueSet
-    from .common import Importer_redirects
+    from .common import Importer_redirects, state
 
+    Importer._inference_state = state
+    Importer._fixed_sys_path = None
+    Importer._infer_possible = True
+
+    # Remove the property. We write the value just once in __init__.
+    Importer._str_import_path = None
+
+    # Import redirection for actual modules.
     def follow(self: Importer):
         if module := Importer_redirects.get(".".join(self._str_import_path)):
             return ValueSet((module,))
         return follow(self)
 
     follow = _patch_function(Importer.follow, follow)
+
+    # Import redirection for submodule names.
+    def completion_names(self: Importer, inference_state, only_modules=False):
+        if module := Importer_redirects.get(".".join(self._str_import_path)):
+            return module.get_submodule_names(only_modules=only_modules)
+        return completion_names(self, state, only_modules=only_modules)
+
+    completion_names = _patch_function(Importer.completion_names, completion_names)
+
+    def __init__(self: Importer, inference_state, import_path, module_context, level=0):
+        # Defer to original. Don't want to pull that mess here.
+        if level > 0:
+            __init__(self, state, import_path, module_context, level)
+        else:
+            self.level = level
+            self._module_context = module_context
+            # Can be strings, Names or even a mix of both, which is annoying.
+            self.import_path = import_path
+        assert all(isinstance(p, str) for p in self.import_path)
+        # If initialization was deferred to the original, convert here.
+        self.import_path = self._str_import_path = tuple(self.import_path)
+
+    __init__ = _patch_function(Importer.__init__, __init__)
+
+    # The ONLY place jedi passes a list of NAMES to the importer, and for some
+    # reason thought it would be a good idea to keep it like that (it's not).
+    # This also removes the try/except clause for a more performant version.
+    from jedi.inference.imports import _prepare_infer_import, search_ancestor
+    from parso.python.tree import ImportFrom
+
+    is_import_from = ImportFrom.__instancecheck__
+
+    def prepare_infer_import(module_context, tree_name):
+        import_node = search_ancestor(tree_name, 'import_name', 'import_from')
+        import_path = import_node.get_path_for_name(tree_name)
+        from_name = None
+
+        if is_import_from(import_node):
+            from_names = import_node.get_from_names()
+            if len(from_names) + 1 == len(import_path):
+                from_name = import_path[-1]
+                import_path = from_names
+
+        import_path = tuple(n.value for n in import_path)
+        importer = Importer(state, import_path, module_context, import_node.level)
+        return from_name, import_path, import_node.level, importer.follow()
+
+    _patch_function(_prepare_infer_import, prepare_infer_import)
 
 
 # Fixes completion for "import _bpy" and other file-less modules which
@@ -505,3 +560,49 @@ def patch_complete_dict():
             return []
 
     complete_dict = _patch_function(strings.complete_dict, complete_dict)
+
+
+# Fixes jedi not completing fake submodules (bpy.app.x, typing.io, typing.re)
+# because they are non-modules with an actual dot "." in their module name.
+# Even the standard library does this, so I guess we're fixing this, too?
+def patch_get_importer_names():
+    from jedi.inference.imports import ImportName
+    from jedi.api.completion import Completion, _gather_nodes
+    from itertools import repeat, compress
+    import sys
+    from .tools import is_namenode, is_operator
+
+    startswith = str.startswith
+    modules = sys.modules.keys()
+
+    def get_importer_names(self: Completion, names, level=0, only_modules=True):
+        # This fix is only relevant if we have at least 1 import name and
+        # 1 dot operator (the only operator jedi allows here).
+        if names and any(map(is_operator, _gather_nodes(self.stack))):
+
+            # Compose the import statement and look for it in sys.modules.
+            comp = ".".join(n.value for n in names)
+
+            # Jedi may omit the trailing part from names. Add it back.
+            leaf = self._module_node.get_leaf_for_position(self._original_position)
+            if leaf not in names:
+                if is_namenode(leaf):
+                    comp += "."
+                comp += leaf.value
+
+            ret = []
+            prefix = comp[:comp.rindex(".") + 1]
+            for name in compress(modules, map(startswith, modules, repeat(comp))):
+                # Remove the prefix up to and including the leading dot.
+                name = name.removeprefix(prefix)
+
+                # If we're completing ``bpy.a``, we only want ``app`` and not
+                # ``app.handlers``.
+                if "." not in name:
+                    ret += [name]
+            if ret:
+                return [ImportName(self._module_context, n) for n in ret]
+
+        return get_importer_names(self, names, level=level, only_modules=only_modules)
+
+    get_importer_names = _patch_function(Completion._get_importer_names, get_importer_names)

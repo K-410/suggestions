@@ -317,6 +317,7 @@ def get_submodule_names():
         result = []
         name = self.py__name__()
 
+        # Exclude these as we already know they don't have sub-modules.
         if name not in {"builtins", "typing"}:
             m = self.obj
             assert isinstance(m, ModuleType)

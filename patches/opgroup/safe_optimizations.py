@@ -178,7 +178,6 @@ def optimize_BaseNode_get_leaf_for_position():
 
     def get_leaf_for_position(self, position, include_prefixes=False):
         if position > self.children[-1].end_pos or position < (1, 0):
-        # if not ((1, 0) <= position <= self.children[-1].end_pos):
             raise ValueError('Please provide a position that exists within this node.')
 
         elem = self
@@ -797,9 +796,11 @@ def optimize_iter_module_names():
     from jedi.inference.compiled.subprocess.functions import _iter_module_names
     from importlib.machinery import all_suffixes
     from os import scandir, DirEntry
+    from sys import modules
 
     from textension.utils import starchain
 
+    module_keys = modules.keys()
     is_dir = DirEntry.is_dir
     endswith = str.endswith
     isidentifier = str.isidentifier
@@ -811,32 +812,30 @@ def optimize_iter_module_names():
     # Not identical to the stock function. It allows stupid names like
     # ``__phello__.foo`` which is a frozenlib test import module.
     def _iter_module_names_o(inference_state, paths):
-        paths = tuple(set(paths))
-        if paths in cache:
-            return cache[paths]
+        paths = tuple(paths)
+        if paths not in cache:
+            names   = []
+            entries = []
+            _paths  = iter(paths)
 
-        names   = []
-        entries = []
-        _paths  = iter(paths)
+            while True:
+                try:
+                    entries += starchain(map(scandir, _paths))
+                    break
+                except (FileNotFoundError, NotADirectoryError):
+                    pass
 
-        while True:
-            try:
-                entries += starchain(map(scandir, _paths))
-                break
-            except (FileNotFoundError, NotADirectoryError):
-                pass
+            for entry in entries:
+                name = entry.name
 
-        for entry in entries:
-            name = entry.name
-
-            if endswith(name, suffixes):
-                name = rsplit(name, ".", 1)[-2]
-                if name != "__init__":
+                if endswith(name, suffixes):
+                    name = rsplit(name, ".", 1)[-2]
+                    if name != "__init__":
+                        names += [name]
+                elif is_dir(entry) and isidentifier(name) and name != "__pycache__":
                     names += [name]
-            elif is_dir(entry) and isidentifier(name) and name != "__pycache__":
-                names += [name]
 
-        cache[paths] = names
-        return names
+            cache[paths] = set(names)
+        return cache[paths]# | set([k for k in module_keys if "." not in k])
 
     _patch_function(_iter_module_names, _iter_module_names_o)

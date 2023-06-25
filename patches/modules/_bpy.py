@@ -14,10 +14,6 @@ from ._bpy_types import MathutilsValue, PropArrayValue, RnaValue, NO_VALUES
 from ..common import VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects
 
 
-app_submodule_names = tuple(
-    name for name in bpy.app.__match_args__ if f"bpy.app.{name}" in sys.modules)
-
-
 def apply():
     fix_bpy_imports()
 
@@ -73,11 +69,6 @@ def _as_module(obj, name):
 # Needs to exist for import redirects.
 class BpyModule(VirtualModule):
     pass
-
-
-class AppModule(VirtualModule):
-    def get_submodule_names(self, only_modules=False):
-        yield from map(SubModuleName, repeat(self.as_context()), app_submodule_names)
 
 
 class OpsModule(VirtualModule):
@@ -148,15 +139,6 @@ class PropertyFunction(VirtualFunction):
 def fix_bpy_imports():
     Importer_redirects["bpy"]     = BpyModule(bpy)
     Importer_redirects["bpy.ops"] = OpsModule(bpy.ops)
-
-    # Add bpy.app redirect.
-    Importer_redirects["bpy.app"] = AppModule(_as_module(bpy.app, "bpy.app"))
-
-    # Add bpy.app handlers | icons | timers | translations.
-    for name in app_submodule_names:
-        full_name = f"bpy.app.{name}"
-        submodule = _as_module(getattr(bpy.app, name), full_name)
-        Importer_redirects[full_name] = VirtualModule(submodule)
 
     # Add bpy.props redirect.
     Importer_redirects["bpy.props"] = PropsModule(bpy.props)

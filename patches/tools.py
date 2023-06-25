@@ -4,7 +4,7 @@ from jedi.inference.compiled.value import CompiledValue, CompiledValueName, crea
 from jedi.inference.value.instance import CompiledInstance, ValueSet
 import jedi.api as api
 
-from parso.python.tree import Name
+from parso.python.tree import Name, Operator
 from parso.grammar import load_grammar
 from parso.tree import BaseNode
 
@@ -12,6 +12,7 @@ from textension.utils import factory, namespace, inline, _check_type, consume
 import textension
 
 import os
+import sys
 import collections
 from typing import Any
 
@@ -48,6 +49,7 @@ state       = api.InferenceState(project, environment, None)
 
 state.grammar = state.latest_grammar = load_grammar()
 state.module_cache = StateModuleCache()
+state.get_sys_path = project._get_sys_path = lambda *_, **__: sys.path[:]
 
 api.InferenceState.__new__  = lambda *args, **kw: state
 api.InferenceState.__init__ = object.__init__
@@ -76,6 +78,11 @@ def is_basenode(node) -> bool:
 @inline
 def is_namenode(node) -> bool:
     return Name.__instancecheck__
+
+
+@inline
+def is_operator(node) -> bool:
+    return Operator.__instancecheck__
 
 
 @inline
