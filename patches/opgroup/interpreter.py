@@ -1,124 +1,4 @@
-# This adds optimizations for the Interpreter.
-
-from jedi.inference.value.module import ModuleValue
-from jedi.inference.context import GlobalNameFilter
-from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
-from jedi.inference import InferenceState
-from jedi.api import Script, Completion
-
-from ..common import BpyTextBlockIO, find_definition
-from ..tools import ensure_blank_eol, state
-
-from textension.utils import consume, _unbound_getter
-from typing import TypeVar
-
-
-Unused = TypeVar("Unused")
-state_values = state.memoize_cache.values()
-
-
-def apply():
-    optimize_parser()
-    optimize_diffparser()
-    optimize_grammar_parse()
-
-
-class BpyTextModuleValue(ModuleValue):
-    inference_state = state  # Static
-    parent_context  = None   # Static
-    __init__ = object.__init__
-
-    _is_package = False
-    is_package  = bool
-
-    # Overrides py__file__ to return the relative path instead of the
-    # absolute one. On unix this doesn't matter. On Windows it erroneously
-    # prefixes a drive to the beginning of the path:
-    # '/MyText' -> 'C:/MyText'.
-    py__file__ = _unbound_getter("_path")
-
-
-class BpyTextModuleContext(MixedModuleContext):
-    inference_state = state
-    mixed_values = ()  # For mixed namespaces. Unused.
-
-    is_stub = bool
-
-    def __init__(self):
-        self._value = BpyTextModuleValue()
-        self.predefined_names = {}
-
-    # Update the module value's runtime with the current interpreter.
-    def update(self, interp):
-        # TODO: These could all be forwarders to a ``self.interpreter``
-        value = self._value
-        value.tree_node = interp._module_node
-        value.file_io = interp._file_io
-        value.string_names = ("__main__",)
-        value.code_lines = interp._code_lines
-        value._path = value.file_io.path
-        self.filters = None
-
-    def get_filters(self, until_position=None, origin_scope=None):
-        if not self.filters:
-            # Skip the merged filter.
-            # It's pointless since we're already returning A LIST OF FILTERS.
-            tree_filter   = MixedParserTreeFilter(self, None, until_position, origin_scope)
-            global_filter = GlobalNameFilter(self)
-            self.filters  = [tree_filter, global_filter]
-        return self.filters
-
-    def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
-        if namedef := find_definition(self, name_or_str, position):
-            return namedef.infer()
-        print("BpyTextModuleContext py__getattribute__ failed for", name_or_str)
-        return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
-
-
-class Interpreter(Script):
-    _inference_state = state
-
-    # Needed by self.get_signatures.
-    _get_module_context = _unbound_getter("context")
-
-    def __init__(self, code: str, _: Unused = None):
-        # The memoize cache stores a dict of dicts keyed to functions.
-        # The first level is never cleared. This lowers the cache overhead.
-        consume(map(dict.clear, state_values))
-
-        state.reset_recursion_limitations()
-        state.inferred_element_counts = {}
-
-        lines = ensure_blank_eol(code.splitlines(True))
-        file_io = BpyTextBlockIO(lines)
-        self._code_lines = lines
-        self._file_io = file_io
-
-        try:
-            module_node = state.grammar.parse(file_io)
-        # Support optimizations turned off
-        except AttributeError:
-            module_node = state.grammar.parse(code=code, file_io=file_io)
-
-        self._module_node = module_node
-
-        self.context = BpyTextModuleContext()
-        self.context.update(self)
-
-    def complete(self, line, column, *, fuzzy=False):
-        return Completion(
-            state,
-            self.context,
-            self._code_lines,
-            (line, column),
-            self.get_signatures,
-            fuzzy=fuzzy
-        ).complete()
-
-    __repr__ = object.__repr__
-
-
-# This adds optimizations to the various parsers Jedi uses.
+# This adds optimizations to the various parsers.
 #
 # Add token optimization:
 # - Eliminate token initializers and use direct assignments.
@@ -129,8 +9,13 @@ class Interpreter(Script):
 # - Skip feeding identical lines to the SequenceMatcher
 #
 # Grammar.parse optimization:
-# - Just removes irrelevant code.
+# - Just removes junk code.
 
+
+def apply():
+    optimize_parser()
+    optimize_diffparser()
+    optimize_grammar_parse()
 
 
 # This makes some heavy optimizations to parso's Parser and token types:
@@ -261,6 +146,7 @@ def optimize_parser():
 def optimize_diffparser():
     from parso.python.diff import _get_debug_error_message, DiffParser
     from itertools import count, compress
+    from textension.fast_seqmatch import FastSequenceMatcher
     from difflib import SequenceMatcher
     from operator import ne
 
@@ -302,21 +188,21 @@ def optimize_diffparser():
 
 # Optimizes Grammar.parse and InferenceState.parse by stripping away nonsense.
 def optimize_grammar_parse():
+    from parso.python.diff import DiffParser, Parser
+    from jedi.inference import InferenceState
     from parso.grammar import Grammar, parser_cache, try_to_save_module, load_module
-    from parso.python.diff import DiffParser
-    from parso.python.parser import Parser
     from parso.utils import python_bytes_to_unicode
+    from ..common import BpyTextBlockIO, ensure_blank_eol
     from pathlib import Path
     from jedi import settings
 
     org_parse = Grammar.parse
-    is_bpy_text = BpyTextBlockIO.__instancecheck__
-    is_bytes = bytes.__instancecheck__
 
     def parse(self: Grammar, file_io: BpyTextBlockIO, *_, **__):
         try:
             path = file_io.path
         except:
+            # raise
             return org_parse(self, file_io, *_, **__)
 
         # XXX: Is path ever None?
@@ -338,7 +224,7 @@ def optimize_grammar_parse():
 
         # Not ideal at all. Jedi loads some modules as bytes.
         # TODO: This should be intercepted in load_module.
-        if is_bytes(lines):
+        if isinstance(lines, bytes):
             lines = ensure_blank_eol(python_bytes_to_unicode(lines).splitlines(True))
 
         try:
@@ -351,7 +237,7 @@ def optimize_grammar_parse():
             node = DiffParser(self._pgen_grammar, self._tokenizer, cached.node).update(cached.lines, lines)
 
         # Bpy text blocks should not be pickled.
-        do_pickle = not is_bpy_text(file_io)
+        do_pickle = not isinstance(file_io, BpyTextBlockIO)
         try:
             try_to_save_module(self._hashed, file_io, node, lines,
                 pickling=do_pickle, cache_path=Path(settings.cache_directory))

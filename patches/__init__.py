@@ -1,8 +1,7 @@
 # This adds fixes for jedi to outright work.
 
 from textension.utils import _patch_function, _forwarder
-from .tools import state, _descriptor_overrides, _value_overrides, \
-    _get_unbound_super_method
+from .tools import _descriptor_overrides, _value_overrides
 
 import bpy
 

@@ -18,6 +18,7 @@ def apply():
     optimize_AnonymousMethodExecutionFilter()
     optimize_ParserTreeFilter_values()
     optimize_CompiledValueFilter_values()
+    optimize_ClassMixin_get_filters()
 
 
 def is_allowed_getattr(obj, name):
@@ -239,3 +240,32 @@ def optimize_ParserTreeFilter_filter():
         return _check_flows(self, names)
 
     ParserTreeFilter._filter = _filter
+
+
+def optimize_ClassMixin_get_filters():
+    from jedi.inference.value.klass import ClassMixin
+    from jedi.inference.value.klass import ClassFilter
+    from jedi.inference.compiled import builtin_from_name
+    from itertools import islice
+
+    type_ = builtin_from_name(state, "type")
+    type_values = []
+    for instance in type_.py__call__(None):
+        type_values += islice(instance.get_filters(), 2, 3)
+
+    def get_filters(self: ClassMixin, origin_scope=None, is_instance=False, include_metaclasses=True, include_type_when_class=True):
+        if include_metaclasses:
+            if metaclasses := self.get_metaclasses():
+                yield from self.get_metaclass_filters(metaclasses, is_instance)
+
+
+        for cls in self.py__mro__():
+            if cls.is_compiled():
+                yield from cls.get_filters(is_instance=is_instance)
+            else:
+                yield ClassFilter(self, node_context=cls.as_context(), origin_scope=origin_scope, is_instance=is_instance)
+
+        if not is_instance and include_type_when_class and self is not type_:
+            yield from type_values
+
+    ClassMixin.get_filters = get_filters

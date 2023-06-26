@@ -281,14 +281,6 @@ def deferred_complete():
     utils.defer(wrapper)
 
 
-def get_interpreter(text):
-    from .patches.opgroup.interpreter import Interpreter
-    return Interpreter(text.as_string(), [])
-
-    from jedi.api import Interpreter
-    return Interpreter(text.as_string(), [])
-
-
 class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
     utils.km_def("Text Generic", 'SPACE', 'PRESS', ctrl=1)
 
@@ -298,12 +290,9 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
         instance = get_instance()
         instance.sync_cursor()
 
-        text = context.edit_text
-        line, col = text.cursor.focus
-        interp = get_interpreter(text)
-
+        from .patches.common import interpreter
         try:
-            ret = interp.complete(line + 1, col)
+            ret = interpreter.complete(context.edit_text)
         except BaseException as e:
             import traceback
             traceback.print_exc()
