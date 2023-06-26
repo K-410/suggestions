@@ -12,7 +12,7 @@ from parso.python.diff import (_get_next_leaf_if_indentation,
                                 _NodesTreeNode)
 
 from textension.utils import instanced_default_cache, dict_items, starchain
-from ..tools import is_basenode, is_namenode
+from ..tools import is_basenode, is_namenode, is_leaf
 
 
 get_direct_node = attrgetter("tree_node.parent")
@@ -126,6 +126,22 @@ def get_used_names(self: Module):
     return self._used_names
 
 
+def _update_positions(nodes, line_offset, last_leaf):
+    from parso.tree import Leaf
+    from itertools import takewhile
+    from operator import is_not
+    from textension.utils import PyInstanceMethod_New
+
+    pool = nodes[:]
+
+    for node in filter(is_basenode, pool):
+        pool += node.children
+    Leaf.is_not = PyInstanceMethod_New(is_not)
+    for node in takewhile(last_leaf.is_not, filter(is_leaf, pool)):
+        node.line += line_offset
+    last_leaf.line += line_offset
+
+
 # Eliminates recursion and adds support for passing updated nodes to cache.
 def finish(self: _NodesTreeNode):
     pool = [self]
@@ -139,10 +155,7 @@ def finish(self: _NodesTreeNode):
             first_leaf = _get_next_leaf_if_indentation(group[0].get_first_leaf())
             first_leaf.prefix = prefix + first_leaf.prefix
             if line_offset != 0:
-                try:
-                    _update_positions(group, line_offset, end_leaf)
-                except _PositionUpdatingFinished:
-                    pass
+                _update_positions(group, line_offset, end_leaf)
             children += group
 
         # Reset the parents

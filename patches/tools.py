@@ -6,7 +6,6 @@ import jedi.api as api
 
 from parso.python.tree import Name, Operator
 from parso.grammar import load_grammar
-from parso.tree import BaseNode
 
 from textension.utils import factory, namespace, inline, _check_type, consume
 import textension
@@ -72,8 +71,14 @@ _value_overrides = {}
 
 @inline
 def is_basenode(node) -> bool:
+    from parso.tree import BaseNode
     return BaseNode.__instancecheck__
 
+
+@inline
+def is_leaf(node) -> bool:
+    from parso.tree import Leaf
+    return Leaf.__instancecheck__
 
 @inline
 def is_namenode(node) -> bool:
