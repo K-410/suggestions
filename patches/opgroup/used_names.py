@@ -112,7 +112,7 @@ class NamesCache(dict):
         self.nodes = nodes
 
         # Compose ``used_names`` from the module base nodes.
-        result = defaultdict(list)
+        self.result = result = defaultdict(list)
         for name, names in starchain(self.values):
             result[name] += names
 
@@ -121,25 +121,12 @@ class NamesCache(dict):
 
 
 def get_used_names(self: Module):
+    used_names = node_cache[self]
+
     if self._used_names is None:
-        self._used_names = node_cache[self].update()
-    return self._used_names
-
-
-def _update_positions(nodes, line_offset, last_leaf):
-    from parso.tree import Leaf
-    from itertools import takewhile
-    from operator import is_not
-    from textension.utils import PyInstanceMethod_New
-
-    pool = nodes[:]
-
-    for node in filter(is_basenode, pool):
-        pool += node.children
-    Leaf.is_not = PyInstanceMethod_New(is_not)
-    for node in takewhile(last_leaf.is_not, filter(is_leaf, pool)):
-        node.line += line_offset
-    last_leaf.line += line_offset
+        self._used_names = False
+        used_names.update()
+    return used_names.result
 
 
 # Eliminates recursion and adds support for passing updated nodes to cache.
@@ -147,18 +134,20 @@ def finish(self: _NodesTreeNode):
     pool = [self]
     for node in iter(pool):
         pool += node._node_children
-
-        tree_node = node.tree_node
-        tree_node.children = children = []
+        children = []
         
         for prefix, group, line_offset, end_leaf in node._children_groups:
             first_leaf = _get_next_leaf_if_indentation(group[0].get_first_leaf())
             first_leaf.prefix = prefix + first_leaf.prefix
             if line_offset != 0:
-                _update_positions(group, line_offset, end_leaf)
+                try:
+                    _update_positions(group, line_offset, end_leaf)
+                except _PositionUpdatingFinished:
+                    pass
             children += group
 
-        # Reset the parents
+        tree_node = node.tree_node
+        tree_node.children = children
         for child in children:
             child.parent = tree_node
 
