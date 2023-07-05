@@ -175,13 +175,11 @@ def optimize_Name_get_definition():
 
         if type in {"funcdef", "classdef", "except_clause"}:
 
-            # self is the class or function name.
-            children = p.children
-            if self is children[1]:  # Is the function/class name definition.
+            if self is p.children[1]:  # The function/class name.
                 return p
 
             # self is the e part of ``except X as e``.
-            elif type == "except_clause" and self is children[-1]:
+            elif type == "except_clause" and self is p.children[-1]:
                 return p.parent
             return None
 
@@ -192,7 +190,7 @@ def optimize_Name_get_definition():
                     children = p.children
 
                     op = children[1]
-                    # Might be ``operator`` - most likely.
+                    # Maybe ``operator``.
                     if op.type == "operator":
                         if op.value is "=":
                             name = children[0]
@@ -210,15 +208,14 @@ def optimize_Name_get_definition():
                     elif children[0] is self:
                         return p
 
+                elif self in p.get_defined_names(include_setitem) or (import_name_always and p.type in _IMPORTS):
+                    return p
                 elif type in {"for_stmt", "sync_comp_for"}:
                     node = p.children[1]
                     if (node.type in PythonNode_types and self in _defined_names(node, include_setitem)) or \
                             node is self:
                         return p
 
-                elif self in p.get_defined_names(include_setitem) or \
-                        import_name_always and p.type in _IMPORTS:
-                    return p
                 return None
             p = p.parent
 
