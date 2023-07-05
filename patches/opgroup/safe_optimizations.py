@@ -43,8 +43,6 @@ def apply():
     optimize_is_big_annoying_library()
     optimize_iter_module_names()
     optimize_Context_methods()
-    optimize_builtins_lifetime()
-    optimize_TreeInstance_get_annotated_class_object()
     optimize_CompiledIntance_init()
     optimize_Completion_init()
 
@@ -57,29 +55,17 @@ def apply():
     optimize_infer_node_if_inferred()
     optimize_try_to_load_stub_cached()
     optimize_imports_iter_module_names()
-    optimize_all_string_prefixes()
+    optimize_BaseNode_end_pos()
+    optimize_Leaf_end_pos()
+    optimize_CompiledValue_api_type()
+    optimize_BaseNode_get_last_leaf()
+    optimize_pickling()
+    optimize_LazyTreeValue_infer()
+    optimize_LazyInstanceClassName()
+    optimize_get_module_info()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
-
-
-# Optimize to use keyword lookup table.
-def optimize_all_string_prefixes():
-    from parso.python import tokenize
-
-    # F and raw.
-    fr = frozenset({"", "f", "F", "fr", "Fr", "FR", "fR", "rf", "Rf", "RF", "rF"})
-
-    # Byte, raw and unicode
-    bru = frozenset({"", "b", "B", "r", "R", "u", "U", "br",
-           "Br", "BR", "bR", "rb", "Rb", "RB", "rB"})
-    
-    prefixes = ((bru, frozenset()), (frozenset(fr | bru), fr))
-
-    def _all_string_prefixes(*, include_fstring=False, only_fstring=False):
-        return prefixes[include_fstring][only_fstring]
-
-    _patch_function(tokenize._all_string_prefixes, _all_string_prefixes)
 
 
 def optimize_imports_iter_module_names():
@@ -135,6 +121,9 @@ def optimize_infer_node_if_inferred():
     from ..common import state, state_cache
 
     cache = state.memoize_cache
+
+    # The actual ``_infer_node`` function.
+    _infer_node = _infer_node.__closure__[0].cell_contents.__closure__[0].cell_contents
 
     @state_cache
     def _infer_node_if_inferred(context, element):
@@ -242,21 +231,22 @@ def optimize_ValueContext_methods():
 
 def optimize_Node_methods():
     from parso.tree import NodeOrLeaf
-    from operator import indexOf
-    from ..tools import is_basenode
+    from ..common import node_types
 
     def get_previous_leaf(self: NodeOrLeaf):
-        try:
-            while (i := indexOf(c := self.parent.children, self)) is 0:
-                self = self.parent
-        except AttributeError:
-            return None
-
-        self = c[i - 1]
-
-        while is_basenode(self):
-            self = self.children[-1]
-        return self
+        while parent := self.parent:
+            i = 0
+            for c in parent.children:
+                if c is self:
+                    if i is not 0:
+                        self = parent.children[i - 1]
+                        while self.__class__ in node_types:
+                            self = self.children[-1]
+                        return self
+                    break
+                i += 1
+            self = parent
+        return None
 
     NodeOrLeaf.get_previous_leaf = get_previous_leaf
 
@@ -306,27 +296,6 @@ def optimize_Completion_init():
         self._cached_name = cached_name
 
     Completion.__init__ = __init__
-
-
-# Optimizes TreeInstance to never call _get_annotated_class_object.
-def optimize_TreeInstance_get_annotated_class_object():
-    from jedi.inference.value.instance import TreeInstance
-
-    def get_annotated_class_object(self: TreeInstance):
-        return self.class_value
-    
-    TreeInstance.get_annotated_class_object = _unbound_method(attrgetter("class_value"))
-    TreeInstance.get_annotated_class_object = get_annotated_class_object
-
-
-def optimize_builtins_lifetime():
-    from jedi.inference import InferenceState
-    from jedi.inference.imports import import_module_by_names
-
-    from ..tools import state
-
-    InferenceState.builtins_module, = import_module_by_names(
-        state, ("builtins",), prefer_stubs=True)
 
 
 def optimize_Context_methods():
@@ -387,40 +356,49 @@ def optimize_ImportFrom_get_defined_names():
     ImportFrom.get_defined_names = get_defined_names_o
 
 
-# Eliminate excessive os.stat calls and add heuristics.
+# Eliminate use of os.stat and just dump the contents of a stub directory
+# into a named tuple. Jedi can deal with whether or not the files are valid.
 def optimize_create_stub_map():
-    from jedi.inference.gradual.typeshed import _create_stub_map, PathInfo
-    from os import listdir, access, F_OK
+    from jedi.inference.gradual.typeshed import _create_stub_map
+    from textension.utils import _TupleBase, _named_index
+    from itertools import compress
+    from operator import methodcaller, not_
+    from builtins import list, map, filter
+    from os import listdir
+
+    tail = "/__init__.pyi"
+    is_ext = methodcaller("__contains__", ".")
+    is_pyi = methodcaller("endswith", ".pyi")
+
+    class PathInfo2(_TupleBase):
+        path           = _named_index(0)
+        is_third_party = _named_index(1)
 
     def _create_stub_map_p(directory_path_info):
-        is_third_party = directory_path_info.is_third_party
-        dirpath        = directory_path_info.path
+        dirpath = directory_path_info.path
 
         try:
             listed = listdir(dirpath)
         except (FileNotFoundError, NotADirectoryError):
             return {}
 
-        stubs = {}
+        stubs   = {}
+        prefix  = f"{dirpath}/"
 
-        # Prepare the known parts for faster string interpolation.
-        tail = "/__init__.pyi"
-        head = f"{dirpath}/"
+        is_third_party = directory_path_info.is_third_party
 
-        for entry in listed:
+        has_ext = list(map(is_ext, listed))
 
-            # Entry is likely a .pyi stub module.
-            if entry[-1] is "i" and entry[-4:] == ".pyi":
-                name = entry[:-4]
-                if name != "__init__":
-                    stubs[name] = PathInfo(f"{head}{entry}", is_third_party)
+        # Directories.
+        for directory in compress(listed, map(not_, has_ext)):
+            stubs[directory] = PathInfo2((f"{prefix}{directory}{tail}", is_third_party))
 
-            # Entry is likely a directory.
-            else:
-                path = f"{head}{entry}{tail}"
-                # Test only access - not if it's a directory.
-                if access(path, F_OK):
-                    stubs[entry] = PathInfo(path, is_third_party)
+        # Single modules.
+        for file in filter(is_pyi, compress(listed, has_ext)):
+            stubs[file[:-4]] = PathInfo2((f"{prefix}{file}", is_third_party))
+
+        if "__init__" in stubs:
+            del stubs["__init__"]
 
         return stubs
 
@@ -523,8 +501,9 @@ def optimize_CompiledName():
 def optimize_TreeContextMixin():
     from jedi.inference.syntax_tree import infer_node
     from jedi.inference.context import TreeContextMixin
+    from ..common import state_cache
 
-    TreeContextMixin.infer_node = _unbound_method(infer_node)
+    TreeContextMixin.infer_node = _unbound_method(state_cache(infer_node))
 
 
 # Optimizes MergedFilter methods to use functional style calls.
@@ -839,3 +818,163 @@ def optimize_iter_module_names():
         return cache[paths]# | set([k for k in module_keys if "." not in k])
 
     _patch_function(_iter_module_names, _iter_module_names_o)
+
+
+def optimize_BaseNode_get_last_leaf():
+    from parso.tree import BaseNode
+    from ..common import node_types
+
+    def get_last_leaf(self: BaseNode) -> tuple[int, int]:
+        self = self.children[-1]
+        while self.__class__ in node_types:
+            self = self.children[-1]
+        return self
+
+    BaseNode.get_last_leaf = get_last_leaf
+
+
+def optimize_Leaf_end_pos():
+    from parso.python.tree import Newline
+    from parso.tree import Leaf
+
+    strlen = str.__len__
+
+    @property
+    def end_pos(self: Leaf) -> tuple[int, int]:
+        # The code for newline checks is moved to its own property below.
+        return self.line, self.column + strlen(self.value)
+    
+    Leaf.end_pos = end_pos
+
+    @property
+    def end_pos(self: Newline):
+        return self.line + 1, 0
+
+    Newline.end_pos = end_pos
+
+
+# Remove recursion and inline optimized leaf end position. Simplified based on
+# ``value`` either being a single newline, or not containing a newline at all.
+def optimize_BaseNode_end_pos():
+    from parso.tree import BaseNode
+    from ..common import node_types
+    strlen = str.__len__
+
+    @property
+    def end_pos(self: BaseNode) -> tuple[int, int]:
+        self = self.children[-1]
+        while self.__class__ in node_types:
+            self = self.children[-1]
+
+        if self.value is "\n":
+            return self.line + 1, 0
+        return self.line, self.column + strlen(self.value)
+
+    BaseNode.end_pos = end_pos
+
+
+# Removes junk indirection code. Jedi uses indirection for multi-process
+# inference states. We can't even use that in Blender.
+def optimize_CompiledValue_api_type():
+    from jedi.inference.compiled.value import CompiledValue
+    from types import ModuleType, BuiltinFunctionType, MethodType, \
+         FunctionType, MethodDescriptorType
+
+    function_types = MethodDescriptorType, BuiltinFunctionType, MethodType, FunctionType
+
+    is_module = ModuleType.__instancecheck__
+
+    @property
+    def api_type(self: CompiledValue):
+        obj = self.access_handle.access._obj
+
+        if isinstance(obj, function_types):
+            return "function"
+        elif isinstance(obj, type):
+            return "class"
+        elif is_module(obj):
+            return "module"
+        return "instance"
+
+    CompiledValue.api_type = api_type
+
+
+def optimize_pickling():
+    from parso.cache import _NodeCacheItem
+    from parso.pgen2.generator import DFAState, ReservedString, DFAPlan
+    from parso.pgen2.grammar_parser import NFAState, NFAArc
+    from parso.tree import NodeOrLeaf
+    from functools import reduce
+    from operator import add
+
+    pool = [NodeOrLeaf, _NodeCacheItem, DFAState, NFAState, NFAArc, ReservedString, DFAPlan]
+
+    for cls in iter(pool):
+        cls.__slotnames__ = list(reduce(add, (getattr(c, "__slots__", ()) for c in cls.__mro__)))
+        pool += cls.__subclasses__()
+
+
+# Just removes the context manager. WE DON'T USE PREDEFINED NAMES.
+def optimize_LazyTreeValue_infer():
+    from jedi.inference.lazy_value import LazyTreeValue
+
+    def infer(self: LazyTreeValue):
+        return self.context.infer_node(self.data)
+    
+    LazyTreeValue.infer = infer
+
+
+def optimize_LazyInstanceClassName():
+    from jedi.inference.value.instance import LazyInstanceClassName, InstanceClassFilter
+    from textension.utils import _TupleBase, _named_index
+    from itertools import repeat
+
+    class BetterLazyInstanceClassName(LazyInstanceClassName, _TupleBase):
+        __init__ = tuple.__init__
+
+        _instance     = _named_index(0)
+        _wrapped_name = _named_index(1)
+
+        def __repr__(self):
+            return '%s(%s)' % (self.__class__.__name__, self._wrapped_name)
+
+    def _convert(self: InstanceClassFilter, names):
+        return map(BetterLazyInstanceClassName, zip(repeat(self._instance), names))
+    
+    InstanceClassFilter._convert = _convert
+
+
+# Optimize get_module_info to use already-imported modules if they exist, in
+# order to avoid invoking the import machinery which isn't actually cheap.
+def optimize_get_module_info():
+    from jedi.inference.compiled.subprocess.functions import get_module_info, _find_module
+    from jedi.file_io import KnownContentFileIO
+    from types import ModuleType
+    import sys
+
+    modules = sys.modules
+    module_getattr = ModuleType.__getattribute__
+
+    def _get_module_info(inference_state, sys_path=None, full_name=None, **kwargs):
+        if full_name in modules:
+            try:
+                spec = module_getattr(modules[full_name], "__spec__")
+                with open(spec.origin, "rb") as f:
+                    content = f.read()
+                return KnownContentFileIO(spec.origin, content), bool(spec.submodule_search_locations)
+            except:
+                pass
+
+        temp = sys.path
+        if sys_path is not None:
+            sys.path = sys_path
+
+        try:
+            return _find_module(full_name=full_name, **kwargs)
+        except ImportError:
+            return None, None
+        finally:
+            if sys_path is not None:
+                sys.path = temp
+
+    _patch_function(get_module_info, _get_module_info)
