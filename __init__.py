@@ -4,6 +4,8 @@ from textension.utils import _context, _system
 from textension import utils, ui
 
 from operator import attrgetter, methodcaller
+from textension.overrides import OpOverride
+from textension.btypes.defs import OPERATOR_CANCELLED
 
 import os
 import sys
@@ -13,11 +15,22 @@ import gc
 
 # Backup.
 _gc_enable = gc.enable
+
 _get_sync_key = attrgetter("select_end_line", "select_end_character")
+
 # Token separators excluding dot/period
 separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
 
+runtime = utils.namespace(loaded=False)
+
+
 BLF_BOLD = 1 << 11  # ``blf.enable(0, BLF_BOLD)`` adds bold effect.
+
+
+class TEXT_OT_autocomplete(OpOverride):
+    def invoke(self):
+        deferred_complete()
+        return OPERATOR_CANCELLED
 
 
 class Description(ui.widgets.TextView):
@@ -55,12 +68,11 @@ class Suggestions(ui.widgets.ListBox):
     match_foreground_color = (0.87, 0.60, 0.25, 1.0)
 
     def __init__(self, st: bpy.types.SpaceTextEditor):
-        utils._check_type(st, bpy.types.SpaceTextEditor)
-
         super().__init__(parent=None)
+
         self.update_uniforms(shadow=(0, 0, 0, 0.5))
-        self.st = st
         self.description = Description(self)
+        self.st = st
 
     @property
     def font_size(self):
@@ -306,6 +318,9 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
     poll = utils.text_poll
 
     def invoke(self, context, event):
+        if not runtime.loaded:
+            _setup(force=True)
+
         text = context.edit_text
         instance = get_instance()
 
@@ -683,13 +698,15 @@ def apply_custom_settings():
         setattr(Suggestions, name, getattr(p, name))
 
 
-def _deferred_setup():
-    import jedi
+def _setup(force=False):
+    if force and bpy.app.timers.is_registered(_setup):
+        bpy.app.timers.unregister(_setup)
 
-    jedi.settings.auto_import_modules = set()
+    import jedi
 
     # Do not let jedi infer anonymous parameters. It's slow and useless.
     jedi.settings.dynamic_params = False
+    jedi.settings.auto_import_modules = set()
 
     # This is a hack, but we need something reasonably persistent.
     # If sys.modules is cleared, there's other things to worry about.
@@ -697,6 +714,8 @@ def _deferred_setup():
         sys.modules["_suggestions"] = type(sys)
         from . import patches
         patches.apply()
+
+    runtime.loaded = True
 
 
 def enable():
@@ -721,17 +740,8 @@ def enable():
     # Override the default auto complete operator.
     TEXT_OT_autocomplete.apply_override()
 
-    utils.defer(_deferred_setup, delay=0.1)
-
-
-from textension.overrides import OpOverride
-from textension.btypes.defs import OPERATOR_CANCELLED
-
-
-class TEXT_OT_autocomplete(OpOverride):
-    def invoke(self):
-        deferred_complete()
-        return OPERATOR_CANCELLED
+    # Defer loading jedi and applying patches so the plugin is enabled faster.
+    utils.defer(_setup, delay=1.0)
 
 
 def disable():
