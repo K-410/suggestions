@@ -69,31 +69,30 @@ class Suggestions(ui.widgets.ListBox):
         return self.fixed_font_size
 
     def poll(self) -> bool:
-        if self.is_visible:
-            if text := _context.edit_text:
-                if _get_sync_key(text) == self.sync_key:
-                    return bool(self.lines)
-                else:
-                    # TODO: Setting this in the poll isn't a good idea.
-                    self.last_position = -1, -1
-                    self.sync_key = ()
+        if text := self.is_visible and _context.edit_text:
+            if _get_sync_key(text) == self.sync_key:
+                return bool(self.lines)
+            # TODO: Setting this in the poll isn't a good idea.
+            self.last_position = -1, -1
+            self.sync_key = ()
         return False
 
     def sync_cursor(self, line_index) -> None:
         self.sync_key = _get_sync_key(_context.edit_text)
         self.last_position = line_index, self.sync_key[1]
+        return None
 
     def draw(self) -> None:
         # Align the box below the cursor.
         st = _context.space_data
         x, y = st.region_location_from_cursor(*self.last_position)
+        w, h = self.rect.size
 
-        caret_offset = round(4 * _system.wu * 0.05)
-        y -= self.rect[3] - st.offsets[1] - caret_offset
+        y -= h - st.offsets[1] - round(4 * _system.wu * 0.05)
 
-        self.rect.draw(x, y, self.rect[2], self.rect[3])
+        self.rect.draw(x, y, w, h)
         super().draw()  # ListBox.draw
-        # self.description.draw()
+        self.description.draw()
 
     def draw_entry(self, entry, x: int, y: int):
         length = entry.get_completion_prefix_length()
@@ -263,7 +262,6 @@ def dismiss():
 def on_insert(line, column, fmt) -> None:
     """Hook for TEXTENSION_OT_insert"""
     if _context.edit_text.lines[line].body[column - 1] not in separators and fmt != b"#":
-        get_instance().sync_cursor(line)
         deferred_complete()
     else:
         dismiss()
@@ -406,15 +404,11 @@ def update_resizer_colors(self: "TEXTENSION_PG_suggestions", context):
 
 
 def update_value(name: str):
-
     def update_setting(self: "TEXTENSION_PG_suggestions", context) -> None:
         setattr(Suggestions, name, getattr(self, name))
-
         for instance in _instances:
             instance.reset_cache()
-
         utils.redraw_editors('TEXT_EDITOR', 'WINDOW')
-
     return update_setting
 
 
@@ -438,11 +432,8 @@ def update_uniform_child(path: str, uniform: str):
     def update(self, context, *, get_child=attrgetter(path), name=name):
         value = getattr(self, name)
         setattr(Suggestions, name, value)
-
         for instance in _instances:
-            child = get_child(instance)
-            child.update_uniforms(**{uniform: value})
-
+            get_child(instance).update_uniforms(**{uniform: value})
         utils.redraw_editors('TEXT_EDITOR', 'WINDOW')
     return update
 
@@ -692,6 +683,22 @@ def apply_custom_settings():
         setattr(Suggestions, name, getattr(p, name))
 
 
+def _deferred_setup():
+    import jedi
+
+    jedi.settings.auto_import_modules = set()
+
+    # Do not let jedi infer anonymous parameters. It's slow and useless.
+    jedi.settings.dynamic_params = False
+
+    # This is a hack, but we need something reasonably persistent.
+    # If sys.modules is cleared, there's other things to worry about.
+    if "_suggestions" not in sys.modules:
+        sys.modules["_suggestions"] = type(sys)
+        from . import patches
+        patches.apply()
+
+
 def enable():
     # Unless Jedi already exists, it's placed into the directory 'download'.
     # In this case we add it to sys.path to make it globally importable.
@@ -699,7 +706,6 @@ def enable():
     if plugin_path not in sys.path:  # TODO: Should be 'download', not root directory.
         sys.path.append(plugin_path)
 
-    import jedi
     utils.register_classes(classes)
 
     from textension import ui, prefs
@@ -709,23 +715,13 @@ def enable():
 
     Suggestions.preferences = prefs.add_settings(TEXTENSION_PG_suggestions)
     apply_custom_settings()
-    jedi.settings.auto_import_modules = set()
-
-    # Do not let jedi infer anonymous parameters. It's slow and useless.
-    jedi.settings.dynamic_params = False
-
     utils.add_draw_hook(draw_suggestions)
     ui.add_hit_test(test_suggestions_box)
 
-    # This is a hack, but we need something reasonably persistent.
-    # If sys.modules is cleared, there's other things to worry about.
-    if "_suggestions" not in sys.modules:
-        sys.modules["_suggestions"] = type(sys)
-        from . import patches
-        patches.apply()
-
     # Override the default auto complete operator.
     TEXT_OT_autocomplete.apply_override()
+
+    utils.defer(_deferred_setup, delay=0.1)
 
 
 from textension.overrides import OpOverride
