@@ -202,6 +202,10 @@ def get_scope_name_definitions(scope):
             pool += [n.children[1]]
 
         elif n.type == "for_stmt":
+
+            # Add the suite to pool.
+            pool += n.children[-1].children
+
             name = n.children[1]
             if name.type == "exprlist":
                 namedefs += filter(is_namenode, name.children)
@@ -294,8 +298,9 @@ def get_parent_scope_fast(node):
     if scope := node.parent:
         pt = scope.type
 
-        either = (pt == 'tfpdef' and scope.children[0] == node) or \
-                 (pt == 'param'  and scope.name == node)
+        if either := pt in {"tfpdef", "param"}:
+            either = (pt == "tfpdef" and scope.children[0] == node) or \
+                     (pt == "param"  and scope.name == node)
 
         while True:
             stype = scope.type
@@ -401,8 +406,10 @@ def trace_flow(node, origin_scope):
     def iter_flows(node, include_scopes):
         if include_scopes and (parent := node.parent):
             type = parent.type
-            is_param = (type == 'tfpdef' and parent.children[0] == node) or \
-                       (type == 'param'  and parent.name == node)
+
+            if is_param := type in {"tfpdef", "param"}:
+                is_param = (type == 'tfpdef' and parent.children[0] == node) or \
+                           (type == 'param'  and parent.name == node)
 
         scope = node
         while scope := scope.parent:
