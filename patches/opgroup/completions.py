@@ -11,34 +11,28 @@ def _sort_completions(completions):
     from builtins import map, next, sorted
     from operator import attrgetter, not_
 
-    get_string = attrgetter("_name.string_name")
+    get_lower = attrgetter("_string_name_lower")
     startswith = str.startswith
-    rep_single = repeat("_")
-    rep_double = repeat("__")
+    single = repeat("_")
+    double = repeat("__")
 
-    def _sort_completions(completions):
-        completions = sorted(completions, key=get_string)
+    def _sort_completions(names):
+        # Names starting with underscores will appear first.
+        names = sorted(names, key=get_lower)
 
-        it = map(startswith, map(get_string, completions), rep_single)
-        head = count()
+        # Find the first name without an underscore prefix.
+        select = map(not_, map(startswith, map(get_lower, names), single))
+        if start := next(compress(count(), select), None):
+            underscores = names[:start]
 
-        if i_u := next(compress(head, it), None):
-            upper = completions[:i_u]
-        else:
-            it = map(startswith, map(get_string, completions), rep_single)
-            head = count()
-            upper = []
+            # Find the first name without double underscore prefix.
+            select = map(not_, map(startswith, map(get_lower, underscores), double))
+            if start_single := next(compress(count(), select), None):
+                underscores = underscores[start_single:] + underscores[:start_single]
 
-        if i_s := next(compress(head, map(not_, it)), None):
-            small = completions[i_s:]
-            underscores = completions[i_u:i_s]
-
-            it = map(startswith, map(get_string, underscores), rep_double)
-
-            if i_d := next(compress(count(), map(not_, it)), None):
-                underscores = underscores[i_d:] + underscores[:i_d]
-            completions = upper + small + underscores
-        return completions
+            # [names] + [single underscore] + [double underscore]
+            names = names[start:] + underscores
+        return names
 
     return _sort_completions
 
@@ -86,13 +80,6 @@ def optimize_Completion_complete():
         completions = filter_names(self._inference_state, completion_names,
             self.stack, self._like_name, self._fuzzy, cached_name=cached_name)
 
-        # XXX: Natural sorting. Might want to revert to this.
-        # lower = str.lower
-        # def sorter(x):
-        #     name = lower(x._name.string_name)
-        #     return name[:2] == "__", name[0] is "_", name
-        # completions = sorted(completions, key=sorter)  # 3.6ms
-
         return prefixed_completions + _sort_completions(completions)
 
     _patch_function(Completion.complete, complete)
@@ -102,9 +89,14 @@ def optimize_filter_names():
     from jedi.api.completion import filter_names
     from jedi.api.classes import Completion
     from jedi.api.helpers import _fuzzy_match
-    from jedi import settings
     from textension.utils import noop_noargs, _patch_function, _named_index, consume
+    from itertools import compress, repeat
+    from operator import itemgetter, attrgetter, eq
+    from builtins import map, list, dict, zip
+
     from ..tools import state
+    from jedi import settings
+
 
     class NewCompletion(Completion):
         _is_fuzzy = False
@@ -118,15 +110,10 @@ def optimize_filter_names():
     fuzzy_match = _fuzzy_match
     startswith = str.startswith
     lower = str.lower
-    strip = str.__str__
-
-    from operator import itemgetter, attrgetter, eq
-    from itertools import compress, repeat
-    from builtins import map, list, dict, zip
 
     strlen = str.__len__
-    get_string_name = attrgetter("string_name")
-    get_tree_name = attrgetter("tree_name")
+    get_string = attrgetter("string_name")
+    get_name   = attrgetter("tree_name")
 
     def filter_names_o(inference_state, completions, stack, like_name, fuzzy, cached_name):
         like_name_len = strlen(like_name)
@@ -134,18 +121,9 @@ def optimize_filter_names():
         if fuzzy:
             match_func = fuzzy_match
             completion_base = FuzzyCompletion
-            do_complete = None.__init__         # Dummy
         else:
             match_func = startswith
             completion_base = NewCompletion
-            # if settings.add_bracket_after_function:
-            #     def do_complete():
-            #         if new.type == "function":
-            #             return n[like_name_len:] + "("
-            #         return n[like_name_len:]
-            # else:
-            #     def do_complete():
-            #         return n[like_name_len:]
 
         class completion(tuple, completion_base):
             __init__ = object.__init__
@@ -153,40 +131,33 @@ def optimize_filter_names():
             _cached_name = cached_name          # Static
             _stack = stack                      # Static
             _name = _named_index(0)
+            _string_name_lower = _named_index(1)
 
-        if settings.case_insensitive_completion:
-            case = lower
-            like_name = case(like_name)
-        else:
-            case = strip  # Dummy
-
-        ret = []
-        strings = map(get_string_name, completions)
-
+        comp = []
+        strings = map(get_string, completions)
 
         if not like_name:
-            ret = list(dict(zip(strings, completions)).values())
+            comp = list(dict(zip(strings, completions)).values())
 
         else:
-            strings = map(itemgetter(slice(None, like_name_len)), strings)
             if settings.case_insensitive_completion:
                 strings = map(lower, strings)
+
+            strings = map(itemgetter(slice(None, like_name_len)), strings)
             strings = map(eq, repeat(like_name), strings)
 
-            dct = {}
+            tmp = {}
             for name in compress(completions, strings):
-                string_name = name.string_name
-                if string_name not in dct:
-                    dct[string_name] = None
-                    ret += [name]
+                tmp[name.string_name] = name
 
-            removals = []
-            for name in filter(get_tree_name, ret):
-                if name.tree_name.parent.type == "del_stmt":
-                    removals += [name]
-            if removals:
-                consume(map(ret.remove, removals))
+            comp = list(tmp.values())
 
-        return map(completion, zip(ret))
+        removals = []
+        for name in filter(get_name, comp):
+            if name.tree_name.parent.type == "del_stmt":
+                removals += [name]
+        if removals:
+            consume(map(comp.remove, removals))
+        return map(completion, zip(comp, map(lower, map(get_string, comp))))
 
     _patch_function(filter_names, filter_names_o)
