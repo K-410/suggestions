@@ -142,6 +142,7 @@ def optimize_filter_names():
         else:
             if settings.case_insensitive_completion:
                 strings = map(lower, strings)
+                like_name = lower(like_name)
 
             strings = map(itemgetter(slice(None, like_name_len)), strings)
             strings = map(eq, repeat(like_name), strings)
