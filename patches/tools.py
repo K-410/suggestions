@@ -1,5 +1,6 @@
 # This module implements various utilities for Suggestions.
 
+from jedi.inference.compiled.subprocess import functions
 from jedi.inference.compiled.value import CompiledValue, CompiledValueName, create_cached_compiled_value
 from jedi.inference.value.instance import CompiledInstance, ValueSet
 import jedi.api as api
@@ -14,6 +15,7 @@ import os
 import sys
 import collections
 from typing import Any
+from types import FunctionType, MethodType
 
 
 # Jedi's own module cache is broken. It stores empty value sets.
@@ -50,6 +52,13 @@ state.grammar = state.latest_grammar = load_grammar()
 state.module_cache = StateModuleCache()
 state.get_sys_path = project._get_sys_path = lambda *_, **__: sys.path[:]
 
+# Remove partial indirection, we don't use subprocesses.
+state.compiled_subprocess.__dict__.update(
+    {k: MethodType(v, state)
+     for k, v in functions.__dict__.items()
+     if not k.startswith("_") and isinstance(v, FunctionType)}
+)
+
 api.InferenceState.__new__  = lambda *args, **kw: state
 api.InferenceState.__init__ = object.__init__
 
@@ -67,6 +76,12 @@ runtime = namespace(context_rna=None)
 _descriptor_overrides = collections.defaultdict(dict)
 _rtype_overrides = {}
 _value_overrides = {}
+
+
+@inline
+def is_pynode(node) -> bool:
+    from parso.python.tree import PythonNode
+    return PythonNode.__instancecheck__
 
 
 @inline
@@ -94,6 +109,17 @@ def is_operator(node) -> bool:
 def is_funcdef(node) -> bool:
     from parso.python.tree import Function
     return Function.__instancecheck__
+
+
+@inline
+def is_str(obj) -> bool:
+    return str.__instancecheck__
+
+
+@inline
+def is_param(node) -> bool:
+    from parso.python.tree import Param
+    return Param.__instancecheck__
 
 
 @inline

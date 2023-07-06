@@ -7,8 +7,8 @@ from itertools import repeat
 from operator import attrgetter
 
 from textension.utils import _named_index
-from ..common import _check_flows, state_cache
-from ..tools import is_basenode, is_namenode, state
+from ..common import _check_flows
+from ..tools import is_basenode, state
 
 
 def apply():
@@ -18,7 +18,11 @@ def apply():
     optimize_AnonymousMethodExecutionFilter()
     optimize_ParserTreeFilter_values()
     optimize_CompiledValueFilter_values()
-    optimize_ClassMixin_get_filters()
+    optimize_AnonymousMethodExecutionFilter_values()
+    optimize_ParserTreeFilter_filter()
+    optimize_CompiledValue_get_filters()
+    # optimize_ClassMixin_get_filters()  # XXX: Runs on startup. Bad.
+    optimize_BaseTreeInstance_get_filters()
 
 
 def is_allowed_getattr(obj, name):
@@ -76,10 +80,11 @@ def optimize_CompiledValueFilter_values():
         sequences = zip(repeat(value), repeat(value.as_context()), dir(obj))
         names = map(DeferredCompiledName, sequences)
  
+        # XXX: Why are we adding names to compiled values?
         # It doesn't make sense to add type completions if the object isn't a class.
-        if not self.is_instance and isinstance(obj, type) and obj is not type:
-            for filter in builtin_from_name(self._inference_state, 'type').get_filters():
-                names = chain(names, filter.values())
+        # if not self.is_instance and isinstance(obj, type) and obj is not type:
+        #     for filter in builtin_from_name(self._inference_state, 'type').get_filters():
+        #         names = chain(names, filter.values())
         return names
 
     CompiledValueFilter.values = values
@@ -93,8 +98,8 @@ def optimize_SelfAttributeFilter_values():
     from itertools import repeat
 
     def values(self: SelfAttributeFilter):
-        names   = []
-        scope   = self._parser_scope
+        names = []
+        scope = self._parser_scope
 
         # We only care about classes.
         if is_classdef(scope):
@@ -124,25 +129,20 @@ def optimize_SelfAttributeFilter_values():
     SelfAttributeFilter.values = values
 
 
-@state_cache
-def get_scope_name_definitions(scope):
-    names = []
-    pool  = scope.children[:]
-
+def get_function_name_definitions(function):
+    
+    namedefs = []
+    pool  = function.children[:]
     for n in filter(is_basenode, pool):
-        pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
+        if n.type == "parameters":
+            namedefs += n.children[1].children[::2]
+        # pool += n.children
 
-    # Get name definitions.
-    for n in filter(is_namenode, pool):
-        if n.get_definition(include_setitem=True):
-            names += [n]
-
-    return names
-
+    return namedefs
 
 def optimize_ClassFilter_values():
     from jedi.inference.value.klass import ClassFilter
-    from ..common import DeferredDefinition, state_cache
+    from ..common import DeferredDefinition, state_cache, get_scope_name_definitions
     from ..tools import is_classdef
 
     stub_classdef_cache = {}
@@ -165,7 +165,8 @@ def optimize_ClassFilter_values():
                     stub_classdef_cache[scope] = self._filter(get_scope_name_definitions(scope))
                 names = stub_classdef_cache[scope]
             else:
-                names = self._filter(get_scope_name_definitions(scope))
+                names = get_scope_name_definitions(scope)
+                # names = self._filter(get_scope_name_definitions(scope))
 
         return list(map(DeferredDefinition, zip(repeat(context), names)))
 
@@ -177,6 +178,7 @@ def optimize_ClassFilter_filter():
     from jedi.inference.value.klass import ClassFilter
 
     def _filter(self: ClassFilter, names):
+        instanced = self._is_instance
         scope = self._parser_scope
         tmp = []
 
@@ -185,12 +187,28 @@ def optimize_ClassFilter_filter():
             parent_type = parent.type
 
             if parent_type in {"funcdef", "classdef"}:
-                if parent.parent.parent is scope:
+                suite = parent.parent
+
+                # For decorators inside classes.
+                # XXX: Jedi still has some control of what gets passed to ``_filter``,
+                # so we can't blindly assume names to be remotely in the same scope.
+                if suite.type == "decorated":
+                    while p := suite.parent:
+                        if p is scope:
+                            break
+                        suite = p
+
+                # Also check for overloaded/decorated functions.
+                if suite.parent is scope:
                     tmp += [name]
+                else:
+                    pass
 
             elif parent_type == "expr_stmt":
                 if parent.parent.parent.parent is scope:
-                    if parent.children[1].type == "operator":
+                    # Either ``operator`` or ``annassign``.
+                    # Annotations are assumed to exist on instances.
+                    if parent.children[1].type == "operator" or instanced:
                         tmp += [name]
         return tmp
 
@@ -199,6 +217,7 @@ def optimize_ClassFilter_filter():
 
 def optimize_AnonymousMethodExecutionFilter():
     from jedi.inference.value.instance import AnonymousMethodExecutionFilter
+    from ..common import get_scope_name_definitions
 
     def get(self: AnonymousMethodExecutionFilter, name_string):
         scope = self._parser_scope
@@ -214,6 +233,7 @@ def optimize_AnonymousMethodExecutionFilter():
 
 def optimize_ParserTreeFilter_values():
     from jedi.inference.filters import ParserTreeFilter
+    from ..common import get_scope_name_definitions
 
     def values(self: ParserTreeFilter):
         scope   = self._parser_scope
@@ -226,6 +246,29 @@ def optimize_ParserTreeFilter_values():
     ParserTreeFilter._check_flows = _check_flows
 
 
+def optimize_AnonymousMethodExecutionFilter_values():
+    from jedi.inference.value.instance import AnonymousMethodExecutionFilter
+    from ..common import get_scope_name_definitions
+    from ..tools import is_param
+
+    def values(self: AnonymousMethodExecutionFilter):
+
+        names = []
+        scope = self._parser_scope
+
+        # Get parameter name definitions.
+        for param in filter(is_param, scope.children[2].children):
+            names += [param.children[0]]
+
+        # The suite.
+        names += get_scope_name_definitions(scope.children[-1])
+        names = self._filter(names)
+        return self._convert_names(names)
+    
+    AnonymousMethodExecutionFilter.values = values
+    AnonymousMethodExecutionFilter._check_flows = _check_flows
+
+
 def optimize_ParserTreeFilter_filter():
     from jedi.inference.filters import ParserTreeFilter
     from itertools import compress
@@ -235,8 +278,12 @@ def optimize_ParserTreeFilter_filter():
     get_start = attrgetter("start_pos")
 
     def _filter(self: ParserTreeFilter, names):
-        if end := self._until_position:
-            names = compress(names, map(end.__gt__, map(get_start, names)))
+        if until := self._until_position:
+            names = compress(names, map(until.__gt__, map(get_start, names)))
+
+        # XXX: Needed because jedi still calls this with names from all over.
+        names = [n for n in names if self._is_name_reachable(n)]
+
         return _check_flows(self, names)
 
     ParserTreeFilter._filter = _filter
@@ -269,3 +316,48 @@ def optimize_ClassMixin_get_filters():
             yield from type_values
 
     ClassMixin.get_filters = get_filters
+
+
+def optimize_CompiledValue_get_filters():
+    from jedi.inference.compiled.value import CompiledValue, CompiledValueFilter
+    from ..common import state, yield_filters_once
+
+    # XXX: Disable decorator for now. Causes issues inside class bodies.
+    # @yield_filters_once
+    def get_filters(self: CompiledValue, is_instance=False, origin_scope=None):
+        yield CompiledValueFilter(state, self, is_instance)
+
+    CompiledValue.get_filters = get_filters
+
+
+# Optimize to never include self filters when the tree instance is a stub.
+# If it wasn't obvious, stubs do not have meaningful function/class suites.
+def optimize_BaseTreeInstance_get_filters():
+    from jedi.inference.value.instance import (
+        _BaseTreeInstance,
+        ClassFilter,
+        CompiledInstanceClassFilter,
+        CompiledValueFilter,
+        InstanceClassFilter,
+        SelfAttributeFilter,
+    )
+
+    def get_filters(self: _BaseTreeInstance, origin_scope=None, include_self_names=True):
+        class_value = self.get_annotated_class_object()
+
+        if include_self_names and not self.is_stub():
+            for cls in class_value.py__mro__():
+                if not cls.is_compiled():
+                    yield SelfAttributeFilter(self, class_value, cls.as_context(), origin_scope)
+
+        class_filters = class_value.get_filters(origin_scope=origin_scope, is_instance=True)
+
+        for f in class_filters:
+            if isinstance(f, ClassFilter):
+                yield InstanceClassFilter(self, f)
+            elif isinstance(f, CompiledValueFilter):
+                yield CompiledInstanceClassFilter(self, f)
+            else:
+                yield f
+
+    _BaseTreeInstance.get_filters = get_filters

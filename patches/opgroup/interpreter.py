@@ -10,12 +10,17 @@
 #
 # Grammar.parse optimization:
 # - Just removes junk code.
+from textension.utils import _forwarder
+
+
+_use_new_interpreter = []
 
 
 def apply():
     optimize_parser()
     optimize_diffparser()
     optimize_grammar_parse()
+    _use_new_interpreter[:] = [1]
 
 
 # This makes some heavy optimizations to parso's Parser and token types:
@@ -27,14 +32,10 @@ def optimize_parser():
     from parso.parser import InternalParseError, StackNode
     from parso.python.tree import Keyword, PythonNode
 
-    from textension.utils import _forwarder
     from collections import defaultdict
     from itertools import repeat
 
     from ..tools import state
-
-    # Use default __hash__ - Enum isn't suited for dictionaries.
-    token.PythonTokenTypes.__hash__ = object.__hash__
 
     # Reload grammar since they depend on token hash.
     grammar._loaded_grammars.clear()
@@ -43,41 +44,30 @@ def optimize_parser():
     NAME = token.PythonTokenTypes.NAME
     reserved = state.grammar._pgen_grammar.reserved_syntax_strings
 
-    # User-defined initializers are too costly. Assign members manually.
-    tree.Keyword.__init__    = \
-    tree.Name.__init__       = \
-    tree.Operator.__init__   = \
-    tree.PythonNode.__init__ = object.__init__
-
-    class StackNode:
-        __slots__ = ("dfa", "nodes")
-        nonterminal = _forwarder("dfa.from_rule")  # Make on-demand.
-
-    def subclass(cls):
-        mapping = {"__qualname__": cls.__qualname__, "__slots__": ()}
-        new_cls = type(cls.__name__, (cls,), mapping)
-
-        # Make the class pickle-able.
-        globals()[cls.__name__] = new_cls
-        return new_cls
-
     # Same as the parser's own ``_leaf_map``, but defaults to Operator.
-    leaf_map = defaultdict(repeat(tree.Operator).__next__)
-
-    # Remove initializer for classes in ``_leaf_map``.
-    for from_cls, to_cls in parser.Parser._leaf_map.items():
-        # Used outside of ``_add_token``.
-        if to_cls in {tree.EndMarker,}:
-            to_cls = subclass(to_cls)
-
-        to_cls.__init__ = object.__init__
-        leaf_map[from_cls] = to_cls
-
+    leaf_map = defaultdict(repeat(tree.Operator).__next__, parser.Parser._leaf_map)
     leaf_map[NAME] = tree.Name
-    node_map = parser.Parser.node_map
 
-    def _add_token(self: parser.Parser, token):
+    node_map = parser.Parser.node_map
+    new = object.__new__
+
+    # Delete recovery tokenize. We inline it in ``_add_token`` instead.
+    from parso.python.parser import DEDENT, INDENT, Parser
+    del Parser.parse
+
+    stack_nodes = map(new, repeat(StackNode))
+
+    def _add_token(self: Parser, token):
         type, value, start_pos, prefix = token
+        if type in {INDENT, DEDENT}:
+            if type is DEDENT:
+                self._indent_counter -= 1
+                o = self._omit_dedent_list
+                if o and o[-1] == self._indent_counter + 1:
+                    del o[-1]
+                    return
+            else:
+                self._indent_counter += 1
 
         cls = leaf_map[type]
         if value in reserved:
@@ -91,47 +81,43 @@ def optimize_parser():
 
         while True:
             dfa = tos.dfa
-            try:
+            if type in dfa.transitions:
                 plan = dfa.transitions[type]
                 break
+            elif dfa.is_final:
+                nonterminal = dfa.from_rule
+                try:
+                    new_node, = nodes
+                except:
+                    if nonterminal not in node_map:
+                        if nonterminal == 'suite':
+                            nodes = [nodes[0]] + nodes[2:-1]
 
-            except KeyError:
-                if dfa.is_final:
-                    nonterminal = dfa.from_rule
-                    try:
-                        new_node, = nodes
-                    except:
-                        if nonterminal in node_map:
-                            new_node = node_map[nonterminal](nodes)
-                        else:
-                            if nonterminal == 'suite':
-                                nodes = [nodes[0]] + nodes[2:-1]
-                            new_node = PythonNode()
-                            new_node.type = nonterminal
-                            new_node.children = nodes
-                            new_node.parent = None
-                            for child in nodes:
-                                child.parent = new_node
-
-                    del stack[-1]
-                    tos = stack[-1]
-                    nodes = tos.nodes
-                    nodes += [new_node]
-                else:
-                    self.error_recovery(token)
-                    return None
-            except IndexError:
-                raise InternalParseError("too much input", type, value, start_pos)
+                        # Bypass __init__ and assign directly.
+                        new_node = new(PythonNode)
+                        new_node.type = nonterminal
+                        new_node.children = nodes
+                        for child in nodes:
+                            child.parent = new_node
+                    else:
+                        # Can't bypass initializer, some have custom ones.
+                        new_node = node_map[nonterminal](nodes)
+                del stack[-1]
+                tos = stack[-1]
+                nodes = tos.nodes
+                nodes += [new_node]
+            else:
+                self.error_recovery(token)
+                return None
 
         tos.dfa = plan.next_dfa
 
-        for dfa in plan.dfa_pushes:
-            node = StackNode()
+        for dfa, node in zip(plan.dfa_pushes, stack_nodes):
             node.dfa = dfa
             node.nodes = []
             stack += [node]
 
-        leaf = cls()
+        leaf = new(cls)
         leaf.value = value
         leaf.line, leaf.column = start_pos
         leaf.prefix = prefix
@@ -140,6 +126,28 @@ def optimize_parser():
         return None
 
     parser.Parser._add_token = _add_token
+
+    from parso.parser import BaseParser, Stack
+    from textension.utils import consume
+
+    def parse(self: BaseParser, tokens):
+        node = StackNode(self._pgen_grammar.nonterminal_to_dfas[self._start_nonterminal][0])
+        self.stack = Stack([node])
+        consume(map(self._add_token, tokens))
+
+        while True:
+            tos = self.stack[-1]
+            if not tos.dfa.is_final:
+                raise InternalParseError(
+                    "incomplete input", token.type, token.string, token.start_pos)
+            if len(self.stack) > 1:
+                self._pop()
+            else:
+                return self.convert_node(tos.dfa.from_rule, tos.nodes)
+
+    BaseParser.parse = parse
+
+    StackNode.nonterminal = _forwarder("dfa.from_rule")
 
 
 # Optimize DiffParser.update to skip identical lines.
@@ -159,7 +167,7 @@ def optimize_diffparser():
         # identical lines to it and instead apply offsets in the opcode.
         nlines = len(new)
         s = next(compress(count(), map(ne, new, old)), nlines - 1)
-        sm = SequenceMatcher(None, old[s:], self._parser_lines_new[s:])
+        sm = FastSequenceMatcher((old[s:], self._parser_lines_new[s:]))
 
         # Bump the opcode indices by equal lines.
         opcodes = [('equal', 0, s, 0, s)] + [
@@ -186,33 +194,85 @@ def optimize_diffparser():
     DiffParser.update = update
 
 
+# Optimize DiffParser to only parse the modified body, skipping the sequence
+# matcher entirely.
+def optimize_diffparser():
+    from parso.python.diff import _get_debug_error_message, DiffParser
+    from itertools import count, compress
+    from builtins import map, next, reversed
+    from operator import ne
+    lstlen = list.__len__
+
+    def update(self: DiffParser, a, b):
+        self._module._used_names = None
+        self._parser_lines_new = b
+        self._reset()
+
+        alen = lstlen(a)
+        blen = lstlen(b)
+
+        head = next(compress(count(), map(ne, a, b)), blen - 1)
+        tail = next(compress(count(), map(ne, reversed(a), reversed(b))), 0)
+
+        old_end = alen - tail
+        new_end = blen - tail
+        opcodes = []
+
+        if head != 0:
+            opcodes += [["equal", 0, head, 0, head]]
+
+        opcodes += [["replace", head, old_end, head, new_end]]
+
+        if alen != old_end != blen != new_end:
+            opcodes += [["equal", old_end, alen, new_end, blen]]
+
+        for op, i1, i2, j1, j2 in opcodes:
+            if j2 == blen and b[-1] == "":
+                j2 -= 1
+            if op == "equal":
+                self._copy_from_old_parser(j1 - i1, i1 + 1, i2, j2)
+            elif op == "replace":
+                self._parse(until_line=j2)
+
+        self._nodes_tree.close()
+        last_pos = self._module.end_pos[0]
+        assert last_pos == blen, f"{last_pos} != {blen}" + \
+            _get_debug_error_message(self._module, a, b)
+        return self._module
+    
+    DiffParser.update = update
+
+
 # Optimizes Grammar.parse and InferenceState.parse by stripping away nonsense.
 def optimize_grammar_parse():
     from parso.python.diff import DiffParser, Parser
     from jedi.inference import InferenceState
     from parso.grammar import Grammar, parser_cache, try_to_save_module, load_module
     from parso.utils import python_bytes_to_unicode
-    from ..common import BpyTextBlockIO, ensure_blank_eol
+    from ..common import BpyTextBlockIO
+    from ..tools import ensure_blank_eol
     from pathlib import Path
-    from jedi import settings
 
-    org_parse = Grammar.parse
+    def parse(self: Grammar,
+              code,
+              *,
+              error_recovery=True,
+              path=None,
+              start_symbol=None,
+              cache=False,
+              diff_cache=False,
+              cache_path=None,
+              file_io: BpyTextBlockIO = None):
 
-    def parse(self: Grammar, file_io: BpyTextBlockIO, *_, **__):
-        try:
+        if not path:
             path = file_io.path
-        except:
-            # raise
-            return org_parse(self, file_io, *_, **__)
 
-        # XXX: Is path ever None?
-        assert path is not None
-        # XXX: This is for stubs.
+        if isinstance(cache_path, str):
+            cache_path = Path(cache_path)
+
         # If jedi has already parsed and saved the stub, load from disk.
-        if path is not None:
-            module_node = load_module(self._hashed, file_io, cache_path=Path(settings.cache_directory))
-            if module_node is not None:
-                return module_node  # type: ignore
+        if node := load_module(self._hashed, file_io, cache_path=cache_path):
+            return node  # type: ignore
 
         # BpyTextBlockIO stores lines in self._content
         try:
@@ -239,17 +299,10 @@ def optimize_grammar_parse():
         # Bpy text blocks should not be pickled.
         do_pickle = not isinstance(file_io, BpyTextBlockIO)
         try:
-            try_to_save_module(self._hashed, file_io, node, lines,
-                pickling=do_pickle, cache_path=Path(settings.cache_directory))
+            try_to_save_module(self._hashed, file_io, node, lines, pickling=do_pickle, cache_path=cache_path)
         except:
             import traceback
             traceback.print_exc()
         return node  # type: ignore
     
     Grammar.parse = parse
-
-    def parse(self: InferenceState, *_, **kw):
-        assert "file_io" in kw, kw
-        return self.grammar.parse(kw["file_io"])
-    
-    InferenceState.parse = parse

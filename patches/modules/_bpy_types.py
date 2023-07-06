@@ -290,6 +290,11 @@ class RnaName(VirtualName):
         obj = parent.members[name]
 
         if isinstance(parent, ContextInstance) and isinstance(obj, type):
+            if isinstance(obj, types.GenericAlias):
+                from jedi.inference.value.iterable import FakeList, LazyKnownValue
+                v, = RnaValue((obj.__args__[0].bl_rna, parent)).py__call__(None)
+                return ValueSet([FakeList(state, [LazyKnownValue(v)])])
+
             value = RnaValue((obj.bl_rna, parent))
 
         elif isinstance(obj, rnadef_types):
@@ -303,13 +308,11 @@ class RnaName(VirtualName):
         elif tmp := rna_fallback_value(parent, name):
             value = tmp
 
+        elif name == "bl_rna":
+            return ValueSet((RnaValue((obj, parent)),))
+
         else:
-            if name == "bl_rna":
-                value = RnaValue((obj, parent))
-            else:
-                value = make_compiled_value(obj, parent.as_context())
-                print(f"RnaName: Unhandled member '{parent.name.string_name}.{name}'")
-            return ValueSet((value,))
+            return NO_VALUES
         return value.py__call__(None)
 
     def __repr__(self):
@@ -595,11 +598,31 @@ class ContextInstance(RnaInstance):
         return (self.filter,)
 
 
+class NonScreenContextName(RnaName):
+    def infer(self):
+        name, is_collection = context_type_map[self.string_name]
+        cls = getattr(bpy.types, name)
+        
+        value = RnaValue((cls.bl_rna, self.parent_value)).py__call__(None)
+        if is_collection:
+            from jedi.inference.value.iterable import FakeList, LazyKnownValue
+            return ValueSet([FakeList(state, (LazyKnownValue(value),))])
+        return value
+
+
 class ContextInstanceFilter(RnaFilter):
     def values(self):
-        ret = super().values()
         data = zip(repeat(self.compiled_value), _bpy.context_members()["screen"])
-        return ret + list(map(RnaName, data))
+        return super().values() + list(map(RnaName, data))
+
+    def get(self, name_str):
+        if ret := super().get(name_str):
+            return ret
+        
+        # These aren't part of the screen context.
+        if name_str in context_type_map:
+            return ValueSet((NonScreenContextName((self.compiled_value, name_str)),))
+        return ()
 
 
 # Patch jedi's anonymous parameter inference so that bpy.types.Operator

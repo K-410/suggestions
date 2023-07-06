@@ -7,6 +7,9 @@ import bpy
 
 
 def apply():
+    # Needs to run before any optimization that modifies pickled objects.
+    patch_load_from_file_system()
+
     _apply_optimizations()
     _apply_patches()
 
@@ -32,7 +35,6 @@ def _apply_patches():
     patch_create_cached_compiled_value()
     patch_various_redirects()
     patch_SequenceLiteralValue()
-    patch_load_from_file_system()
     patch_complete_dict()
     patch_convert_values()
     patch_get_user_context()
@@ -43,15 +45,14 @@ def _apply_patches():
 def _apply_optimizations():
     from . import opgroup
     opgroup.interpreter.apply()
-    opgroup.lookup.apply()
     opgroup.safe_optimizations.apply()
     opgroup.defined_names.apply()
     opgroup.stubs.apply()
-    opgroup.class_values.apply()
     opgroup.completions.apply()
     opgroup.used_names.apply()
     opgroup.filters.apply()
     opgroup.memo.apply()
+    opgroup.py_getattr.apply()
 
 
 # Jedi doesn't consider the indentation at the completion site potentially
@@ -101,6 +102,8 @@ def patch_load_from_file_system():
             return _load_from_file_system(*args, **kw)
         except ModuleNotFoundError:
             return None  # Return None so jedi can re-save it.
+        except AttributeError:
+            return None
         
     _load_from_file_system = _patch_function(_load_from_file_system, safe_wrapper)
 
@@ -327,9 +330,8 @@ def patch_import_resolutions():
 # All which are reasons for Jedi completing them partially or not at all.
 # So instead of addressing each problem differently, we use virtual modules.
 def patch_Importer():
-    from jedi.inference.gradual.conversion import convert_values
     from jedi.inference.imports import Importer, ValueSet
-    from .common import Importer_redirects, state
+    from .common import Importer_redirects, state, is_namenode
 
     Importer._inference_state = state
     Importer._fixed_sys_path = None
@@ -363,9 +365,9 @@ def patch_Importer():
             self._module_context = module_context
             # Can be strings, Names or even a mix of both, which is annoying.
             self.import_path = import_path
-        assert all(isinstance(p, str) for p in self.import_path)
+
         # If initialization was deferred to the original, convert here.
-        self.import_path = self._str_import_path = tuple(self.import_path)
+        self.import_path = self._str_import_path = tuple(s.value if is_namenode(s) else s for s in self.import_path)
 
     __init__ = _patch_function(Importer.__init__, __init__)
 
@@ -500,20 +502,18 @@ def patch_compiledvalue():
 # Patches handle-to-CompiledValue creation to intercept compiled objects.
 # Needed as part of RNA inference integration.
 def patch_create_cached_compiled_value():
-    from jedi.inference.compiled.value import (CompiledModule,
-                                               CompiledValue,
-                                               inference_state_function_cache,
-                                               create_cached_compiled_value,
-                                               _normalize_create_args)
-    from bpy_types import RNAMeta, StructRNA
+    from jedi.inference.compiled.value import (
+        CompiledModule, CompiledValue, create_cached_compiled_value)
+
+    # StructMetaPropGroup is used by bpy_types.Operator, as non-RNA base.
+    from bpy_types import RNAMeta, StructRNA, StructMetaPropGroup
     from .modules._bpy_types import get_rna_value
 
     is_compiled_value = CompiledValue.__instancecheck__
-    bpy_types = (RNAMeta, StructRNA, bpy.props._PropertyDeferred)
-    from .common import CompiledModule_redirects
+    bpy_types = (RNAMeta, StructRNA, StructMetaPropGroup, bpy.props._PropertyDeferred)
+    from .common import CompiledModule_redirects, state, state_cache
 
-    @_normalize_create_args
-    @inference_state_function_cache()
+    @state_cache
     def create_cached_compiled_value_p(state, handle, context):
         obj = handle.access._obj
 
@@ -546,6 +546,29 @@ def patch_create_cached_compiled_value():
 
     _patch_function(create_cached_compiled_value, create_cached_compiled_value_p)
 
+    from jedi.inference.compiled import value
+    # The only thing these functions below do different from the stock ones,
+    # is that they don't pass the ``parent_context`` as a keyword argument.
+    # Wwhy jedi calls ``create_cached_compiled_value`` with keyword arguments,
+    # only to convert them back to positional with a wrapper is beyond me.
+
+    def create_from_name(_, compiled_value, name):
+        access_paths = compiled_value.access_handle.getattr_paths(name, default=None)
+
+        value = None
+        for access_path in access_paths:
+            value = create_cached_compiled_value(state, access_path, value and value.as_context())
+        return value
+
+    def create_from_access_path(_, access_path):
+        value = None
+        for name, access in access_path.accesses:
+            value = create_cached_compiled_value(state, access, value and value.as_context())
+        return value
+    
+    _patch_function(value.create_from_name, create_from_name)
+    _patch_function(value.create_from_access_path, create_from_access_path)
+
 
 # Patch strings.complete_dict because of a possible AttributeError.
 def patch_complete_dict():
@@ -575,32 +598,32 @@ def patch_get_importer_names():
     modules = sys.modules.keys()
 
     def get_importer_names(self: Completion, names, level=0, only_modules=True):
-        # This fix is only relevant if we have at least 1 import name and
-        # 1 dot operator (the only operator jedi allows here).
-        if names and any(map(is_operator, _gather_nodes(self.stack))):
+        # This fix applies only when there's at least 1 import name and 1 dot
+        # operator. In this context, dots, comma and parentheses may appear.
+        for op in names and filter(is_operator, _gather_nodes(self.stack)):
+            if op.value is ".":
+                # Compose the import statement and look for it in sys.modules.
+                comp = ".".join(n.value for n in names)
 
-            # Compose the import statement and look for it in sys.modules.
-            comp = ".".join(n.value for n in names)
+                # Jedi may omit the trailing part from names. Add it back.
+                leaf = self._module_node.get_leaf_for_position(self._original_position)
+                if leaf not in names:
+                    if is_namenode(leaf):
+                        comp += "."
+                    comp += leaf.value
 
-            # Jedi may omit the trailing part from names. Add it back.
-            leaf = self._module_node.get_leaf_for_position(self._original_position)
-            if leaf not in names:
-                if is_namenode(leaf):
-                    comp += "."
-                comp += leaf.value
+                ret = []
+                prefix = comp[:comp.rindex(".") + 1]
+                for name in compress(modules, map(startswith, modules, repeat(comp))):
+                    # Remove the prefix up to and including the leading dot.
+                    name = name.removeprefix(prefix)
 
-            ret = []
-            prefix = comp[:comp.rindex(".") + 1]
-            for name in compress(modules, map(startswith, modules, repeat(comp))):
-                # Remove the prefix up to and including the leading dot.
-                name = name.removeprefix(prefix)
-
-                # If we're completing ``bpy.a``, we only want ``app`` and not
-                # ``app.handlers``.
-                if "." not in name:
-                    ret += [name]
-            if ret:
-                return [ImportName(self._module_context, n) for n in ret]
+                    # If we're completing ``bpy.a``, we only want ``app`` and not
+                    # ``app.handlers``.
+                    if "." not in name:
+                        ret += [name]
+                if ret:
+                    return [ImportName(self._module_context, n) for n in ret]
 
         return get_importer_names(self, names, level=level, only_modules=only_modules)
 

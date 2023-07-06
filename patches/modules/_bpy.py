@@ -2,7 +2,6 @@
 
 from jedi.inference.names import SubModuleName
 import bpy
-import sys
 import _bpy
 
 from types import ModuleType
@@ -11,7 +10,7 @@ from operator import getitem
 
 from ._mathutils import float_vector_map
 from ._bpy_types import MathutilsValue, PropArrayValue, RnaValue, NO_VALUES
-from ..common import VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects
+from ..common import VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition
 
 
 def apply():
@@ -106,8 +105,12 @@ def infer_vector_type(name, arguments, parent):
 
 def infer_pointer_type(arguments):
     if value := dict(arguments.unpack()).get("type"):
-        from ..opgroup.interpreter import find_definition
-        if namedef := find_definition(value.context, value.data, None):
+        # ``value.data`` could be a name or atom_expr.
+        ref = value.data
+        if ref.type == "atom_expr":
+            return value.infer().py__call__(None)
+
+        if namedef := find_definition(value.context, ref):
             for value in namedef.infer():
                 return value.py__call__(None)
     return NO_VALUES

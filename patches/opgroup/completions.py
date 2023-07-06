@@ -1,8 +1,46 @@
-from textension.utils import _patch_function
+from textension.utils import _patch_function, factory
 
 def apply():
     optimize_filter_names()
     optimize_Completion_complete()
+
+
+@factory
+def _sort_completions(completions):
+    from itertools import compress, count, repeat
+    from builtins import map, next, sorted
+    from operator import attrgetter, not_
+
+    get_string = attrgetter("_name.string_name")
+    startswith = str.startswith
+    rep_single = repeat("_")
+    rep_double = repeat("__")
+
+    def _sort_completions(completions):
+        completions = sorted(completions, key=get_string)
+
+        it = map(startswith, map(get_string, completions), rep_single)
+        head = count()
+
+        if i_u := next(compress(head, it), None):
+            upper = completions[:i_u]
+        else:
+            it = map(startswith, map(get_string, completions), rep_single)
+            head = count()
+            upper = []
+
+        if i_s := next(compress(head, map(not_, it)), None):
+            small = completions[i_s:]
+            underscores = completions[i_u:i_s]
+
+            it = map(startswith, map(get_string, underscores), rep_double)
+
+            if i_d := next(compress(count(), map(not_, it)), None):
+                underscores = underscores[i_d:] + underscores[:i_d]
+            completions = upper + small + underscores
+        return completions
+
+    return _sort_completions
 
 
 def optimize_Completion_complete():
@@ -10,8 +48,9 @@ def optimize_Completion_complete():
                                      _extract_string_while_in_string,
                                      complete_dict,
                                      complete_file_name,
-                                     filter_names,
-                                     _remove_duplicates)
+                                     filter_names)
+
+    from .completions import _sort_completions
 
     def complete(self: Completion):
         leaf = self._module_node.get_leaf_for_position(
@@ -29,14 +68,14 @@ def optimize_Completion_complete():
             fuzzy=self._fuzzy,
         )
 
-        if string is not None and not prefixed_completions:
-            prefixed_completions = list(complete_file_name(
-                self._inference_state, self._module_context, start_leaf, quote, string,
-                self._like_name, self._signatures_callback,
-                self._code_lines, self._original_position,
-                self._fuzzy
-            ))
         if string is not None:
+            if not prefixed_completions:
+                prefixed_completions = list(complete_file_name(
+                    self._inference_state, self._module_context, start_leaf, quote, string,
+                    self._like_name, self._signatures_callback,
+                    self._code_lines, self._original_position,
+                    self._fuzzy
+                ))
             if not prefixed_completions and '\n' in string:
                 # Complete only multi line strings
                 prefixed_completions = self._complete_in_string(start_leaf, string)
@@ -44,19 +83,17 @@ def optimize_Completion_complete():
 
         cached_name, completion_names = self._complete_python(leaf)
 
-        completions = list(filter_names(self._inference_state, completion_names,
-            self.stack, self._like_name, self._fuzzy, cached_name=cached_name))
+        completions = filter_names(self._inference_state, completion_names,
+            self.stack, self._like_name, self._fuzzy, cached_name=cached_name)
 
-        lower = str.lower
-        def sorter(x):
-            name = lower(x._name.string_name)
-            return name[:2] == "__", name[0] is "_", name
+        # XXX: Natural sorting. Might want to revert to this.
+        # lower = str.lower
+        # def sorter(x):
+        #     name = lower(x._name.string_name)
+        #     return name[:2] == "__", name[0] is "_", name
+        # completions = sorted(completions, key=sorter)  # 3.6ms
 
-        if prefixed_completions:
-            # XXX/TODO: The return value isn't used, so wtaf is this?
-            _remove_duplicates(prefixed_completions, completions)
-
-        return prefixed_completions + sorted(completions, key=sorter)
+        return prefixed_completions + _sort_completions(completions)
 
     _patch_function(Completion.complete, complete)
 
@@ -66,7 +103,7 @@ def optimize_filter_names():
     from jedi.api.classes import Completion
     from jedi.api.helpers import _fuzzy_match
     from jedi import settings
-    from textension.utils import noop_noargs, _patch_function, _named_index
+    from textension.utils import noop_noargs, _patch_function, _named_index, consume
     from ..tools import state
 
     class NewCompletion(Completion):
@@ -83,11 +120,16 @@ def optimize_filter_names():
     lower = str.lower
     strip = str.__str__
 
-    from operator import attrgetter
-    get_name = attrgetter("string_name")
+    from operator import itemgetter, attrgetter, eq
+    from itertools import compress, repeat
+    from builtins import map, list, dict, zip
 
-    def filter_names_o(inference_state, completion_names, stack, like_name, fuzzy, cached_name):
-        like_name_len = len(like_name)
+    strlen = str.__len__
+    get_string_name = attrgetter("string_name")
+    get_tree_name = attrgetter("tree_name")
+
+    def filter_names_o(inference_state, completions, stack, like_name, fuzzy, cached_name):
+        like_name_len = strlen(like_name)
 
         if fuzzy:
             match_func = fuzzy_match
@@ -119,29 +161,32 @@ def optimize_filter_names():
             case = strip  # Dummy
 
         ret = []
-        dct = {}
+        strings = map(get_string_name, completions)
+
 
         if not like_name:
-            d = dict(zip(map(get_name, completion_names), completion_names))
-            for e in d.values():
-                if tn := e.tree_name:
-                    if tn.parent.type == "del_stmt":
-                        continue
-                ret += [(e,)]
+            ret = list(dict(zip(strings, completions)).values())
 
         else:
-            for e in completion_names:
-                n_ = e.string_name
-                if case(n_[0]) == like_name[0]:
-                    if case(n_[:like_name_len]) == like_name:
-                        # Store unmodified so names like Cache and cache aren't merged.
-                        if (k := (n_, n_[like_name_len:])) not in dct:
-                            dct[k] = None
+            strings = map(itemgetter(slice(None, like_name_len)), strings)
+            if settings.case_insensitive_completion:
+                strings = map(lower, strings)
+            strings = map(eq, repeat(like_name), strings)
 
-                            if tn := e.tree_name:
-                                if tn.parent.type == "del_stmt":
-                                    continue
-                            ret += [(e,)]
-        return map(completion, ret)
+            dct = {}
+            for name in compress(completions, strings):
+                string_name = name.string_name
+                if string_name not in dct:
+                    dct[string_name] = None
+                    ret += [name]
+
+            removals = []
+            for name in filter(get_tree_name, ret):
+                if name.tree_name.parent.type == "del_stmt":
+                    removals += [name]
+            if removals:
+                consume(map(ret.remove, removals))
+
+        return map(completion, zip(ret))
 
     _patch_function(filter_names, filter_names_o)

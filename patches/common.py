@@ -5,9 +5,10 @@ from jedi.inference.compiled.value import (
 from jedi.inference.base_value import NO_VALUES, ValueSet
 from jedi.inference.context import CompiledContext, GlobalNameFilter
 from jedi.inference.value import CompiledInstance, ModuleValue
-from jedi.inference.names import TreeNameDefinition, StubName
+from jedi.inference.names import TreeNameDefinition
 from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
 from parso.python.tree import Name
+from parso.tree import BaseNode
 
 from parso.file_io import KnownContentFileIO
 from jedi.file_io import FileIOFolderMixin
@@ -19,7 +20,7 @@ from pathlib import Path
 
 from textension.utils import (
     _forwarder, _named_index, _unbound_getter, consume, falsy_noargs, inline,
-     set_name, truthy_noargs, instanced_default_cache, text_from_id)
+     set_name, truthy_noargs, instanced_default_cache, _TupleBase)
 
 from .tools import state, get_handle, factory, is_namenode, is_basenode, ensure_blank_eol
 
@@ -33,6 +34,37 @@ CompiledModule_redirects = {}
 state_values = state.memoize_cache.values()
 get_start_pos = attrgetter("line", "column")
 get_cursor_focus = attrgetter("select_end_line_index", "select_end_character")
+
+
+def _node_types():
+    node_types = [BaseNode]
+    for cls in iter(node_types):
+        node_types += cls.__subclasses__()
+    return frozenset(node_types)
+
+
+# Used by various optimizations.
+node_types: frozenset[BaseNode] = _node_types()
+
+
+def yield_filters_once(func):
+    memo = state.memoize_cache[func] = {}
+    def wrapper(self, is_instance=False, origin_scope=None):
+        if (key := (self, is_instance)) in memo:
+            return
+        memo[key] = result = list(func(self, is_instance))
+        yield from result
+    return wrapper
+
+
+def yield_once(func):
+    memo = state.memoize_cache[func] = {}
+    def wrapper(*key):
+        if key in memo:
+            return
+        memo[key] = result = list(func(*key))
+        yield from result
+    return wrapper
 
 
 @instanced_default_cache
@@ -93,23 +125,117 @@ definition_types = {
 }
 
 
-def find_definition(context, ref, position):
+@state_cache
+def get_scope_name_definitions(scope):
+    namedefs = []
+    pool  = scope.children[:]
+
+
+    # XXX: This code is for testing.
+    # def check(name):
+    #     if not is_namenode(name):
+    #         pass
+    # class L(list):
+    #     def __iadd__(self, it):
+    #         check(it[0])
+    #         return super().__iadd__(it)
+    # namedefs = L()
+
+    for n in filter(is_basenode, pool):
+        if n.type in {"classdef", "funcdef"}:
+            # These are always definitions.
+            namedefs += [n.children[1]]
+
+        elif n.type == "simple_stmt":
+            n = n.children[0]
+
+            if n.type == "expr_stmt":
+                name = n.children[0]
+
+                # Could be ``atom_expr``, as in dotted name. Skip those.
+                if name.type == "name":
+                    namedefs += [name]
+
+                # ``a, b = X``. Here we take ``a`` and ``b``.
+                elif name.type == "testlist_star_expr":
+                    namedefs += name.children[::2]
+
+                # ``a.b = c``. Not a definition.
+                elif name.type == "atom_expr":
+                    pass
+
+                # Could be anything. Use name.get_definition().
+                elif name.type == "atom":
+                    pool += name.children
+
+                else:
+                    print("get_scope_name_definitions unhandled:", name.type)
+
+            # The only 2 import statement types.
+            elif n.type in {"import_name", "import_from"}:
+                name = n.children[-1]
+
+                # The definition is potentially the last child, but
+                # watch out for any closing parens or star operator.
+                if name.type == "operator":
+                    if name.value == "*":
+                        continue
+                    name = n.children[-2]
+
+                if name.type in {"import_as_names", "dotted_as_names"}:
+                    for name in name.children[::2]:
+                        if name.type != "name":
+                            name = name.children[2]
+                        namedefs += [name]
+
+                else:
+                    if name.type in {"import_as_name", "dotted_as_name"}:
+                        name = name.children[2]
+                    namedefs += [name]
+
+            # ``atom`` nodes are too ambiguous to extract names from.
+            # Just into the pool and look for names the old way.
+            elif n.type == "atom":
+                pool += n.children
+
+        elif n.type == "decorated":
+            pool += [n.children[1]]
+
+        elif n.type == "for_stmt":
+            name = n.children[1]
+            if name.type == "exprlist":
+                namedefs += filter(is_namenode, name.children)
+            else:
+                assert name.type == "name"
+                namedefs += [name]
+        else:
+            pool += n.children
+
+    # Get definitions for the rest.
+    for n in filter(is_namenode, pool):
+        if n.get_definition(include_setitem=True):
+            namedefs += [n]
+
+    return namedefs
+
+
+def find_definition(context, ref: Name):
     if namedef := get_definition(ref):
         return TreeNameDefinition(context, namedef)
 
     # Inlined position adjustment from _get_global_filters_for_name.
-    if position:
-        n = ref
-        lambdef = None
-        while n := n.parent:
-            type = n.type
-            if type in {"classdef", "funcdef", "lambdef"}:
-                if type == "lambdef":
-                    lambdef = n
-                elif position < n.children[-2].start_pos:
-                    if not lambdef or position < lambdef.children[-2].start_pos:
-                        position = n.start_pos
-                    break
+    # if position:
+    #     n = ref
+    #     lambdef = None
+    #     while n := n.parent:
+    #         type = n.type
+    #         if type in {"classdef", "funcdef", "lambdef"}:
+    #             if type == "lambdef":
+    #                 lambdef = n
+    #             elif position < n.children[-2].start_pos:
+    #                 if not lambdef or position < lambdef.children[-2].start_pos:
+    #                     position = n.start_pos
+    #                 break
 
     node = ref
     while node := node.parent:
@@ -323,9 +449,10 @@ def trace_flow(node, origin_scope):
                         (flow_scope.type == "try_stmt" and origin_keyword == 'else' and node_keyword == 'except'):
                             return False
 
-            first_flow_scope = next(iter_flows(name, True), None)
-
             if branch_matches:
+                first_flow_scope = None
+                for first_flow_scope in iter_flows(name, True):
+                    break
                 while origin_scope:
                     if first_flow_scope is origin_scope:
                         return name
@@ -408,27 +535,8 @@ class VirtualModule(CompiledModule):
     def get_submodule_names(self, only_modules=False):
         return get_submodule_names(self, only_modules=only_modules)
 
-    def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
-        return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
-
     def __repr__(self):
         return f"<{type(self).__name__} {self.obj}>"
-
-
-# pydevd substitutes tuple subclass instances' own __repr__ with a useless
-# string. This is a workaround specifically for debugging purposes.
-class _pydevd_repr_override_meta(type):
-    @property
-    def __name__(cls):
-        import sys
-        for v in filter(cls.__instancecheck__, sys._getframe(1).f_locals.values()):
-            return cls.__repr__(v)
-        return super().__name__
-
-
-class _TupleBase(tuple, metaclass=_pydevd_repr_override_meta):
-    __init__ = tuple.__init__
-    __new__  = tuple.__new__
 
 
 class VirtualName(_TupleBase, CompiledValueName):
@@ -471,8 +579,7 @@ class VirtualName(_TupleBase, CompiledValueName):
 
     @property
     def api_type(self):
-        if value := self.infer():
-            value, = value
+        for value in self.infer():
             return value.api_type
         return "unknown"
 
@@ -548,8 +655,9 @@ class VirtualValue(_TupleBase, CompiledValue):
     def py__call__(self, arguments=None):
         return ValueSet((self.instance_cls(self, arguments),))
 
+    @yield_filters_once
     def get_filters(self, is_instance=False, origin_scope=None):
-        yield self.filter_cls((self, is_instance))
+        return (self.filter_cls((self, is_instance)),)
 
     def get_qualified_names(self):
         return ()
@@ -579,11 +687,6 @@ class BpyTextBlockIO(KnownContentFileIO, FileIOFolderMixin):
 
 
 class DeferredDefinition(_TupleBase, TreeNameDefinition):
-    parent_context = _named_index(0)
-    tree_name      = _named_index(1)
-
-
-class DeferredStubName(_TupleBase, StubName):
     parent_context = _named_index(0)
     tree_name      = _named_index(1)
 
@@ -640,7 +743,7 @@ class BpyTextModuleContext(MixedModuleContext):
         return self.filters
 
     def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
-        if namedef := find_definition(self, name_or_str, position):
+        if namedef := find_definition(self, name_or_str):
             return namedef.infer()
         print("BpyTextModuleContext py__getattribute__ failed for", name_or_str)
         return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
@@ -648,22 +751,19 @@ class BpyTextModuleContext(MixedModuleContext):
 
 class TextSession:
     text_id: int
-    code:    str
+    code:    str = None
 
     module:  BpyTextModule
     file_io: BpyTextBlockIO = _forwarder("module.file_io")
 
-    def update(self):
-        self.code = text_from_id(self.text_id).as_string()
-        self.file_io._content = ensure_blank_eol(self.code.splitlines(True))
-        try:
-            node = state.grammar.parse(self.file_io)
-        # Support optimizations turned off
-        except AttributeError:
-            node = state.grammar.parse(code=self.code, file_io=self.file_io)
-        self.module.tree_node = node
+    def update_from_text(self, text):
+        last_code = self.code
+        self.code = text.as_string()
+        if self.code != last_code:
+            self.file_io._content = ensure_blank_eol(self.code.splitlines(True))
+            self.module.tree_node = state.grammar.parse(self.code, file_io=self.file_io, cache_path=self.file_io.path)
 
-        # Reset filters because their until_position must be reset.
+        # Clear filters to reset since ``until_position`` since last time.
         self.module.context.filters = None
 
 
@@ -686,9 +786,20 @@ class interpreter(Script):
         reset_state()
 
         self.session = sessions[text.id]
-        self.session.update()
+        self.session.update_from_text(text)
 
         line, column = get_cursor_focus(text)
         return Completion(
             state, self.context, self._code_lines, (line + 1, column),
             self.get_signatures, fuzzy=False).complete()
+
+
+def complete(text):
+    from .opgroup.interpreter import _use_new_interpreter
+
+    if _use_new_interpreter:
+        return interpreter.complete(text)
+    
+    from jedi.api import Interpreter
+    line, column = get_cursor_focus(text)
+    return Interpreter(text.as_string(), []).complete(line + 1, column)

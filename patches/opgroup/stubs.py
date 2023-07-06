@@ -1,16 +1,13 @@
 # Implements stub optimizations.
 
-from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter
+from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter, StubName
+from jedi.inference.value.klass import ClassMixin, ClassValue
 
-from textension.utils import instanced_default_cache, truthy_noargs
-from ..common import _check_flows, DeferredStubName, find_definition
-from ..tools import is_basenode, is_namenode
-
-from sys import modules as _sys_modules
-
+from textension.utils import instanced_default_cache, truthy_noargs, _named_index, _TupleBase
+from ..common import _check_flows, find_definition, state_cache
+from ..tools import is_basenode, is_namenode, state
 from itertools import repeat
-from operator import attrgetter
-from types import ModuleType
+
 
 stubfilter_names_cache   = {}
 module_definitions_cache = {}
@@ -31,55 +28,76 @@ definition_types = {
 
 def apply():
     optimize_StubModules()
+    optimize_ClassMixin_get_filters()
 
 
-def get_module_names(stub_module):
-    # If the real counterpart exists for a stub and has already been
-    # imported, we use its keys for names instead of parsing the stub.
-    real_module = _sys_modules.get(stub_module.name.string_name)
-    if isinstance(real_module, ModuleType):
-        keys = set(real_module.__dict__)
+class DeferredStubName(_TupleBase, StubName):
+    parent_context = _named_index(0)
+    tree_name      = _named_index(1)
 
-    else:
-        keys = set()
-        add_key = keys.add
-        pool = []
 
-        for f in stub_module._get_stub_filters(origin_scope=None):
-            scope = f._parser_scope
-            pool += scope.children
-            break
+@state_cache
+def get_scope_name_strings(scope):
+    namedefs = []
+    pool  = scope.children[:]
 
-        for n in filter(is_basenode, pool):
-            pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
+    for n in filter(is_basenode, pool):
+        if n.type in {"classdef", "funcdef"}:
+            # Add straight to ``namedefs`` we know they are definitions.
+            namedefs += [n.children[1].value]
 
-        # Get name definitions.
-        for n in filter(is_namenode, pool):
-            value = n.value
-            if value not in keys:
-                if definition := n.get_definition(include_setitem=True):
-                    if definition.type in {"import_from", "import_name"}:
-                        parent = n.parent
+        elif n.type == "simple_stmt":
+            n = n.children[0]
 
-                        # Non-alias imports are not allowed to be exported.
-                        if parent.type not in {"import_as_name", "dotted_as_name"}:
-                            continue
-                        # Aliased imports allowed only if it matches the name.
-                        name, alias_name = parent.children[::2]
-                        if name.value != alias_name.value:
-                            continue
-                    # Exclude names with a single underscore.
-                    if value[0] is "_" != value[:2][-1]:
-                        continue
+            if n.type == "expr_stmt":
+                name = n.children[0]
+                # Could be ``atom_expr``, as in dotted name. Skip those.
+                if name.type == "name":
+                    namedefs += [name.value]
+                else:
+                    print(name.type)
 
-                    add_key(value)
-    return keys
+            elif n.type == "import_from":
+                name = n.children[3]
+                if name.type == "operator":
+                    name = n.children[4]
+
+                # Only matching aliased imports are exported for stubs.
+                if name.type == "import_as_names":
+                    for name in name.children[::2]:
+                        if name.type == "import_as_name":
+                            name, alias = name.children[::2]
+                            if name.value == alias.value:
+                                namedefs += [alias.value]
+
+            elif n.type == "atom":
+                # ``atom`` nodes are too ambiguous to extract names from.
+                # Just into the pool and look for names the old way.
+                pool += n.children
+
+        elif n.type == "decorated":
+            pool += [n.children[1]]
+        else:
+            pool += n.children
+
+    # Get name definitions.
+    for n in filter(is_namenode, pool):
+        if n.get_definition(include_setitem=True):
+            namedefs += [n.value]
+
+    keys = set(namedefs)
+    exclude = set()
+    for k in keys:
+        if k[0] is "_" != k[:2][-1]:
+            exclude.add(k)
+
+    return keys - exclude
 
 
 def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
     context = stub_filter.parent_context
     value   = context._value
-    module_names = get_module_names(value)
+    module_names = get_scope_name_strings(value.tree_node)
 
     names = []
     pool  = [value.tree_node]
@@ -129,16 +147,6 @@ class CachedStubModuleContext(StubModuleContext):
     def get_filters(self, until_position=None, origin_scope=None):
         return list(self._value.get_filters())
 
-    def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
-        if namedef := find_definition(self, name_or_str, position):
-            return namedef.infer()
-        ret = super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
-        if ret:
-            print("CachedStubModuleContext.py__getattribute__ failed for", name_or_str, "but found on super()")
-        else:
-            print("CachedStubModuleContext.py__getattribute__ failed for", name_or_str, "and super() failed")
-        return ret
-
 
 definition_cache = {}
 
@@ -160,23 +168,46 @@ def get_module_definition_by_name(module, string_name):
     return definition_cache[key]
 
 
-def on_missing_stub_filter(self: dict, module: StubModuleValue):
-    context = CachedStubModuleContext(module)
+def get_stub_module_context(self: dict, module_value: StubModuleValue):
+    return self.setdefault(module_value, CachedStubModuleContext(module_value))
 
-    self[module] = filters = [
-        CachedStubFilter(context),
-        # *module.iter_star_filters(),
-        # DictFilter(module.sub_modules_dict()),
-        # DictFilter(module._module_attributes_dict())
-    ]
-    return filters
+_contexts = instanced_default_cache(get_stub_module_context)
+
+
+def get_stub_filter(self: dict, module_value: StubModuleValue):
+    return self.setdefault(module_value, [CachedStubFilter(_contexts[module_value])])
 
 
 def optimize_StubModules():
-    stub_filter_cache = instanced_default_cache(on_missing_stub_filter)
+    stub_filter_cache = instanced_default_cache(get_stub_filter)
 
     def get_filters(self: StubModuleValue, origin_scope=None):
         yield from stub_filter_cache[self]
 
     StubModuleValue.get_filters = get_filters
     StubModuleContext.is_stub   = truthy_noargs
+
+
+get_filters_orig = ClassValue.get_filters
+
+
+def get_class_filters(self, key):
+    tree_node, module_value, kw = key
+    value = ClassValue(state, _contexts[module_value], tree_node)
+    result = list(get_filters_orig(value, **dict(kw)))
+    self[key] = result
+    return result
+
+
+def optimize_ClassMixin_get_filters():
+    stub_class_filter_cache = instanced_default_cache(get_class_filters)
+
+    def get_filters(self: ClassValue, **kw):
+        # XXX: The type check is needed because generics, which have custom
+        # data, are being passed as ClassValues.
+        if self.parent_context.is_stub() and type(self) is ClassValue:
+            module_value = self.parent_context.get_root_context()._value
+            return stub_class_filter_cache[self.tree_node, module_value, tuple(kw.items())]
+        return get_filters_orig(self, **kw)
+
+    ClassMixin.get_filters = get_filters

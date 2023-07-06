@@ -8,8 +8,12 @@ from operator import attrgetter, methodcaller
 import os
 import sys
 import bpy
+import gc
 
 
+# Backup.
+_gc_enable = gc.enable
+_get_sync_key = attrgetter("select_end_line", "select_end_character")
 # Token separators excluding dot/period
 separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
 
@@ -22,9 +26,11 @@ class Description(ui.widgets.TextView):
 
 class Suggestions(ui.widgets.ListBox):
     st:  bpy.types.SpaceTextEditor
+    _temp_lines             = []
 
     is_visible: bool        = False
     last_position           = (0, 0)
+    sync_key                = ()
 
     background_color        = 0.15, 0.15, 0.15, 1.0
     border_color            = 0.30, 0.30, 0.30, 1.0
@@ -65,20 +71,22 @@ class Suggestions(ui.widgets.ListBox):
     def poll(self) -> bool:
         if self.is_visible:
             if text := _context.edit_text:
-                if text.cursor.focus == self.last_position:
+                if _get_sync_key(text) == self.sync_key:
                     return bool(self.lines)
                 else:
                     # TODO: Setting this in the poll isn't a good idea.
                     self.last_position = -1, -1
+                    self.sync_key = ()
         return False
 
-    def sync_cursor(self) -> None:
-        self.last_position = _context.edit_text.cursor.focus
+    def sync_cursor(self, line_index) -> None:
+        self.sync_key = _get_sync_key(_context.edit_text)
+        self.last_position = line_index, self.sync_key[1]
 
     def draw(self) -> None:
         # Align the box below the cursor.
         st = _context.space_data
-        x, y = st.region_location_from_cursor(*st.text.cursor.focus)
+        x, y = st.region_location_from_cursor(*self.last_position)
 
         caret_offset = round(4 * _system.wu * 0.05)
         y -= self.rect[3] - st.offsets[1] - caret_offset
@@ -157,7 +165,7 @@ class TEXTENSION_OT_suggestions_commit(utils.TextOperator):
         index = instance.active.index
 
         text = context.edit_text
-        line, col = text.cursor.focus
+        line, col = text.cursor_focus
 
         # The selected completion.
         completion = instance.lines[index]
@@ -252,25 +260,25 @@ def dismiss():
     get_instance().dismiss()
 
 
-def on_insert() -> None:
+def on_insert(line, column, fmt) -> None:
     """Hook for TEXTENSION_OT_insert"""
-    line, col = _context.edit_text.cursor.focus
-    if _context.edit_text.lines[line].body[col - 1] not in separators and on_insert.last_format != b"#":
+    if _context.edit_text.lines[line].body[column - 1] not in separators and fmt != b"#":
+        get_instance().sync_cursor(line)
         deferred_complete()
     else:
         dismiss()
 
 
-def on_delete() -> None:
+def on_delete(line, column, fmt) -> None:
     """Hook for TEXTENSION_OT_delete"""
-    line, col = _context.edit_text.cursor.focus
-    lead = _context.edit_text.lines[line].body[:col]
-    if not lead.strip() or lead[-1:] in separators | {"."}:
+    text = _context.edit_text
+    leading_string = text.lines[line].body[:column]
+    if not leading_string.strip() or leading_string[-1:] in separators | {"."}:
         dismiss()
-    elif lead.lstrip():
+    elif leading_string.lstrip():
         instance = get_instance()
-        instance.sync_cursor()
-        if instance.poll() and on_delete.last_format != b"#":  # If visible, run completions again.
+        instance.sync_cursor(line)
+        if instance.poll() and fmt != b"#":  # If visible, run completions again.
             deferred_complete()
 
 
@@ -281,24 +289,48 @@ def deferred_complete():
     utils.defer(wrapper)
 
 
+def _disable_gc():
+    gc.disable()
+    # Do not allow gc to be enabled by jedi. We manage it ourselves.
+    gc.enable = None.__init__
+    utils.defer(_enable_gc)
+
+
+def _enable_gc():
+    Suggestions._temp_lines.clear()
+    gc.enable = _gc_enable
+    gc.enable()
+
+
 class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
     utils.km_def("Text Generic", 'SPACE', 'PRESS', ctrl=1)
 
     poll = utils.text_poll
 
     def invoke(self, context, event):
+        text = context.edit_text
         instance = get_instance()
-        instance.sync_cursor()
 
-        from .patches.common import interpreter
+        # Line index is O(N) so avoid syncing cursor as much as possible.
+        if instance.sync_key != _get_sync_key(text):
+            instance.sync_cursor(text.select_end_line_index)
+
+        from .patches.common import complete
+
+        _disable_gc()
+
         try:
-            ret = interpreter.complete(context.edit_text)
+            ret = complete(text)
         except BaseException as e:
             import traceback
             traceback.print_exc()
             raise e from None
         else:
             bpy.ret = ret  # For introspection
+
+            # We don't want garbage collection to spuriously run until things
+            # have been rendered.
+            instance._temp_lines += [instance.lines]
             instance.lines = ret
 
             # TODO: Weak.
