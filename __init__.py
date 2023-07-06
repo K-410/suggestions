@@ -193,6 +193,8 @@ class TEXTENSION_OT_suggestions_commit(utils.TextOperator):
 
         # Complete only if it either adds to, or modifies the query.
         if completion.complete or projected != completion_string:
+            if text.cursor_anchor != (line, col):
+                text.cursor_anchor = line, col
             text.curc = word_start
             text.write(completion_string)
             text.cursor = line, col + len(completion.complete)
