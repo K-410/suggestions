@@ -12,7 +12,7 @@ from inspect import Parameter
 from textension.utils import _context, _forwarder, inline
 
 from ._mathutils import float_vector_map
-from ..common import VirtualFilter, VirtualInstance, VirtualName, VirtualValue, get_mro_dict, state_cache
+from ..common import VirtualFilter, VirtualInstance, VirtualName, VirtualValue, get_mro_dict, state_cache, virtual_overrides
 from ..tools import runtime, state, make_compiled_value, make_instance
 
 import bpy
@@ -245,8 +245,7 @@ def rnadef_to_value(rnadef, parent):
     # ``INT``, ``FLOAT`` and ``BOOLEAN`` can be vectors.
     if type not in {'STRING', 'ENUM'} and rnadef.array_length != 0:
         if rnadef.subtype in float_vector_map:
-            return make_compiled_value(float_vector_map[rnadef.subtype], parent.as_context())
-            # return MathutilsValue((float_vector_map[rnadef.subtype], parent))
+            return MathutilsValue((float_vector_map[rnadef.subtype], parent))
         return PropArrayValue((rna_py_type_map[type], parent))
     return builtin_from_name(state, rna_py_type_map[type].__name__)
 
@@ -376,6 +375,9 @@ class RnaInstance(VirtualInstance):
             instance = RnaValue((self.class_value.obj.fixed_type, self.class_value)).instance
             return ValueSet((instance,))
         return NO_VALUES
+
+    def py__getitem__(self, index_value_set, contextualized_node):
+        return self.py__simple_getitem__(0)
 
     def get_signatures(self):
         if isinstance(self.class_value, RnaFunction):
@@ -527,10 +529,41 @@ class RnaFunctionSignature(AbstractSignature):
         return RnaFunctionSignature(value, self._function_value, is_bound=True)
 
 
-class MathutilsValue(VirtualValue):
-    def get_filters(self, is_instance=False, origin_scope=None):
-        yield CompiledValueFilter(state, self, is_instance)
+class MathutilsInstance(VirtualInstance):
+    def py__call__(self, arguments):
+        print("MathutilsInstance.py__call__ returned nothing for", self)
+        return NO_VALUES
 
+    def py__simple_getitem__(self, index):
+        import mathutils
+        if self.class_value.obj == mathutils.Vector:
+            return ValueSet((builtin_from_name(state, "float"),))
+        return NO_VALUES
+
+
+class MathutilsValue(VirtualValue):
+    instance_cls = MathutilsInstance
+
+    @property
+    @state_cache
+    def members(self):
+        mro_dict = get_mro_dict(self.obj)
+        from ..tools import _descriptor_overrides
+        if self.obj in _descriptor_overrides:
+            mro_dict |= _descriptor_overrides[self.obj]
+        return mro_dict
+
+    # Needed so tuple(Vector()) is inferrable.
+    def is_sub_class_of(self, class_value):
+        from jedi.inference.gradual.base import GenericClass
+        if isinstance(class_value, GenericClass):
+            if class_value._class_value.py__name__() == "Iterable":
+                return True
+        return False
+
+
+from mathutils import Vector
+virtual_overrides[Vector] = MathutilsValue
 
 # bpy.types.Object.[bound_box | rotation_axis_angle | etc.]
 class PropArrayValue(VirtualValue):

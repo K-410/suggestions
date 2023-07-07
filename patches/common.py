@@ -2,7 +2,7 @@
 
 from jedi.inference.compiled.value import (
     CompiledValue, CompiledValueFilter, CompiledValueName, CompiledModule)
-from jedi.inference.base_value import NO_VALUES, ValueSet
+from jedi.inference.lazy_value import LazyKnownValues, NO_VALUES, ValueSet
 from jedi.inference.context import CompiledContext, GlobalNameFilter
 from jedi.inference.value import CompiledInstance, ModuleValue
 from jedi.inference.names import TreeNameDefinition
@@ -17,10 +17,11 @@ from jedi.api import Script, Completion
 from itertools import repeat
 from operator import attrgetter
 from pathlib import Path
+from typing import Union
 
 from textension.utils import (
     _forwarder, _named_index, _unbound_getter, consume, falsy_noargs, inline,
-     set_name, truthy_noargs, instanced_default_cache, _TupleBase)
+     set_name, truthy_noargs, instanced_default_cache, _descriptor, _TupleBase)
 
 from .tools import state, get_handle, factory, is_namenode, is_basenode, ensure_blank_eol
 
@@ -510,12 +511,14 @@ class VirtualInstance(CompiledInstance):
         print("VirtualInstance.py__call__ (no values) for", self.class_value)
         return NO_VALUES
 
-    def py__simple_getitem__(self, index):
-        return self.class_value.py__simple_getitem__(index)
+    # Don't try to support indexing.
+    def py__simple_getitem__(self, *args, **unused):
+        return self.class_value.py__simple_getitem__(0)
 
-    def py__iter__(self, contextualized_node=None):
-        if instance := self.py__simple_getitem__(None):
-            from jedi.inference.lazy_value import LazyKnownValues
+    py__getitem__ = py__simple_getitem__
+
+    def py__iter__(self, *args, **unused):
+        if instance := self.py__simple_getitem__(0):
             return ValueSet((LazyKnownValues(instance),))
         return NO_VALUES
 
@@ -546,47 +549,51 @@ class VirtualModule(CompiledModule):
         return f"<{type(self).__name__} {self.obj}>"
 
 
+virtual_overrides = {}
+
+
 class VirtualName(_TupleBase, CompiledValueName):
+    _value: Union["VirtualValue", "VirtualInstance"]
     _inference_state = state
 
     parent_value: "VirtualValue" = _named_index(0)
     string_name:   str           = _named_index(1)
     is_instance:   bool          = _named_index(2)
 
-    @property
-    def _value(self):
-        return self._infer()
 
     @property
     def parent_context(self):
         return self.parent_value.as_context()
 
     def py__doc__(self):
-        if value := self.infer():
-            value, = value
+        if value := self._value:
             return value.py__doc__()
         return ""
 
     def docstring(self, raw=False, fast=True):
         return "VirtualName docstring goes here"
 
-    def infer_compiled_value(self):
-        return self.infer()
-    
     @state_cache
     def _infer(self):
         obj = self.parent_value.members[self.string_name]
-        value = VirtualValue((obj, self.parent_value))
+        value_type = VirtualValue
+        if obj in virtual_overrides:
+            value_type = virtual_overrides[obj]
+
+        value = value_type((obj, self.parent_value))
         if self.is_instance:
             value = value.instance
         return value
 
     def infer(self):
-        return ValueSet((self._infer(),))
+        return ValueSet((self._value,))
+
+    infer_compiled_value = infer
+    _value = _descriptor(_infer)
 
     @property
     def api_type(self):
-        for value in self.infer():
+        if value := self._value:
             return value.api_type
         return "unknown"
 
@@ -595,10 +602,13 @@ class VirtualName(_TupleBase, CompiledValueName):
 
 
 class VirtualFilter(_TupleBase, CompiledValueFilter):
+    compiled_value: "VirtualValue"
+    is_instance: bool
+
     _inference_state = state
 
-    compiled_value: "VirtualValue" = _named_index(0)
-    is_instance:     bool          = _named_index(1)
+    compiled_value = _named_index(0)
+    is_instance    = _named_index(1)
 
     name_cls = VirtualName
 
@@ -619,6 +629,7 @@ class VirtualFilter(_TupleBase, CompiledValueFilter):
 class VirtualValue(_TupleBase, CompiledValue):
     is_compiled  = truthy_noargs
     is_class     = truthy_noargs
+
     is_namespace = falsy_noargs
     is_instance  = falsy_noargs
     is_module    = falsy_noargs
@@ -626,12 +637,15 @@ class VirtualValue(_TupleBase, CompiledValue):
     is_builtins_module = falsy_noargs
 
     inference_state = state
+
     _api_type    = "unknown"
     filter_cls   = VirtualFilter
     instance_cls = VirtualInstance
 
-    obj                          = _named_index(0)
-    parent_value: "VirtualValue" = _named_index(1)
+    parent_value: "VirtualValue"
+
+    obj          = _named_index(0)
+    parent_value = _named_index(1)
 
     # Just to satisfy jedi.
     @property

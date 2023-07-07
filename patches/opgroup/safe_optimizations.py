@@ -328,7 +328,6 @@ def optimize_Value_methods():
     Value.py__bool__          = truthy_noargs
 
     Value.is_stub = _forwarder("parent_context.is_stub")
-    Value.py__getattribute__alternatives = rep_NO_VALUES
 
 
 def optimize_ImportFrom_get_defined_names():

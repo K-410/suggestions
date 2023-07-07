@@ -264,6 +264,11 @@ def optimize_grammar_parse():
               cache_path=None,
               file_io: BpyTextBlockIO = None):
 
+        # Jedi will sometimes parse small snippets as docstring modules.
+        if not path and not file_io:
+            lines = ensure_blank_eol(code.splitlines(True))
+            return Parser(self._pgen_grammar, start_nonterminal="file_input").parse(tokens=self._tokenizer(lines))
+
         if not path:
             path = file_io.path
 

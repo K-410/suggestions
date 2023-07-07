@@ -22,6 +22,7 @@ _get_sync_key = attrgetter("select_end_line", "select_end_character")
 separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
 
 runtime = utils.namespace(loaded=False)
+runtime = utils._get_dict(bpy.types.WindowManager).setdefault("_suggestions", runtime)
 
 
 BLF_BOLD = 1 << 11  # ``blf.enable(0, BLF_BOLD)`` adds bold effect.
@@ -34,7 +35,8 @@ class TEXT_OT_autocomplete(OpOverride):
 
 
 class Description(ui.widgets.TextView):
-    pass
+    def draw(self):
+        return super().draw()
 
 
 class Suggestions(ui.widgets.ListBox):
@@ -701,22 +703,20 @@ def apply_custom_settings():
 
 
 def _setup(force=False):
+    if runtime.loaded:
+        return
+
     if force and bpy.app.timers.is_registered(_setup):
         bpy.app.timers.unregister(_setup)
 
     import jedi
+    from . import patches
 
     # Do not let jedi infer anonymous parameters. It's slow and useless.
     jedi.settings.dynamic_params = False
     jedi.settings.auto_import_modules = set()
 
-    # This is a hack, but we need something reasonably persistent.
-    # If sys.modules is cleared, there's other things to worry about.
-    if "_suggestions" not in sys.modules:
-        sys.modules["_suggestions"] = type(sys)
-        from . import patches
-        patches.apply()
-
+    patches.apply()
     runtime.loaded = True
 
 
@@ -743,7 +743,7 @@ def enable():
     TEXT_OT_autocomplete.apply_override()
 
     # Defer loading jedi and applying patches so the plugin is enabled faster.
-    utils.defer(_setup, delay=1.0)
+    bpy.app.timers.register(_setup, first_interval=1.0)
 
 
 def disable():
