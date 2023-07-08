@@ -441,11 +441,9 @@ def trace_flow(node, origin_scope):
 
     @state_cache
     def trace_flow(name, origin_scope):
-        first_flow_scope = None
-
         if origin_scope is not None:
             branch_matches = True
-            for flow_scope in iter_flows(origin_scope, False):
+            for flow_scope in iter_flows(origin_scope, False):  # 0.5ms (274)
                 if flow_scope in iter_flows(name, False):
                     node_keyword   = get_flow_branch_keyword(flow_scope, name)
                     origin_keyword = get_flow_branch_keyword(flow_scope, origin_scope)

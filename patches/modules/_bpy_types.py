@@ -8,8 +8,9 @@ from jedi.inference.compiled import builtin_from_name
 
 from itertools import chain, repeat
 from inspect import Parameter
+from operator import attrgetter
 
-from textension.utils import _context, _forwarder, inline
+from textension.utils import _context, _forwarder, inline, starchain
 
 from ._mathutils import float_vector_map
 from ..common import VirtualFilter, VirtualInstance, VirtualName, VirtualValue, get_mro_dict, state_cache, virtual_overrides
@@ -388,6 +389,10 @@ class RnaInstance(VirtualInstance):
         return f"RnaInstance({self.class_value.obj.identifier})"
 
 
+prop_collection_items = bpy.types.bpy_prop_collection.items
+get_rnadefs = attrgetter("functions", "properties")
+
+
 # RNA value created from struct RNA definition.
 class RnaValue(VirtualValue):
     filter_cls   = RnaFilter
@@ -415,15 +420,8 @@ class RnaValue(VirtualValue):
     @property
     @state_cache
     def members(self):
-        rna = self.obj
-
-        # It's possible we're accessing a real instance like bpy.data.
-        # ``bl_rna`` is self-referencing so this is the safest way.
-        if rna != rna.bl_rna:
-            print("passing RnaValue as real rnas!:", rna, "vs", rna.bl_rna)
-        rna = rna.bl_rna
-
-        return get_mro_dict(rna) | dict(chain(rna.functions.items(), rna.properties.items()))
+        rna = self.obj.bl_rna
+        return get_mro_dict(rna) | dict(starchain(map(prop_collection_items, get_rnadefs(rna))))
 
     def __repr__(self):
         return f"RnaValue({self.obj.identifier})"

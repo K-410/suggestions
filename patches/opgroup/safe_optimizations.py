@@ -67,6 +67,7 @@ def apply():
     optimize_infer_expr_stmt()
     optimize_ClassMixin_py__mro__()
     optimize_Param_name()
+    optimize_CompiledInstanceName()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -1025,3 +1026,23 @@ def optimize_Param_name():
         return name.children[0]
     
     Param.name = name
+
+
+def optimize_CompiledInstanceName():
+    from jedi.inference.value.instance import CompiledInstanceName, CompiledInstanceClassFilter
+    from textension.utils import _TupleBase, _named_index
+    from builtins import list, map, zip
+
+    class InstanceName(_TupleBase, CompiledInstanceName):
+        _wrapped_name = _named_index(0)
+
+        # This just makes optimized filter_names faster.
+        tree_name     = None
+
+        def __repr__(self):
+            return '%s(%s)' % (self.__class__.__name__, self._wrapped_name)
+
+    def _convert(self, names):
+        return list(map(InstanceName, zip(names)))
+
+    CompiledInstanceClassFilter._convert = _convert

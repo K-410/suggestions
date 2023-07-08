@@ -125,7 +125,7 @@ def optimize_parser():
         stack[-1].nodes += [leaf]
         return None
 
-    parser.Parser._add_token = _add_token
+    Parser._add_token = _add_token
 
     from parso.parser import BaseParser, Stack
     from textension.utils import consume
@@ -138,8 +138,9 @@ def optimize_parser():
         while True:
             tos = self.stack[-1]
             if not tos.dfa.is_final:
-                raise InternalParseError(
-                    "incomplete input", token.type, token.string, token.start_pos)
+                raise Exception("InternalParseError")
+                # raise InternalParseError(
+                #     "incomplete input", token.type, token.string, token.start_pos)
             if len(self.stack) > 1:
                 self._pop()
             else:
