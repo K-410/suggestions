@@ -168,28 +168,30 @@ def optimize_remove_del_stmt():
 def optimize_BaseNode_get_leaf_for_position():
     from parso.tree import BaseNode
     from builtins import len
-    from ..tools import is_basenode
+    from ..common import node_types
 
-    def get_leaf_for_position(self, position, include_prefixes=False):
+    def get_leaf_for_position(self: BaseNode, position, include_prefixes=False):
         if position > self.children[-1].end_pos or position < (1, 0):
             raise ValueError('Please provide a position that exists within this node.')
 
-        elem = self
-        while is_basenode(elem):
+        while self.__class__ in node_types:
             lo = 0
-            hi = len(children := elem.children) - 1
+            hi = len(children := self.children) - 1
 
-            while lo != hi:
-                i = (lo + hi) >> 1
-                if position <= children[i].end_pos:
-                    hi = i
-                else:
+            while lo < hi:
+                i = (lo + hi) // 2
+                if position > children[i].end_pos:
                     lo = i + 1
+                    continue
+                hi = i
 
-            elem = children[lo]
-            if not include_prefixes and position < elem.start_pos:
+            self = children[lo]
+            if include_prefixes:
+                continue
+
+            elif position < self.start_pos:
                 return None
-        return elem
+        return self
 
     BaseNode.get_leaf_for_position = get_leaf_for_position
 
