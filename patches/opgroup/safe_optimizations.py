@@ -63,6 +63,10 @@ def apply():
     optimize_LazyTreeValue_infer()
     optimize_LazyInstanceClassName()
     optimize_get_module_info()
+    optimize_tree_name_to_values()
+    optimize_infer_expr_stmt()
+    optimize_ClassMixin_py__mro__()
+    optimize_Param_name()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -116,7 +120,7 @@ def optimize_try_to_load_stub_cached():
 
 
 def optimize_infer_node_if_inferred():
-    from jedi.inference.syntax_tree import _infer_node
+    from jedi.inference.syntax_tree import _infer_node, infer_node
     from jedi.inference import syntax_tree
     from ..common import state, state_cache
 
@@ -144,6 +148,7 @@ def optimize_infer_node_if_inferred():
     memo = cache[_infer_node] = {}
 
     _patch_function(syntax_tree._infer_node_if_inferred, _infer_node_if_inferred)
+    _patch_function(infer_node, _infer_node_if_inferred.__closure__[0].cell_contents)
 
 
 def optimize_remove_del_stmt():
@@ -923,23 +928,26 @@ def optimize_LazyTreeValue_infer():
     LazyTreeValue.infer = infer
 
 
+# Just makes name conversions use aggregate initialization.
 def optimize_LazyInstanceClassName():
+    from jedi.inference.value.klass import ClassName
     from jedi.inference.value.instance import LazyInstanceClassName, InstanceClassFilter
     from textension.utils import _TupleBase, _named_index
     from itertools import repeat
+    from builtins import list, map, zip
 
-    class BetterLazyInstanceClassName(LazyInstanceClassName, _TupleBase):
-        __init__ = tuple.__init__
-
+    class LazyName(_TupleBase, LazyInstanceClassName):
         _instance     = _named_index(0)
         _wrapped_name = _named_index(1)
+
+        tree_name     = _forwarder("_wrapped_name.tree_name")
 
         def __repr__(self):
             return '%s(%s)' % (self.__class__.__name__, self._wrapped_name)
 
     def _convert(self: InstanceClassFilter, names):
-        return map(BetterLazyInstanceClassName, zip(repeat(self._instance), names))
-    
+        return list(map(LazyName, zip(repeat(self._instance), names)))
+
     InstanceClassFilter._convert = _convert
 
 
@@ -977,3 +985,41 @@ def optimize_get_module_info():
                 sys.path = temp
 
     _patch_function(get_module_info, _get_module_info)
+
+
+def optimize_tree_name_to_values():
+    from jedi.inference import syntax_tree
+    from jedi.inference.syntax_tree import tree_name_to_values
+
+    # Having 3 wrappers is a bit too much.
+    _patch_function(tree_name_to_values, tree_name_to_values.__wrapped__)
+
+    # The wrapper is created in a different module.
+    tree_name_to_values.__globals__.update(syntax_tree.__dict__)
+
+
+def optimize_infer_expr_stmt():
+    from jedi.inference.syntax_tree import infer_expr_stmt, _infer_expr_stmt
+
+    # Skip recursion safe wrappers.
+    _patch_function(infer_expr_stmt, _infer_expr_stmt.__closure__[0].cell_contents)
+
+
+def optimize_ClassMixin_py__mro__():
+    from jedi.inference.value.klass import ClassMixin
+
+    # Skip recursion safe wrappers.
+    ClassMixin.py__mro__ = ClassMixin.py__mro__.__closure__[0].cell_contents
+
+
+def optimize_Param_name():
+    from parso.python.tree import Param
+
+    @property
+    def name(self: Param):
+        name = self.children[0]
+        if name.type == "name":
+            return self.children[name.value in "**"]
+        return name.children[0]
+    
+    Param.name = name
