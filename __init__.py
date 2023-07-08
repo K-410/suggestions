@@ -743,7 +743,7 @@ def enable():
     TEXT_OT_autocomplete.apply_override()
 
     # Defer loading jedi and applying patches so the plugin is enabled faster.
-    bpy.app.timers.register(_setup, first_interval=1.0)
+    bpy.app.timers.register(_setup, first_interval=0.3)
 
 
 def disable():

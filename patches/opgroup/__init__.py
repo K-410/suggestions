@@ -5,7 +5,6 @@ from . import (
     interpreter,
     memo,
     safe_optimizations,
-    stubs,
     used_names,
     tokens,
     py_getattr,

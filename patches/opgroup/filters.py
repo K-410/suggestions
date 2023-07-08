@@ -1,14 +1,14 @@
-# This module implements optimizations for various filter types.
+# This module implements optimizations for various filters and stubs.
 from jedi.inference.compiled.getattr_static import getattr_static
 from jedi.inference.compiled.access import ALLOWED_DESCRIPTOR_ACCESS
 from jedi.inference.compiled.value import CompiledName, ValueSet
+from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter, StubName
 
-from itertools import repeat
+from textension.utils import instanced_default_cache, truthy_noargs, _named_index, _TupleBase, _patch_function
+from ..common import _check_flows, find_definition, state_cache
+from ..tools import is_basenode, is_namenode, state
 from operator import attrgetter
-
-from textension.utils import _named_index
-from ..common import _check_flows
-from ..tools import is_basenode, state
+from itertools import repeat
 
 
 def apply():
@@ -21,8 +21,10 @@ def apply():
     optimize_AnonymousMethodExecutionFilter_values()
     optimize_ParserTreeFilter_filter()
     optimize_CompiledValue_get_filters()
-    # optimize_ClassMixin_get_filters()  # XXX: Runs on startup. Bad.
     optimize_BaseTreeInstance_get_filters()
+    optimize_ClassMixin_get_filters()
+
+    optimize_StubModules()
 
 
 def is_allowed_getattr(obj, name):
@@ -69,23 +71,14 @@ class DeferredCompiledName(tuple, CompiledName):
 # converting them into names. Instead they are read only when inferred.
 def optimize_CompiledValueFilter_values():
     from jedi.inference.compiled.value import CompiledValueFilter
-    from itertools import repeat, chain
+    from itertools import repeat
 
     def values(self: CompiledValueFilter):
-        from jedi.inference.compiled import builtin_from_name
-        names = []
-        obj = self.compiled_value.access_handle.access._obj
-
         value = self.compiled_value
+        obj = value.access_handle.access._obj
         sequences = zip(repeat(value), repeat(value.as_context()), dir(obj))
-        names = map(DeferredCompiledName, sequences)
- 
-        # XXX: Why are we adding names to compiled values?
-        # It doesn't make sense to add type completions if the object isn't a class.
-        # if not self.is_instance and isinstance(obj, type) and obj is not type:
-        #     for filter in builtin_from_name(self._inference_state, 'type').get_filters():
-        #         names = chain(names, filter.values())
-        return names
+        # Note: type completions is not added, because why would we?
+        return map(DeferredCompiledName, sequences)
 
     CompiledValueFilter.values = values
 
@@ -96,19 +89,21 @@ def optimize_SelfAttributeFilter_values():
     from jedi.inference.value.instance import SelfAttributeFilter
     from ..tools import is_basenode, is_namenode, is_funcdef, is_classdef
     from itertools import repeat
+    from parso.python.tree import Class
 
     def values(self: SelfAttributeFilter):
-        names = []
         scope = self._parser_scope
 
         # We only care about classes.
-        if is_classdef(scope):
+        if scope.__class__ is Class:
             context = self.parent_context
 
             # Stubs don't have self definitions.
             if not context.is_stub():
                 class_nodes = scope.children[-1].children
-                pool = []
+
+                pool  = []
+                names = []
 
                 for n in filter(is_funcdef, class_nodes):
                     pool += n.children[-1].children
@@ -124,7 +119,8 @@ def optimize_SelfAttributeFilter_values():
 
                 names = list(self._filter(names))
                 names = list(map(self.name_class, repeat(context), names))
-        return names
+                return names
+        return []
 
     SelfAttributeFilter.values = values
 
@@ -289,35 +285,6 @@ def optimize_ParserTreeFilter_filter():
     ParserTreeFilter._filter = _filter
 
 
-def optimize_ClassMixin_get_filters():
-    from jedi.inference.value.klass import ClassMixin
-    from jedi.inference.value.klass import ClassFilter
-    from jedi.inference.compiled import builtin_from_name
-    from itertools import islice
-
-    type_ = builtin_from_name(state, "type")
-    type_values = []
-    for instance in type_.py__call__(None):
-        type_values += islice(instance.get_filters(), 2, 3)
-
-    def get_filters(self: ClassMixin, origin_scope=None, is_instance=False, include_metaclasses=True, include_type_when_class=True):
-        if include_metaclasses:
-            if metaclasses := self.get_metaclasses():
-                yield from self.get_metaclass_filters(metaclasses, is_instance)
-
-
-        for cls in self.py__mro__():
-            if cls.is_compiled():
-                yield from cls.get_filters(is_instance=is_instance)
-            else:
-                yield ClassFilter(self, node_context=cls.as_context(), origin_scope=origin_scope, is_instance=is_instance)
-
-        if not is_instance and include_type_when_class and self is not type_:
-            yield from type_values
-
-    ClassMixin.get_filters = get_filters
-
-
 def optimize_CompiledValue_get_filters():
     from jedi.inference.compiled.value import CompiledValue, CompiledValueFilter
     from ..common import state, yield_filters_once
@@ -361,3 +328,218 @@ def optimize_BaseTreeInstance_get_filters():
                 yield f
 
     _BaseTreeInstance.get_filters = get_filters
+
+
+def optimize_ClassMixin_get_filters():
+    from jedi.inference.value.instance import InstanceClassFilter
+    from jedi.inference.value.klass import ClassMixin, ClassFilter, ValuesArguments, ClassValue
+    from jedi.inference.compiled import builtin_from_name
+    from textension.utils import instanced_default_cache
+    from ..common import state
+
+    def get_type_filter(self: dict, _):
+        type_ = builtin_from_name(state, "type")
+        instance, = type_.py__call__(None)
+        filter_ = None
+
+        for f in instance.class_value.get_filters(origin_scope=None, is_instance=True):
+            filter_ = InstanceClassFilter(instance, f)
+            break
+
+        return self.setdefault("type", (type_, filter_))
+
+    stub_class_filter_cache = {}
+    type_cache = instanced_default_cache(get_type_filter)
+
+    def _get_filters(self, origin_scope=None, is_instance=False, include_metaclasses=True, include_type_when_class=True):
+        if include_metaclasses:
+            metaclasses = self.get_metaclasses()
+            if metaclasses:
+                yield from self.get_metaclass_filters(metaclasses, is_instance)
+
+        for cls in self.py__mro__():
+            if cls.is_compiled():
+                yield from cls.get_filters(is_instance=is_instance)
+            else:
+                yield ClassFilter(self, node_context=cls.as_context(), origin_scope=origin_scope, is_instance=is_instance)
+
+        if not is_instance and include_type_when_class:
+            # if "type" in type_cache:
+            #     return type_cache["type"]
+
+            type_ = builtin_from_name(self.inference_state, 'type')
+            if type_ != self:
+                args = ValuesArguments([])
+                from jedi.inference.value.instance import InstanceClassFilter
+                instance, = type_.py__call__(args)
+                for f in instance.class_value.get_filters(origin_scope=None, is_instance=True):
+                    type_cache["type"] = InstanceClassFilter(instance, f)
+                    return type_cache["type"]
+
+    def get_filters(self: ClassValue, **kw):
+        # Stub filters are always cached.
+        if self.is_stub():
+            key = self.tree_node, tuple(kw.items())
+            if key not in stub_class_filter_cache:
+                stub_class_filter_cache[key] = list(_get_filters(self, **kw))
+            return stub_class_filter_cache[key]
+        return _get_filters(self, **kw)
+
+    ClassMixin.get_filters = get_filters
+
+
+class DeferredStubName(_TupleBase, StubName):
+    parent_context = _named_index(0)
+    tree_name      = _named_index(1)
+
+
+@state_cache
+def get_scope_name_strings(scope):
+    namedefs = []
+    pool  = scope.children[:]
+
+    for n in filter(is_basenode, pool):
+        if n.type in {"classdef", "funcdef"}:
+            # Add straight to ``namedefs`` we know they are definitions.
+            namedefs += [n.children[1].value]
+
+        elif n.type == "simple_stmt":
+            n = n.children[0]
+
+            if n.type == "expr_stmt":
+                name = n.children[0]
+                # Could be ``atom_expr``, as in dotted name. Skip those.
+                if name.type == "name":
+                    namedefs += [name.value]
+                else:
+                    print(name.type)
+
+            elif n.type == "import_from":
+                name = n.children[3]
+                if name.type == "operator":
+                    name = n.children[4]
+
+                # Only matching aliased imports are exported for stubs.
+                if name.type == "import_as_names":
+                    for name in name.children[::2]:
+                        if name.type == "import_as_name":
+                            name, alias = name.children[::2]
+                            if name.value == alias.value:
+                                namedefs += [alias.value]
+
+            elif n.type == "atom":
+                # ``atom`` nodes are too ambiguous to extract names from.
+                # Just into the pool and look for names the old way.
+                pool += n.children
+
+        elif n.type == "decorated":
+            pool += [n.children[1]]
+        else:
+            pool += n.children
+
+    # Get name definitions.
+    for n in filter(is_namenode, pool):
+        if n.get_definition(include_setitem=True):
+            namedefs += [n.value]
+
+    keys = set(namedefs)
+    exclude = set()
+    for k in keys:
+        if k[0] is "_" != k[:2][-1]:
+            exclude.add(k)
+
+    return keys - exclude
+
+
+def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
+    context = stub_filter.parent_context
+    value   = context._value
+    module_names = get_scope_name_strings(value.tree_node)
+
+    names = []
+    pool  = [value.tree_node]
+
+    for n in filter(is_basenode, pool):
+        pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
+
+    for n in filter(is_namenode, pool):
+        if n.value in module_names:
+            names += [n]
+
+    ret = stub_filter._filter(names)
+    ret = self[stub_filter] = list(map(DeferredStubName, zip(repeat(context), ret)))
+    return ret
+
+
+stub_values_cache = instanced_default_cache(get_stub_values)
+
+
+class CachedStubFilter(StubFilter):
+    _parso_cache_node = None
+    _check_flows = _check_flows
+
+    def __init__(self, parent_context):
+        self._until_position = None
+        self._origin_scope   = None
+        self.parent_context  = parent_context
+        self._node_context   = parent_context
+        self._parser_scope   = parent_context.tree_node
+        self._used_names     = parent_context.tree_node.get_root_node().get_used_names()
+        self.cache = {}
+
+    def get(self, name):
+        if name := get_module_definition_by_name(self._parser_scope, name):
+            names = self._convert_names((name,))
+            return names
+        return []
+
+    def _filter(self, names):
+        return self._check_flows(names)
+
+    def values(self: StubFilter):
+        return stub_values_cache[self]
+
+
+class CachedStubModuleContext(StubModuleContext):
+    def get_filters(self, until_position=None, origin_scope=None):
+        return list(self._value.get_filters())
+
+
+definition_cache = {}
+
+
+def get_module_definition_by_name(module, string_name):
+    key = module, string_name
+    if key not in definition_cache:
+        pool = [module]
+
+        for n in filter(is_basenode, pool):
+            pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
+
+        for n in filter(is_namenode, pool):
+            if n.value == string_name and n.get_definition(include_setitem=True):
+                break
+        else:
+            n = None
+        definition_cache[key] = n
+    return definition_cache[key]
+
+
+def get_stub_module_context(self: dict, module_value: StubModuleValue):
+    return self.setdefault(module_value, CachedStubModuleContext(module_value))
+
+_contexts = instanced_default_cache(get_stub_module_context)
+
+
+def get_stub_filter(self: dict, module_value: StubModuleValue):
+    return self.setdefault(module_value, [CachedStubFilter(_contexts[module_value])])
+
+
+def optimize_StubModules():
+    stub_filter_cache = instanced_default_cache(get_stub_filter)
+
+    def get_filters(self: StubModuleValue, origin_scope=None):
+        yield from stub_filter_cache[self]
+
+    StubModuleValue.get_filters = get_filters
+    StubModuleContext.is_stub   = truthy_noargs
