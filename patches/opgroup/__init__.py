@@ -6,6 +6,5 @@ from . import (
     memo,
     safe_optimizations,
     used_names,
-    tokens,
     py_getattr,
 )
