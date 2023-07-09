@@ -364,26 +364,20 @@ def optimize_tokenize_lines():
     def isidentifier(string: str) -> bool: return str.isidentifier
     @inline
     def strlen(string: str) -> int: return str.__len__
-    @inline
-    def strip(string: str) -> str: return str.strip
 
     from keyword import kwlist, softkwlist
 
     known_base = set(kwlist + softkwlist) | __builtins__.keys()
 
-    asciis = {
-                    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L",
-                    "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X",
-                    "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-                    "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v",
-                    "w", "x", "y", "z", "_"}
-    non_asciis = {"(", ")", "[", "]", "{", "}", "\n", "\r", "#", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "\"", "\'"}
-    operators = {
-                    "**", "**=", ">>", ">>=", "<<", "<<=", "//", "//=", "->",
-                    "+", "+=", "-", "-=", "*", "*=", "/", "/=", "%", "%=", "&",
-                    "&=", "@", "@=", "|", "|=", "^", "^=", "!", "!=", "=", "==",
-                    "<", "<=", ">", ">=", "~", ":", ".", ",", ":="
-                }
+    operators = {"**", "**=", ">>", ">>=", "<<", "<<=", "//", "//=", "->",
+                 "+", "+=", "-", "-=", "*", "*=", "/", "/=", "%", "%=", "&",
+                 "&=", "@", "@=", "|", "|=", "^", "^=", "!", "!=", "=", "==",
+                 "<", "<=", ">", ">=", "~", ":", ".", ",", ":="}
+
+    non_letters = {"(", ")", "[", "]", "{", "}", "\n", "\r", "#", "0", "1",
+                   "2", "3", "4", "5", "6", "7", "8", "9", "\"", "\'", "*",
+                   ">", "<", "=", "/", "-", "+", "%", "&", "~", ":", ".", ",",
+                   "!", "|", "^", "\\", "@"}
     from sys import intern
 
     def tokenize_lines(lines, *, version_info, indents=None, start_pos=(1, 0), is_first_token=True):
@@ -430,7 +424,7 @@ def optimize_tokenize_lines():
             lines[0] = line
 
         for lnum, pos, end, line in zip(count(start_pos[0]), repeat(pos), map(strlen, lines), lines):
-            if contstr:                                         # continued string
+            if contstr:
                 if endmatch := get_match(endprog, line):
                     pos = get_end(endmatch, 0)
                     result += ((STRING, contstr + line[:pos], contstr_start, prefix),)
@@ -494,11 +488,12 @@ def optimize_tokenize_lines():
 
                 spos = (lnum, start)
 
+                any.ncalls(new_line)
                 if new_line and initial not in {"\r", "\n", "#"} and (initial is not "\\" or not pseudomatch):
                     new_line = False
                     if paren_level == 0 and not fstring_stack:
                         if start > indents[-1]:
-                            result += ((INDENT, '', spos, ''),)
+                            result  += ((INDENT, '', spos, ''),)
                             indents += (start,)
 
                         else:
@@ -525,22 +520,9 @@ def optimize_tokenize_lines():
                     additional_prefix = ''
                     pos += 1
 
-                elif initial is "\n":
-                    if fstring_stack and any(not f.allow_multiline() for f in fstring_stack):
-                        fstring_stack.clear()
-
-                    if not new_line and paren_level == 0 and not fstring_stack:
-                        result += ((NEWLINE, token, spos, prefix),)
-                    else:
-                        additional_prefix = prefix + token
-                    new_line = True
-
-                elif token in operators:
-                    result += ((OP, token, spos, prefix),)
-
                 # Check ascii before group.
                 # elif initial in asciis or get_group(pseudomatch, 3):
-                elif initial not in non_asciis and (token in known or (isidentifier(token) and not add_known(token))):
+                elif initial not in non_letters and (token in known or (isidentifier(token) and not add_known(token))):
                     if token in always_break_tokens:
                         if fstring_stack or paren_level:
                             del fstring_stack[:]
@@ -558,6 +540,24 @@ def optimize_tokenize_lines():
                     result += ((NAME, token, spos, prefix),)
                     # else:
                     #     result += _split_illegal_unicode_name(token, spos, prefix) # type: ignore
+
+                elif initial is "\n":
+                    if fstring_stack and any(not f.allow_multiline() for f in fstring_stack):
+                        fstring_stack.clear()
+
+                    if not new_line and paren_level == 0 and not fstring_stack:
+                        result += ((NEWLINE, token, spos, prefix),)
+                    else:
+                        additional_prefix = prefix + token
+                    new_line = True
+
+                elif token in operators:
+                    if fstring_stack and token[0] is ":" and fstring_stack[-1].parentheses_count - fstring_stack[-1].format_spec_count == 1:
+                        fstring_stack[-1].format_spec_count += 1
+                        token = ':'
+                        pos = start + 1
+
+                    result += ((OP, token, spos, prefix),)
 
                 elif token in {"(", ")", "[", "]", "{", "}"}:
                     if token in {"(", "[", "{"}:
@@ -594,18 +594,17 @@ def optimize_tokenize_lines():
                             contline = line
                             break
 
-                    else:
-                        if token[-1] is "\n":
-                            contstr_start = spos
-                            endprog = endpats.get(initial) or endpats.get(token[1]) or endpats.get(token[2])
-                            contstr = line[start:]
-                            contline = line
-                            break
-                        else:                                       # ordinary string
-                            result += ((STRING, token, spos, prefix),)
+                    elif token[-1] is "\n":
+                        contstr_start = spos
+                        endprog = endpats.get(initial) or endpats.get(token[1]) or endpats.get(token[2])
+                        contstr = line[start:]
+                        contline = line
+                        break
+                    else:                                       # ordinary string
+                        result += ((STRING, token, spos, prefix),)
 
                 elif (initial in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"} or \
-                     (initial == '.' and token != '.' and token != '...')
+                     (initial == '.' != token != '...')
                 ):
                     result += ((NUMBER, token, spos, prefix),)
                 elif token in fstring_pattern_map:  # The start of an fstring.
@@ -615,12 +614,7 @@ def optimize_tokenize_lines():
                     additional_prefix += prefix + line[start:]
                     break
                 else:
-                    if token.startswith(':') and fstring_stack and fstring_stack[-1].parentheses_count - fstring_stack[-1].format_spec_count == 1:
-                        fstring_stack[-1].format_spec_count += 1
-                        token = ':'
-                        pos = start + 1
-
-                    result += ((OP, token, spos, prefix),)
+                    assert False
 
         if contstr:
             result += ((ERRORTOKEN, contstr, contstr_start, prefix),)
