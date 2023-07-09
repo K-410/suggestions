@@ -993,9 +993,10 @@ def optimize_get_module_info():
 def optimize_tree_name_to_values():
     from jedi.inference import syntax_tree
     from jedi.inference.syntax_tree import tree_name_to_values
+    from ..common import state_cache
 
     # Having 3 wrappers is a bit too much.
-    _patch_function(tree_name_to_values, tree_name_to_values.__wrapped__)
+    _patch_function(tree_name_to_values, state_cache(tree_name_to_values.__wrapped__))
 
     # The wrapper is created in a different module.
     tree_name_to_values.__globals__.update(syntax_tree.__dict__)

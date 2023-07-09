@@ -426,17 +426,17 @@ class RnaValue(VirtualValue):
     def __repr__(self):
         return f"RnaValue({self.obj.identifier})"
 
+    @state_cache
     def py__mro__(self):
-        assert is_bpy_struct(self.obj)
         context = self.as_context()
-
-        yield self
+        ret = [self]
 
         for obj in type(self.obj.bl_rna).__mro__:
             if is_bpy_struct_subclass(obj) and obj is not StructRNA:
-                yield RnaValue((obj.bl_rna, self))
+                ret += [RnaValue((obj.bl_rna, self))]
             else:
-                yield make_compiled_value(obj, context)
+                ret += [make_compiled_value(obj, context)]
+        return ret
 
     def py__doc__(self):
         return self.obj.description
