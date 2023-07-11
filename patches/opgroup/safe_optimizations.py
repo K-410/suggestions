@@ -173,7 +173,8 @@ def optimize_BaseNode_get_leaf_for_position():
 
     def get_leaf_for_position(self: BaseNode, position, include_prefixes=False):
         if position > self.children[-1].end_pos or position < (1, 0):
-            raise ValueError('Please provide a position that exists within this node.')
+            raise ValueError(f"Position must be within the bounds of the node. "
+                             f"(1, 0) < {position} <= {self.children[-1].end_pos}")
 
         while self.__class__ in node_types:
             lo = 0
@@ -1017,14 +1018,22 @@ def optimize_ClassMixin_py__mro__():
 
 
 def optimize_Param_name():
-    from parso.python.tree import Param
+    from parso.python.tree import Param, Operator
 
     @property
     def name(self: Param):
         name = self.children[0]
         if name.type == "name":
-            return self.children[name.value in "**"]
-        return name.children[0]
+            return name
+
+        # XXX: Can we just check ``name.value`` here? Are there other operator types for param at position 0?
+        # Could be star unpack.
+        elif name.type == "operator" and name.value in "**":
+            name = self.children[1]
+        # Could also be nested after operator.
+        if name.type == "tfpdef":
+            return name.children[0]
+        return name
     
     Param.name = name
 
