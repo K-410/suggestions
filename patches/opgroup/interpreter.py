@@ -199,10 +199,12 @@ def optimize_diffparser():
 # Optimize DiffParser to only parse the modified body, skipping the sequence
 # matcher entirely.
 def optimize_diffparser():
+    from textension.fast_seqmatch import FastSequenceMatcher
     from parso.python.diff import _get_debug_error_message, DiffParser
     from itertools import count, compress
     from builtins import map, next, reversed
     from operator import ne
+
     lstlen = list.__len__
 
     def update(self: DiffParser, a, b):
@@ -210,36 +212,45 @@ def optimize_diffparser():
         self._parser_lines_new = b
         self._reset()
 
+        opcodes = []
+
         alen = lstlen(a)
         blen = lstlen(b)
 
+        # Valid head (a and b are equal up to this).
         head = next(compress(count(), map(ne, a, b)), blen - 1)
+
+        # Valid tail (a and b are equal from this to end).
         tail = next(compress(count(), map(ne, reversed(a), reversed(b))), 0)
 
         old_end = alen - tail
         new_end = blen - tail
-        opcodes = []
 
         if head != 0:
-            opcodes += [["equal", 0, head, 0, head]]
+            opcodes += ("equal", 0, head, 0, head),
 
-        opcodes += [["replace", head, old_end, head, new_end]]
+        # Feed only changed lines, then add the offsets to the opcode indices.
+        add_offset = head.__add__
+        sm = FastSequenceMatcher((a[head:old_end], b[head:new_end]))
 
-        if alen != old_end != blen != new_end:
-            opcodes += [["equal", old_end, alen, new_end, blen]]
+        for opcode, *indices in sm.get_opcodes():
+            opcodes += (opcode, *map(add_offset, indices)),
+
+        if tail != 0:
+            j1, j2 = opcodes[-1][2::2]
+            opcodes += ("equal", j1, alen, j2, blen),
 
         for op, i1, i2, j1, j2 in opcodes:
             if j2 == blen and b[-1] == "":
                 j2 -= 1
             if op == "equal":
                 self._copy_from_old_parser(j1 - i1, i1 + 1, i2, j2)
-            elif op == "replace":
+            elif op in {"replace", "insert"}:
                 self._parse(until_line=j2)
 
         self._nodes_tree.close()
         last_pos = self._module.end_pos[0]
-        assert last_pos == blen, f"{last_pos} != {blen}" + \
-            _get_debug_error_message(self._module, a, b)
+        assert last_pos == blen, f"{last_pos} != {blen}" + _get_debug_error_message(self._module, a, b)
         return self._module
     
     DiffParser.update = update
