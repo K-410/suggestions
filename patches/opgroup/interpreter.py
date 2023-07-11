@@ -17,6 +17,7 @@ _use_new_interpreter = []
 
 
 def apply():
+    optimize_tokens()
     optimize_parser()
     optimize_diffparser()
     optimize_grammar_parse()
@@ -672,21 +673,13 @@ from sys import intern
 def _token_type_repr(self):
     return f"TokenType({self.name})"
 
+
 def _create_token_type(name: str, contains_syntax: bool):
     return type("TokenType", (), {"name": name,
                                   "contains_syntax":contains_syntax,
                                   "__repr__": _token_type_repr,
                                   "__slots__": (),
                                   "__slotnames__": []})
-# class TokenType(tuple):
-#     __slotnames__ = []
-#     __slots__ = ()
-
-#     name            = _named_index(0)
-#     contains_syntax = _named_index(1)
-
-#     def __repr__(self):
-#         return f"TokenType({self.name})"
 
 
 # Maps old PythonTokenTypes to the new underlying value.
@@ -714,55 +707,55 @@ class PythonTokenTypes(tuple):
     OP             = _named_index(11)
     ENDMARKER      = _named_index(12)
 
+def optimize_tokens():
+    token.PythonTokenTypes = PythonTokenTypes
 
-token.PythonTokenTypes = PythonTokenTypes
 
+    from jedi.api import completion
+    completion.PythonTokenTypes = PythonTokenTypes
 
-from jedi.api import completion
-completion.PythonTokenTypes = PythonTokenTypes
+    from parso import grammar
+    grammar.PythonTokenTypes = PythonTokenTypes
+    grammar.PythonGrammar._token_namespace = PythonTokenTypes
 
-from parso import grammar
-grammar.PythonTokenTypes = PythonTokenTypes
-grammar.PythonGrammar._token_namespace = PythonTokenTypes
+    from parso.pgen2 import grammar_parser
+    grammar_parser.PythonTokenTypes = PythonTokenTypes
 
-from parso.pgen2 import grammar_parser
-grammar_parser.PythonTokenTypes = PythonTokenTypes
+    from parso.python import diff
+    diff.PythonTokenTypes = PythonTokenTypes
 
-from parso.python import diff
-diff.PythonTokenTypes = PythonTokenTypes
+    diff.NEWLINE      = PythonTokenTypes.NEWLINE
+    diff.DEDENT       = PythonTokenTypes.DEDENT
+    diff.NAME         = PythonTokenTypes.NAME
+    diff.ERROR_DEDENT = PythonTokenTypes.ERROR_DEDENT
+    diff.ENDMARKER    = PythonTokenTypes.ENDMARKER
 
-diff.NEWLINE      = PythonTokenTypes.NEWLINE
-diff.DEDENT       = PythonTokenTypes.DEDENT
-diff.NAME         = PythonTokenTypes.NAME
-diff.ERROR_DEDENT = PythonTokenTypes.ERROR_DEDENT
-diff.ENDMARKER    = PythonTokenTypes.ENDMARKER
+    from parso.python import parser
+    parser.PythonTokenTypes = PythonTokenTypes
+    parser.NAME = PythonTokenTypes.NAME
+    parser.INDENT = PythonTokenTypes.INDENT
+    parser.DEDENT = PythonTokenTypes.DEDENT
 
-from parso.python import parser
-parser.PythonTokenTypes = PythonTokenTypes
-parser.NAME = PythonTokenTypes.NAME
-parser.INDENT = PythonTokenTypes.INDENT
-parser.DEDENT = PythonTokenTypes.DEDENT
+    parser.Parser._leaf_map = {
+        conversion_map[k]: v for k, v in parser.Parser._leaf_map.items()
+    }
 
-parser.Parser._leaf_map = {
-    conversion_map[k]: v for k, v in parser.Parser._leaf_map.items()
-}
+    from parso.python import tokenize
 
-from parso.python import tokenize
+    tokenize.PythonTokenTypes = PythonTokenTypes
 
-tokenize.PythonTokenTypes = PythonTokenTypes
+    tokenize.STRING         = PythonTokenTypes.STRING
+    tokenize.NAME           = PythonTokenTypes.NAME
+    tokenize.NUMBER         = PythonTokenTypes.NUMBER
+    tokenize.OP             = PythonTokenTypes.OP
+    tokenize.NEWLINE        = PythonTokenTypes.NEWLINE
+    tokenize.INDENT         = PythonTokenTypes.INDENT
+    tokenize.DEDENT         = PythonTokenTypes.DEDENT
+    tokenize.ENDMARKER      = PythonTokenTypes.ENDMARKER
+    tokenize.ERRORTOKEN     = PythonTokenTypes.ERRORTOKEN
+    tokenize.ERROR_DEDENT   = PythonTokenTypes.ERROR_DEDENT
+    tokenize.FSTRING_START  = PythonTokenTypes.FSTRING_START
+    tokenize.FSTRING_STRING = PythonTokenTypes.FSTRING_STRING
+    tokenize.FSTRING_END    = PythonTokenTypes.FSTRING_END
 
-tokenize.STRING         = PythonTokenTypes.STRING
-tokenize.NAME           = PythonTokenTypes.NAME
-tokenize.NUMBER         = PythonTokenTypes.NUMBER
-tokenize.OP             = PythonTokenTypes.OP
-tokenize.NEWLINE        = PythonTokenTypes.NEWLINE
-tokenize.INDENT         = PythonTokenTypes.INDENT
-tokenize.DEDENT         = PythonTokenTypes.DEDENT
-tokenize.ENDMARKER      = PythonTokenTypes.ENDMARKER
-tokenize.ERRORTOKEN     = PythonTokenTypes.ERRORTOKEN
-tokenize.ERROR_DEDENT   = PythonTokenTypes.ERROR_DEDENT
-tokenize.FSTRING_START  = PythonTokenTypes.FSTRING_START
-tokenize.FSTRING_STRING = PythonTokenTypes.FSTRING_STRING
-tokenize.FSTRING_END    = PythonTokenTypes.FSTRING_END
-
-tokenize.Token.__annotations__["type"] = PythonTokenTypes
+    tokenize.Token.__annotations__["type"] = PythonTokenTypes
