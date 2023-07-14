@@ -70,6 +70,7 @@ def apply():
     optimize_CompiledInstanceName()
     optimize_AbstractContext_get_root_context()
     optimize_NodesTree_copy_nodes()
+    optimize_NodeOrLeaf_get_next_leaf()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -1299,3 +1300,28 @@ def optimize_NodesTree_copy_nodes():
         return new_nodes, working_stack, prefix, added_indents
 
     _NodesTree._copy_nodes = _copy_nodes
+
+
+def optimize_NodeOrLeaf_get_next_leaf():
+    from parso.tree import NodeOrLeaf
+    from ..common import node_types
+
+    def get_next_leaf(self: NodeOrLeaf):
+        if self.parent is None:
+            return None
+
+        while self is (children := self.parent.children)[-1]:
+            if self := self.parent:
+                continue
+            return None
+
+        i = -1
+        while self is not children[i]:
+            i -= 1
+
+        self = children[i + 1]
+        while self.__class__ in node_types:
+            self = self.children[0]
+        return self
+
+    NodeOrLeaf.get_next_leaf = get_next_leaf
