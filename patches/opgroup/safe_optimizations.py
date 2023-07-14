@@ -994,15 +994,85 @@ def optimize_get_module_info():
 
 
 def optimize_tree_name_to_values():
-    from jedi.inference import syntax_tree
     from jedi.inference.syntax_tree import tree_name_to_values
     from ..common import state_cache
 
-    # Having 3 wrappers is a bit too much.
-    _patch_function(tree_name_to_values, state_cache(tree_name_to_values.__wrapped__))
+    from jedi.inference.syntax_tree import ValueSet, infer_atom, ContextualizedNode, iterate_values, TreeNameDefinition, check_tuple_assignments, infer_expr_stmt, _apply_decorators, infer_node
+    from jedi.inference.gradual import annotation
+    from jedi.inference import imports
 
-    # The wrapper is created in a different module.
-    tree_name_to_values.__globals__.update(syntax_tree.__dict__)
+    def infer_with(context, node, tree_name):
+        if types := annotation.find_type_from_comment_hint_with(context, node, tree_name):
+            return types
+        value_managers = context.infer_node(node.get_test_node_from_name(tree_name))
+
+        if node.parent.type == 'async_stmt':
+            enter_methods = value_managers.py__getattribute__('__aenter__')
+            coro = enter_methods.execute_with_values()
+            return coro.py__await__().py__stop_iteration_returns()
+
+        enter_methods = value_managers.py__getattribute__('__enter__')
+        return enter_methods.execute_with_values()
+
+    def infer_for(context, node, tree_name):
+        if node.type == 'for_stmt' and (types := annotation.find_type_from_comment_hint_for(context, node, tree_name)):
+            return types
+
+        # XXX: Removed predefined names code. Jedi doesn't even use it.
+        cn = ContextualizedNode(context, node.children[3])
+        is_async = node.parent.type == 'async_stmt'
+        for_types = iterate_values(cn.infer(), contextualized_node=cn, is_async=is_async)
+        n = TreeNameDefinition(context, tree_name)
+        return check_tuple_assignments(n, for_types)
+
+    # This version searches for annotations more efficiently.
+    @state_cache
+    def _tree_name_to_values(inference_state, context, tree_name):
+        n = tree_name
+        while n := n.parent:
+            if n.type == "expr_stmt":
+                if n.children[1].type == "annassign":
+                    return annotation.infer_annotation(context, n.children[1].children[1]).execute_annotation()
+                break
+
+        node = tree_name.get_definition(import_name_always=True, include_setitem=True)
+        if node is None:
+            node = tree_name.parent
+            if node.type == 'global_stmt':
+                c = context.create_context(tree_name)
+                if c.is_module():
+                    return NO_VALUES
+                names = next(c.get_filters()).get(tree_name.value)
+                return ValueSet.from_sets(name.infer() for name in names)
+            elif node.type not in ('import_from', 'import_name'):
+                return infer_atom(context.create_context(tree_name), tree_name)
+
+        typ = node.type
+
+        if typ in {"with_stmt", "for_stmt", "comp_for", "sync_comp_for"}:
+            if typ == 'with_stmt':
+                return infer_with(context, node, tree_name)
+            return infer_for(context, node, tree_name)
+
+        elif typ == 'expr_stmt':
+            return infer_expr_stmt(context, node, tree_name)
+        elif typ in ('import_from', 'import_name'):
+            return imports.infer_import(context, tree_name)
+        elif typ in ('funcdef', 'classdef'):
+            return _apply_decorators(context, node)
+        elif typ == 'try_stmt':
+            exceptions = context.infer_node(tree_name.get_previous_sibling().get_previous_sibling())
+            return exceptions.execute_with_values()
+        elif typ == 'param':
+            return NO_VALUES
+        elif typ == 'del_stmt':
+            return NO_VALUES
+        elif typ == 'namedexpr_test':
+            return infer_node(context, node)
+        else:
+            raise ValueError("Should not happen. type: %s" % typ)
+
+    _patch_function(tree_name_to_values, _tree_name_to_values)
 
 
 def optimize_infer_expr_stmt():
