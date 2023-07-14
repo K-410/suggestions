@@ -68,6 +68,8 @@ def apply():
     optimize_ClassMixin_py__mro__()
     optimize_Param_name()
     optimize_CompiledInstanceName()
+    optimize_AbstractContext_get_root_context()
+    optimize_NodesTree_copy_nodes()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -1056,3 +1058,174 @@ def optimize_CompiledInstanceName():
         return list(map(InstanceName, zip(names)))
 
     CompiledInstanceClassFilter._convert = _convert
+
+
+def optimize_AbstractContext_get_root_context():
+    from jedi.inference.context import AbstractContext
+
+    def get_root_context(self):
+        while parent_context := self.parent_context:
+            self = parent_context
+        return self
+
+    AbstractContext.get_root_context = get_root_context
+
+
+def optimize_NodesTree_copy_nodes():
+    from parso.python.diff import _NodesTree, _NodesTreeNode, _func_or_class_has_suite, _is_flow_node, _ends_with_newline, _get_suite_indentation, split_lines, _get_indentation
+    from itertools import islice
+    from ..common import node_types
+
+    def _copy_nodes(self, working_stack, nodes, until_line, line_offset, prefix='', is_nested=False):
+        new_nodes = []
+        added_indents = []
+
+        if is_nested:
+            indent = nodes[1].start_pos[1]
+            nodes = islice(nodes, 1, None)
+        else:
+            indent = nodes[0].start_pos[1]
+
+
+        if is_nested or indent in self.indents:
+            for node in nodes:
+                if node.type in {"endmarker", "error_leaf"}:
+                    if node.type != "error_leaf" or node.token_type in {"DEDENT", "ERROR_DEDENT"}:
+                        break
+
+                # Get the node's first leaf.
+                first_leaf = node
+                while first_leaf.__class__ in node_types:
+                    first_leaf = first_leaf.children[0]
+
+                if first_leaf.column == indent:
+                    if first_leaf.line > until_line:
+                        break
+
+                    # Get the last leaf.
+                    last_leaf = node
+                    while last_leaf.__class__ in node_types:
+                        last_leaf = last_leaf.children[-1]
+
+                    # The last line, unless the last leaf is a newline.
+                    last_line = last_leaf.line
+
+                    if last_leaf.type != "newline":
+
+                        # Get the next leaf.
+                        next_leaf = node
+                        while next_leaf is (children := next_leaf.parent.children)[-1]:
+                            if next_leaf := next_leaf.parent:
+                                continue
+                            next_leaf = None
+                            break
+                        i = -1
+                        while next_leaf is not children[i]:
+                            i -= 1
+                        next_leaf = children[i + 1]
+                        while next_leaf.__class__ in node_types:
+                            next_leaf = next_leaf.children[0]
+
+                        if next_leaf.type == "endmarker" and "\n" in next_leaf.prefix:
+                            last_line = last_leaf.line + 1
+
+                    if last_line > until_line:
+                        if _func_or_class_has_suite(node):
+                            new_nodes += [node]
+                        break
+
+                    # with any.measure_total:
+                    if node.__class__ in node_types:
+
+                        if node.type in {"decorated", "async_funcdef", "async_stmt"}:
+                            n = node
+                            if n.type == "decorated":
+                                n = n.children[-1]
+                            if n.type in {"async_funcdef", "async_stmt"}:
+                                n = n.children[-1]
+                            if n.type in {"classdef", "funcdef"}:
+                                suite_node = n.children[-1]
+                            else:
+                                suite_node = node.children[-1]
+                        else:
+                            suite_node = node.children[-1]
+
+                        if suite_node.type in {'error_leaf', 'error_node'}:
+                            break
+
+                    new_nodes += [node]
+
+        # Pop error nodes at the end from the list
+        if new_nodes:
+            while new_nodes:
+                last_node = new_nodes[-1]
+                if (last_node.type in ('error_leaf', 'error_node')
+                        or _is_flow_node(new_nodes[-1])):
+                    new_nodes.pop()
+                    while new_nodes:
+                        last_node = new_nodes[-1]
+                        if last_node.get_last_leaf().type == 'newline':
+                            break
+                        new_nodes.pop()
+                    continue
+                if len(new_nodes) > 1 and new_nodes[-2].type == 'error_node':
+                    new_nodes.pop()
+                    continue
+                break
+
+        if not new_nodes:
+            return [], working_stack, prefix, added_indents
+
+        new_prefix = ''
+        tos = working_stack[-1]
+        last_node = new_nodes[-1]
+        had_valid_suite_last = False
+
+        # Pop incomplete suites from the list
+        if _func_or_class_has_suite(last_node):
+            suite = last_node
+            while suite.type != 'suite':
+                suite = suite.children[-1]
+
+            indent = _get_suite_indentation(suite)
+            added_indents.append(indent)
+
+            suite_tos = _NodesTreeNode(suite, indentation=_get_indentation(last_node))
+            suite_nodes, new_working_stack, new_prefix, ai = self._copy_nodes(
+                working_stack + [suite_tos], suite.children, until_line, line_offset,
+                is_nested=True,
+            )
+            added_indents += ai
+            if len(suite_nodes) < 2:
+                new_nodes.pop()
+                new_prefix = ''
+            else:
+                assert new_nodes
+                tos.add_child_node(suite_tos)
+                working_stack = new_working_stack
+                had_valid_suite_last = True
+
+        if new_nodes:
+            if not _ends_with_newline(new_nodes[-1].get_last_leaf()) and not had_valid_suite_last:
+                p = new_nodes[-1].get_next_leaf().prefix
+                new_prefix = split_lines(p, keepends=True)[0]
+
+            if had_valid_suite_last:
+                last = new_nodes[-1]
+                if last.type == 'decorated':
+                    last = last.children[-1]
+                if last.type in ('async_funcdef', 'async_stmt'):
+                    last = last.children[-1]
+                last_line_offset_leaf = last.children[-2].get_last_leaf()
+                assert last_line_offset_leaf == ':'
+            else:
+                last_line_offset_leaf = new_nodes[-1].get_last_leaf()
+            tos.add_tree_nodes(
+                prefix, new_nodes, line_offset, last_line_offset_leaf,
+            )
+            prefix = new_prefix
+            self._prefix_remainder = ''
+
+        return new_nodes, working_stack, prefix, added_indents
+
+    _NodesTree._copy_nodes = _copy_nodes
