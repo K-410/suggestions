@@ -140,7 +140,7 @@ def optimize_parser():
         while True:
             tos = self.stack[-1]
             if not tos.dfa.is_final:
-                raise Exception("InternalParseError")
+                raise Exception(f"InternalParseError, {self.stack[-1]}")
                 # raise InternalParseError(
                 #     "incomplete input", t.type, t.string, t.start_pos)
             if len(self.stack) > 1:
@@ -151,50 +151,6 @@ def optimize_parser():
     BaseParser.parse = parse
 
     StackNode.nonterminal = _forwarder("dfa.from_rule")
-
-
-# Optimize DiffParser.update to skip identical lines.
-def optimize_diffparser():
-    from parso.python.diff import _get_debug_error_message, DiffParser
-    from itertools import count, compress
-    from textension.fast_seqmatch import FastSequenceMatcher
-    from difflib import SequenceMatcher
-    from operator import ne
-
-    def update(self: DiffParser, old, new):
-        self._module._used_names = None
-        self._parser_lines_new = new
-        self._reset()
-
-        # The SequenceMatcher is slow for large files. This skips feeding
-        # identical lines to it and instead apply offsets in the opcode.
-        nlines = len(new)
-        s = next(compress(count(), map(ne, new, old)), nlines - 1)
-        sm = FastSequenceMatcher((old[s:], self._parser_lines_new[s:]))
-
-        # Bump the opcode indices by equal lines.
-        opcodes = [('equal', 0, s, 0, s)] + [
-            (op, *map(s.__add__, indices)) for op, *indices in sm.get_opcodes()]
-
-        for operation, i1, i2, j1, j2 in opcodes:
-            if j2 == nlines and new[-1] == '':
-                j2 -= 1
-            if operation == 'equal':
-                self._copy_from_old_parser(j1 - i1, i1 + 1, i2, j2)
-            elif operation == 'replace':
-                self._parse(until_line=j2)
-            elif operation == 'insert':
-                self._parse(until_line=j2)
-            else:
-                assert operation == 'delete'
-
-        self._nodes_tree.close()
-        last_pos = self._module.end_pos[0]
-        assert last_pos == nlines, f"{last_pos} != {nlines}" + \
-            _get_debug_error_message(self._module, old, new)
-        return self._module
-    
-    DiffParser.update = update
 
 
 # Optimize DiffParser to only parse the modified body, skipping the sequence
@@ -226,6 +182,8 @@ def optimize_diffparser():
 
         old_end = alen - tail
         new_end = blen - tail
+
+        head = min(head, old_end, new_end)
 
         if head != 0:
             opcodes += ("equal", 0, head, 0, head),
