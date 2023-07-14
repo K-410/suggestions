@@ -472,8 +472,8 @@ def trace_flow(node, origin_scope):
 #   like-named sequences. Here we process *all* names in one go.
 # - No pre-sorting. It's not applicable unless we break out of the loop.
 def _check_flows(self, names):
-    if origin_scope := self._origin_scope:
-        return filter(None, map(trace_flow, names, repeat(origin_scope)))
+    # if origin_scope := self._origin_scope:
+    #     return filter(None, map(trace_flow, names, repeat(origin_scope)))
     # If origin scope is None, there's nothing to trace.
     return names
 
