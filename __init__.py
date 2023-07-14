@@ -21,8 +21,8 @@ _get_sync_key = attrgetter("select_end_line", "select_end_character")
 # Token separators excluding dot/period
 separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
 
-runtime = utils.namespace(loaded=False)
-runtime = utils._get_dict(bpy.types.WindowManager).setdefault("_suggestions", runtime)
+runtime = utils._get_dict(bpy.types.WindowManager).setdefault(
+    "_suggestions", utils.namespace(loaded=False))
 
 
 BLF_BOLD = 1 << 11  # ``blf.enable(0, BLF_BOLD)`` adds bold effect.
@@ -46,6 +46,7 @@ class Suggestions(ui.widgets.ListBox):
     is_visible: bool        = False
     last_position           = (0, 0)
     sync_key                = ()
+    last_nlines             = 0
 
     background_color        = 0.15, 0.15, 0.15, 1.0
     border_color            = 0.30, 0.30, 0.30, 1.0
@@ -100,6 +101,8 @@ class Suggestions(ui.widgets.ListBox):
         # Align the box below the cursor.
         st = _context.space_data
         x, y = st.region_location_from_cursor(*self.last_position)
+        assert not x is -1 is y, f"last_position: {self.last_position}"
+
         w, h = self.rect.size
 
         y -= h - st.offsets[1] - round(4 * _system.wu * 0.05)
@@ -328,9 +331,12 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
         text = context.edit_text
         instance = get_instance()
 
+        nlines = context.space_data.drawcache.total_lines
+
         # Line index is O(N) so avoid syncing cursor as much as possible.
-        if instance.sync_key != _get_sync_key(text):
+        if instance.sync_key != _get_sync_key(text) or instance.last_nlines != nlines:
             instance.sync_cursor(text.select_end_line_index)
+            instance.last_nlines = nlines
 
         from .patches.common import complete
 
