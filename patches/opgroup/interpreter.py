@@ -327,12 +327,14 @@ def optimize_grammar_parse():
     Grammar.parse = parse
 
 
-def optimize_tokenize_lines():
-    from parso.python.tokenize import BOM_UTF8_STRING, PythonTokenTypes, FStringNode, \
-        split_lines, _close_fstring_if_necessary, _get_token_collection, _split_illegal_unicode_name, tokenize_lines as _tokenize_lines
+def optimize_tokenize_lines() -> None:
+    from parso.python.tokenize import PythonTokenTypes, FStringNode, \
+        split_lines, _close_fstring_if_necessary, _get_token_collection, \
+            tokenize_lines as _tokenize_lines
     from textension.utils import inline, _TupleBase, _named_index
     from .interpreter import PythonTokenTypes
     from itertools import chain, count, repeat
+    from operator import attrgetter
     import re
 
 
@@ -375,7 +377,13 @@ def optimize_tokenize_lines():
     @inline
     def isidentifier(string: str) -> bool: return str.isidentifier
     @inline
+    def startswith(string: str) -> bool: return str.startswith
+    @inline
     def strlen(string: str) -> int: return str.__len__
+    @inline
+    def is_multiline(quote: str) -> bool: return {'"""', "'''"}.__contains__
+    @inline
+    def lstrip(string: str) -> str: return str.lstrip
 
     from keyword import kwlist, softkwlist
 
@@ -384,98 +392,151 @@ def optimize_tokenize_lines():
     operators = {"**", "**=", ">>", ">>=", "<<", "<<=", "//", "//=", "->",
                  "+", "+=", "-", "-=", "*", "*=", "/", "/=", "%", "%=", "&",
                  "&=", "@", "@=", "|", "|=", "^", "^=", "!", "!=", "=", "==",
-                 "<", "<=", ">", ">=", "~", ":", ".", ",", ":="}
+                 "<", "<=", ">", ">=", "~", ":", ".", ",", ":=", "(", ")", "[", "]", "{", "}"}
 
     non_letters = {"(", ")", "[", "]", "{", "}", "\n", "\r", "#", "0", "1",
                    "2", "3", "4", "5", "6", "7", "8", "9", "\"", "\'", "*",
                    ">", "<", "=", "/", "-", "+", "%", "&", "~", ":", ".", ",",
-                   "!", "|", "^", "\\", "@"}
-    from sys import intern
+                   "!", "|", "^", "\\", "@", " "}
 
-    def tokenize_lines(lines, *, version_info, indents=None, start_pos=(1, 0), is_first_token=True):
-        # Materialize if lines is a generator/iterable.
-        lines = list(lines)
-        if not lines:
-            return ()
+    rep_zeros = repeat(0)
+    get_quotes = attrgetter("quote")
 
-        known = known_base.copy()
-        add_known = known.add
+    def tokenize_lines(lines: list[str],
+                       *,
+                       version_info: tuple,
+                       indents: list[int] = None,
+                       start_pos: tuple[int, int] = (1, 0),
+                       is_first_token=True) -> list[PythonToken2]:
 
-        result = []
         if indents is None:
             indents = [0]
 
+        def dedent_if_necessary(start) -> list[PythonToken2]:
+            nonlocal result, indents
+            yield from map(PythonToken2, result)
+            result = []
+
+            while start < indents[-1]:
+                if start > indents[-2]:
+                    yield PythonToken2((ERROR_DEDENT, "", (lnum, start), ""))
+                    indents[-1] = start
+                    break
+                del indents[-1]
+                yield PythonToken2((DEDENT, "", spos, ""))
+
+        known: set[str] = known_base.copy()
+        add_known = known.add
+
+        pseudo_token: re.Pattern
+        single_quoted: set[str]
+        triple_quoted: set[str]
+        endpats: dict[str, re.Pattern]
+        whitespace: re.Pattern
+        fstring_pattern_map: dict[str, re.Pattern]
+        always_break_tokens: set[str]
+
         pseudo_token, single_quoted, triple_quoted, endpats, whitespace, fstring_pattern_map, always_break_tokens = _get_token_collection(version_info)
 
-        paren_level = 0  # count parentheses
+        paren_level: int = 0  # count parentheses
 
-        contstr  = ""
-        contline = ""
-        prefix   = ""
-        additional_prefix = ""
+        contstr:  str = ""
+        contline: str = ""
+        prefix:   str = ""
+        line:     str = ""
+        additional_prefix: str = ""
 
-        contstr_start = None
-        endprog  = None
-        token    = None
-        endmatch = None
-        new_line = True
-        lnum = start_pos[0] - 1
+        contstr_start: int = 0
+        endprog: re.Pattern  = None
+        token: str = ""
+        endmatch: re.Match = None
+        new_line: bool = True
+        lnum: int = start_pos[0] - 1
 
-        fstring_stack = []
+        fstack: list[FStringNode] = []
 
-        pos = 0
-        end = 0
-
+        positions: list[int] = rep_zeros
         if is_first_token:
-            line = lines[0]
-            if line[:1] == "\ufeff":
+            if "\ufeff" in lines[0][:1]:
+                lines[0] = lines[0][1:]
                 additional_prefix = "\ufeff"
-                line = line[1:]
-            if start_pos[1]:
-                line = "^" * start_pos[1] + line
-            lines[0] = line
 
-        for lnum, pos, end, line in zip(count(start_pos[0]), repeat(pos), map(strlen, lines), lines):
+            if start_pos[1] != 0:
+                positions = chain((start_pos[1],), rep_zeros)
+                lines[0] = "^" * start_pos[1] + lines[0]
+
+        result: list[PythonToken2] = []
+        lnum: int = 0
+        pos:  int = 0
+        end:  int = 0
+
+        for lnum, pos, end, line in zip(count(start_pos[0]), positions, map(strlen, lines), lines):
             if contstr:
                 if endmatch := get_match(endprog, line):
                     pos = get_end(endmatch, 0)
-                    result += ((STRING, contstr + line[:pos], contstr_start, prefix),)
-                    contstr  = ''
-                    contline = ''
+                    result += (STRING, contstr + line[:pos], contstr_start, prefix),
+                    contstr  = ""
+                    contline = ""
                 else:
                     contstr  += line
                     contline += line
                     continue
 
             while pos < end:
-                if fstring_stack:
-                    tos = fstring_stack[-1]
+                if fstack:
+                    tos: FStringNode = fstack[-1]
                     if not tos.is_in_expr():
-                        string, pos = _find_fstring_string(endpats, fstring_stack, line, lnum, pos) # type: ignore
+                        string, pos = _find_fstring_string(endpats, fstack, line, lnum, pos) # type: ignore
                         if string:
-                            result += ((FSTRING_STRING, string, tos.last_string_start_pos, ''),)
-                            tos.previous_lines = ''
+                            result += (FSTRING_STRING, string, tos.last_string_start_pos, ""),
+                            tos.previous_lines = ""
                             continue
                         if pos == end:
                             break
 
                     fstring_end_token, additional_prefix, quote_length = _close_fstring_if_necessary(
-                        fstring_stack, line[pos:], lnum, pos, additional_prefix) # type: ignore
+                        fstack, line[pos:], lnum, pos, additional_prefix) # type: ignore
                     pos += quote_length
                     if fstring_end_token:
-                        result += (fstring_end_token,)
+                        result += fstring_end_token,
                         continue
 
                     string_line = line
-                    for fstring_stack_node in fstring_stack:
+                    for fstring_stack_node in fstack:
                         quote = fstring_stack_node.quote
                         if end_match := get_match(endpats[quote], line, pos):
                             end_match_string = get_group(end_match, 0)
                             if strlen(end_match_string) - strlen(quote) + pos < strlen(string_line):
                                 string_line = line[:pos] + end_match_string[:-strlen(quote)]
-                    pseudomatch = get_match(pseudo_token, string_line, pos)
+                    pseudomatch: re.Match = get_match(pseudo_token, string_line, pos)
                 else:
-                    pseudomatch = get_match(pseudo_token, line, pos)
+                    c: str = line[pos]
+                    if c not in non_letters:  # Short circuit comparison.
+                        pass
+                    else:
+                        if c is "\n":
+                            if fstack and False in map(is_multiline, map(get_quotes, fstack)):
+                                fstack = []
+                            if not new_line and paren_level is 0 and not fstack:
+                                result += (NEWLINE, "\n", (lnum, pos), prefix),
+                            else:
+                                additional_prefix += "\n"
+                            new_line = True
+                            break
+
+                        elif c in {".", "=", ","}:
+                            try:
+                                d = c is not line[pos + 1]
+                            except:
+                                d = True
+
+                            if d:
+                                result += (OP, c, (lnum, pos), additional_prefix),
+                                additional_prefix = ""
+                                pos += 1
+                                continue
+
+                    pseudomatch: re.Match = get_match(pseudo_token, line, pos)
 
                 if pseudomatch:
                     last_pos = pos
@@ -488,10 +549,10 @@ def optimize_tokenize_lines():
 
                     additional_prefix = ""
 
-                    if token == "":
-                        assert prefix
+                    if token is "":
                         additional_prefix = prefix
                         break
+
                     initial = token[0]
                 else:
                     match = get_match(whitespace, line, pos)
@@ -500,97 +561,72 @@ def optimize_tokenize_lines():
 
                 spos = (lnum, start)
 
-                any.ncalls(new_line)
-                if new_line and initial not in {"\r", "\n", "#"} and (initial is not "\\" or not pseudomatch):
+                if new_line and initial not in {"\r", "\n", "#"}:
+                    if not pseudomatch or initial is not "\\":
+                        new_line = False
+                        if paren_level is 0 and not fstack:
+                            if start > indents[-1]:
+                                result += (INDENT, "", spos, ""),
+                                indents += (start,)
+                            elif start < indents[-1]:
+                                yield from dedent_if_necessary(start)
+
+                if not pseudomatch:
+                    if new_line and paren_level is 0 and not fstack:
+                        if start < indents[-1]:
+                            yield from dedent_if_necessary(start)
                     new_line = False
-                    if paren_level == 0 and not fstring_stack:
-                        if start > indents[-1]:
-                            result  += ((INDENT, '', spos, ''),)
-                            indents += (start,)
-
-                        else:
-                            while start < indents[-1]:
-                                if start > indents[-2]:
-                                    result += ((ERROR_DEDENT, '', (lnum, start), ''),)
-                                    indents[-1] = start
-                                    break
-                                del indents[-1]
-                                result += ((DEDENT, '', spos, ''),)
-
-                if not pseudomatch:  # scan for tokens
-                    if new_line and paren_level == 0 and not fstring_stack:
-                        while pos < indents[-1]:
-                            if pos > indents[-2]:
-                                result += ((ERROR_DEDENT, '', (lnum, pos), ''),)
-                                indents[-1] = pos
-                                break
-                            del indents[-1]
-                            result += ((DEDENT, '', spos, ''),)
-
-                    new_line = False
-                    result += ((ERRORTOKEN, line[pos], (lnum, pos), additional_prefix + get_group(match, 0)),)
-                    additional_prefix = ''
+                    result += (ERRORTOKEN, line[pos], spos, additional_prefix + get_group(match, 0)),
+                    additional_prefix = ""
                     pos += 1
+                    continue
 
-                # Check ascii before group.
-                # elif initial in asciis or get_group(pseudomatch, 3):
                 elif initial not in non_letters and (token in known or (isidentifier(token) and not add_known(token))):
-                    if token in always_break_tokens:
-                        if fstring_stack or paren_level:
-                            del fstring_stack[:]
-                            paren_level = 0
-                            if m := re.match(r'[ \f\t]*$', line[:start]):
-                                indent_start = get_end(m)
-                                while indent_start < indents[-1]:
-                                    if indent_start > indents[-2]:
-                                        result += ((ERROR_DEDENT, '', (lnum, indent_start), ''),)
-                                        indents[-1] = indent_start
-                                        break
-                                    del indents[-1]
-                                    result += ((DEDENT, '', spos, ''),)
-                    # if token in known_names or (isidentifier(token) and not add_known(token)):
-                    result += ((NAME, token, spos, prefix),)
-                    # else:
-                    #     result += _split_illegal_unicode_name(token, spos, prefix) # type: ignore
+                    if token in always_break_tokens and (fstack or paren_level):
+                        fstack = []
+                        paren_level = 0
+                        if m := re.match(r'[ \f\t]*$', line[:start]):
+                            yield from dedent_if_necessary(get_end(m))
+                    result += (NAME, token, spos, prefix),
 
-                elif initial is "\n":
-                    if fstring_stack and any(not f.allow_multiline() for f in fstring_stack):
-                        fstring_stack.clear()
-
-                    if not new_line and paren_level == 0 and not fstring_stack:
-                        result += ((NEWLINE, token, spos, prefix),)
+                elif initial in {"\n", "\r"}:
+                    if fstack and False in map(is_multiline, map(get_quotes, fstack)):
+                        fstack = []
+                    if not new_line and paren_level is 0 and not fstack:
+                        result += (NEWLINE, token, spos, prefix),
                     else:
                         additional_prefix = prefix + token
                     new_line = True
 
                 elif token in operators:
-                    if fstring_stack and token[0] is ":" and fstring_stack[-1].parentheses_count - fstring_stack[-1].format_spec_count == 1:
-                        fstring_stack[-1].format_spec_count += 1
+                    if fstack and token[0] is ":" and fstack[-1].parentheses_count - fstack[-1].format_spec_count is 1:
+                        fstack[-1].format_spec_count += 1
                         token = ':'
                         pos = start + 1
-
-                    result += ((OP, token, spos, prefix),)
-
-                elif token in {"(", ")", "[", "]", "{", "}"}:
-                    if token in {"(", "[", "{"}:
-                        if fstring_stack:
-                            fstring_stack[-1].open_parentheses(token)
+                    elif token in {"(", ")", "[", "]", "{", "}"}:
+                        if token in {"(", "[", "{"}:
+                            if fstack:
+                                fstack[-1].open_parentheses(token)
+                            else:
+                                paren_level += 1
                         else:
-                            paren_level += 1
-                    else:
-                        if fstring_stack:
-                            fstring_stack[-1].close_parentheses(token)
-                        else:
-                            if paren_level:
-                                paren_level -= 1
-                    result += ((OP, token, spos, prefix),)
+                            if fstack:
+                                fstack[-1].close_parentheses(token)
+                            else:
+                                if paren_level:
+                                    paren_level -= 1
+                    result += (OP, token, spos, prefix),
 
                 elif initial is "#":
-                    if fstring_stack and fstring_stack[-1].is_in_expr():
-                        result += ((ERRORTOKEN, initial, spos, prefix),)
+                    if fstack and fstack[-1].is_in_expr():
+                        result += (ERRORTOKEN, initial, spos, prefix),
                         pos = start + 1
                     else:
                         additional_prefix = prefix + token
+
+                elif token in fstring_pattern_map:  # The start of an fstring.
+                    fstack += (FStringNode(fstring_pattern_map[token]),)
+                    result += (FSTRING_START, token, spos, prefix),
 
                 elif initial in {"\"", "\'"}:
                     if token in triple_quoted:
@@ -599,13 +635,12 @@ def optimize_tokenize_lines():
                         if endmatch:                                # all on one line
                             pos = get_end(endmatch, 0)
                             token = line[start:pos]
-                            result += ((STRING, token, spos, prefix),)
+                            result += (STRING, token, spos, prefix),
                         else:
                             contstr_start = spos                    # multiple lines
                             contstr = line[start:]
                             contline = line
                             break
-
                     elif token[-1] is "\n":
                         contstr_start = spos
                         endprog = endpats.get(initial) or endpats.get(token[1]) or endpats.get(token[2])
@@ -613,43 +648,40 @@ def optimize_tokenize_lines():
                         contline = line
                         break
                     else:                                       # ordinary string
-                        result += ((STRING, token, spos, prefix),)
+                        result += (STRING, token, spos, prefix),
 
                 elif (initial in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"} or \
-                     (initial == '.' != token != '...')
-                ):
-                    result += ((NUMBER, token, spos, prefix),)
-                elif token in fstring_pattern_map:  # The start of an fstring.
-                    fstring_stack += (FStringNode(fstring_pattern_map[token]),)
-                    result += ((FSTRING_START, token, spos, prefix),)
-                elif initial == '\\' and line[start:] in ('\\\n', '\\\r\n', '\\\r'):  # continued stmt
+                   (initial is "." != token != "...")):
+                    result += (NUMBER, token, spos, prefix),
+
+                elif initial is '\\' and line[start:] in {"\\\n", "\\\r\n", "\\\r"}:  # continued stmt
                     additional_prefix += prefix + line[start:]
                     break
+
                 else:
-                    assert False
+                    print("unhandled OP token:", repr(token), spos, prefix)
+                    result += (OP, token, spos, prefix),
+
+            if result:
+                yield from map(PythonToken2, result)
+                result = []
 
         if contstr:
-            result += ((ERRORTOKEN, contstr, contstr_start, prefix),)
-            if contstr.endswith('\n') or contstr.endswith('\r'):
-                new_line = True
+            result += (ERRORTOKEN, contstr, contstr_start, prefix),
 
-        if fstring_stack:
-            tos = fstring_stack[-1]
+        if fstack:
+            tos = fstack[-1]
             if tos.previous_lines:
-                result += ((FSTRING_STRING, tos.previous_lines, tos.last_string_start_pos, ''),)
+                result += (FSTRING_STRING, tos.previous_lines, tos.last_string_start_pos, ""),
+
+        yield from map(PythonToken2, result)
 
         end_pos = lnum, end
 
-        # XXX: Apparently this needs to run at the end to synchronize indents.
-        def epilog():
-            for indent in indents[1:]:
-                indents.pop()
-                yield PythonToken2((DEDENT, '', end_pos, ''))
-            yield PythonToken2((ENDMARKER, '', end_pos, additional_prefix))
-
-        # result += [(DEDENT, '', end_pos, '')] * (len(indents) - 1)
-        # result += ((ENDMARKER, '', end_pos, additional_prefix),)
-        return chain(map(PythonToken2, result), epilog())
+        for _ in indents[1:]:
+            del indents[-1]
+            yield PythonToken2((DEDENT, "", end_pos, ""))
+        yield PythonToken2((ENDMARKER, "", end_pos, additional_prefix))
 
     _patch_function(_tokenize_lines, tokenize_lines)
 
