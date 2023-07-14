@@ -37,15 +37,10 @@ get_start_pos = attrgetter("line", "column")
 get_cursor_focus = attrgetter("select_end_line_index", "select_end_character")
 
 
-def _node_types():
-    node_types = [BaseNode]
-    for cls in iter(node_types):
-        node_types += cls.__subclasses__()
-    return frozenset(node_types)
-
-
 # Used by various optimizations.
-node_types: frozenset[BaseNode] = _node_types()
+for cls in iter(node_types := [BaseNode]):
+    node_types += cls.__subclasses__()
+node_types: frozenset[BaseNode] = frozenset(node_types)
 
 
 def yield_filters_once(func):
