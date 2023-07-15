@@ -1,10 +1,11 @@
 # This module implements RNA type inference.
 
-from jedi.inference.compiled.value import CompiledValueFilter, SignatureParamName
+from jedi.inference.compiled.value import SignatureParamName
 from jedi.inference.value.instance import ValueSet, NO_VALUES
 from jedi.inference.lazy_value import LazyKnownValues
 from jedi.inference.signature import AbstractSignature
 from jedi.inference.compiled import builtin_from_name
+from jedi.inference.arguments import ValuesArguments
 
 from itertools import chain, repeat
 from inspect import Parameter
@@ -25,6 +26,9 @@ from bpy_types import RNAMeta, StructRNA
 
 rnadef_types = bpy.types.Property, bpy.types.Function
 rna_types = RNAMeta, StructRNA
+
+# Used by generic compiled values py__call__.
+_no_args = ValuesArguments(())
 
 
 def apply():
@@ -366,7 +370,7 @@ class RnaInstance(VirtualInstance):
 
             for rnadef in self.class_value.obj.parameters:
                 if rnadef.is_output:
-                    return rnadef_to_value(rnadef, self.class_value).py__call__(None)
+                    return rnadef_to_value(rnadef, self.class_value).py__call__(_no_args)
         print("RnaInstance.py__call__ returned nothing for", self)
         return NO_VALUES
 
