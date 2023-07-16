@@ -140,7 +140,7 @@ def get_scope_name_definitions(scope):
     for n in filter(is_basenode, pool):
         if n.type in {"classdef", "funcdef"}:
             # These are always definitions.
-            namedefs += [n.children[1]]
+            namedefs += n.children[1],
 
         elif n.type == "simple_stmt":
             n = n.children[0]
@@ -150,7 +150,7 @@ def get_scope_name_definitions(scope):
 
                 # Could be ``atom_expr``, as in dotted name. Skip those.
                 if name.type == "name":
-                    namedefs += [name]
+                    namedefs += name,
 
                 # ``a, b = X``. Here we take ``a`` and ``b``.
                 elif name.type == "testlist_star_expr":
@@ -182,12 +182,12 @@ def get_scope_name_definitions(scope):
                     for name in name.children[::2]:
                         if name.type != "name":
                             name = name.children[2]
-                        namedefs += [name]
+                        namedefs += name,
 
                 else:
                     if name.type in {"import_as_name", "dotted_as_name"}:
                         name = name.children[2]
-                    namedefs += [name]
+                    namedefs += name,
 
             # ``atom`` nodes are too ambiguous to extract names from.
             # Just into the pool and look for names the old way.
@@ -195,7 +195,7 @@ def get_scope_name_definitions(scope):
                 pool += n.children
 
         elif n.type == "decorated":
-            pool += [n.children[1]]
+            pool += n.children[1],
 
         elif n.type == "for_stmt":
 
@@ -207,14 +207,14 @@ def get_scope_name_definitions(scope):
                 namedefs += filter(is_namenode, name.children)
             else:
                 assert name.type == "name"
-                namedefs += [name]
+                namedefs += name,
         else:
             pool += n.children
 
     # Get definitions for the rest.
     for n in filter(is_namenode, pool):
         if n.get_definition(include_setitem=True):
-            namedefs += [n]
+            namedefs += n,
 
     return namedefs
 
