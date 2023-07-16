@@ -21,7 +21,11 @@ def _apply_patches():
     modules._gpu.apply()
     modules._bpy.apply()
 
+    # Remove the bulk of ``__getattr__`` calls.
     patch_NameWrapper_getattr()
+    patch_ExactValue()
+    patch_ValueWrapperBase()
+
     patch_Completion_complete_inherited()
     patch_Value_py__getattribute__alternatives()
     patch_fakelist_array_type()
@@ -627,3 +631,42 @@ def patch_get_importer_names():
         return get_importer_names(self, names, level=level, only_modules=only_modules)
 
     get_importer_names = _patch_function(Completion._get_importer_names, get_importer_names)
+
+
+def patch_ExactValue():
+    from jedi.inference.compiled import ExactValue, LazyValueWrapper
+    from .common import state
+
+    # We don't want the indirection that tests against a list of names.
+    # Instead we forward them to known data paths.
+    del ExactValue.__getattribute__
+
+    ExactValue.access_handle     = _forwarder("_compiled_value.access_handle")
+    ExactValue.execute_operation = _forwarder("_compiled_value.execute_operation")
+    ExactValue.get_safe_value    = _forwarder("_compiled_value.get_safe_value")
+    ExactValue.is_bound_method   = _forwarder("_compiled_value")
+    ExactValue.is_compiled       = _forwarder("_compiled_value.is_compiled")
+    ExactValue.negate            = _forwarder("_compiled_value.negate")
+    ExactValue.py__bool__        = _forwarder("_compiled_value.py__bool__")
+
+    def __init__(self, compiled_value):
+        self._compiled_value = compiled_value
+
+    ExactValue.__init__ = __init__
+    ExactValue.inference_state = state
+
+
+def patch_ValueWrapperBase():
+    from jedi.inference.base_value import _ValueWrapperBase
+    from .common import state
+
+    _ValueWrapperBase.inference_state = state
+    _ValueWrapperBase.__iter__        = _forwarder("_wrapped_value.__iter__")
+
+    _ValueWrapperBase.is_bound_method = _forwarder("_wrapped_value.is_bound_method")
+    _ValueWrapperBase.is_instance     = _forwarder("_wrapped_value.is_instance")
+    _ValueWrapperBase.tree_node       = _forwarder("_wrapped_value.tree_node")
+
+    _ValueWrapperBase.py__doc__       = _forwarder("_wrapped_value.py__doc__")
+
+    _ValueWrapperBase.get_default_param_context = _forwarder("_wrapped_value.get_default_param_context")
