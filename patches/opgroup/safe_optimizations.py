@@ -12,7 +12,6 @@ from textension.utils import (
     falsy_noargs)
 
 
-from operator import attrgetter, methodcaller
 from itertools import repeat
 from jedi.inference.base_value import NO_VALUES
 
@@ -24,7 +23,6 @@ def apply():
     optimize_StringComparisonMixin__eq__()
     optimize_AbstractNameDefinition_get_public_name()
     optimize_ValueContext()
-    # # optimize_Name_is_definition()  # XXX: Can this be enabled?
     optimize_ClassMixin()
     optimize_Compiled_methods()
     optimize_CompiledName()
@@ -34,7 +32,6 @@ def apply():
     optimize_static_getmro()
     optimize_AbstractTreeName_properties()
     optimize_BaseName_properties()
-    optimize_complete_global_scope()  # XXX: Can we enabled this again?
     optimize_Leaf()
     optimize_split_lines()
     optimize_Param_get_defined_names()
@@ -44,9 +41,8 @@ def apply():
     optimize_iter_module_names()
     optimize_Context_methods()
     optimize_CompiledIntance_init()
-    optimize_Completion_init()
 
-    optimize_Node_methods()
+    optimize_Node_get_previous_leaf()
     optimize_ValueContext_methods()
     optimize_ValueSet_methods()
     optimize_getattr_static()
@@ -71,6 +67,7 @@ def apply():
     optimize_AbstractContext_get_root_context()
     optimize_NodesTree_copy_nodes()
     optimize_NodeOrLeaf_get_next_leaf()
+    optimize_find_overload_functions()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -111,15 +108,15 @@ def optimize_try_to_load_stub_cached():
         assert import_names, f"Why even pass invalid import_names? -> {repr(import_names)}"
 
         if import_names not in stub_module_cache:
-            # If sys.path is even remotely populated, jedi wil thrash the
-            # disk looking for stub files that don't exist. No thanks!
+            # Jedi will traverse sys.path and thrash the disk looking for
+            # stub files that don't exist. We don't want that.
             if "sys_path" in kwargs:
                 kwargs["sys_path"] = []
             else:
                 args = args[:-1] + ([],)
             stub_module_cache[import_names] = _try_to_load_stub(inference_state, import_names, *args, **kwargs)
         return stub_module_cache[import_names]
-    
+
     _patch_function(try_to_load_stub_cached, try_to_load_stub_cached_o)
 
 
@@ -168,7 +165,7 @@ def optimize_remove_del_stmt():
     _patch_function(finder._remove_del_stmt, _remove_del_stmt)
 
 
-# Optimize to use iterative (not recursive) binary search.
+# Optimize to use iterative (non-recursive) binary search.
 def optimize_BaseNode_get_leaf_for_position():
     from parso.tree import BaseNode
     from builtins import len
@@ -211,6 +208,15 @@ def optimize_ValueSet_methods():
     ValueSet.__len__  = _forwarder("_set.__len__")
     ValueSet.__ne__   = _forwarder("_set.__ne__")
 
+    # Skip wrappers that aren't useful.
+    def execute(self: ValueSet, args):
+        if len(self._set) == 1:
+            value, = self._set
+            return value.py__call__(args)
+        return ValueSet.from_sets(v.py__call__(args) for v in self._set)
+    
+    ValueSet.execute = execute
+
 
 def optimize_ValueContext_methods():
     from jedi.inference.context import ValueContext
@@ -234,14 +240,16 @@ def optimize_ValueContext_methods():
     ValueContext.get_qualified_names = _forwarder("_value.get_qualified_names")
     ValueContext.get_value       = _unbound_getter("_value")
 
+    # We don't use predefined names.
+    ValueContext.predefined_names = type(type.__dict__)({})
+
     def __init__(self: ValueContext, value):
-        self.predefined_names = {}
         self._value = value
 
     ValueContext.__init__ = __init__
 
 
-def optimize_Node_methods():
+def optimize_Node_get_previous_leaf():
     from parso.tree import NodeOrLeaf
     from ..common import node_types
 
@@ -270,44 +278,12 @@ def optimize_CompiledIntance_init():
 
     CompiledInstance.inference_state = state
 
-    def __init__(self: CompiledInstance,
-                 inference_state,
-                 parent_context,
-                 class_value,
-                 arguments):
+    def __init__(self: CompiledInstance, inference_state, parent_context, class_value, arguments):
         self.parent_context  = parent_context
         self.class_value = class_value
         self._arguments  = arguments
 
     CompiledInstance.__init__ = __init__
-
-
-def optimize_Completion_init():
-    from jedi.api.classes import Completion
-    from jedi.api.keywords import KeywordName
-    from ..tools import state
-
-    Completion._inference_state = state
-    is_keyword_name = KeywordName.__instancecheck__
-
-    def __init__(self: Completion,
-                 inference_state,
-                 name,
-                 stack,
-                 like_name_length,
-                 is_fuzzy,
-                 cached_name=None):
-
-        self._inference_state = inference_state
-        self._name = name
-        self.is_keyword = is_keyword_name(self._name)
-
-        self._like_name_length = like_name_length
-        self._stack = stack
-        self._is_fuzzy = is_fuzzy
-        self._cached_name = cached_name
-
-    Completion.__init__ = __init__
 
 
 def optimize_Context_methods():
@@ -416,7 +392,7 @@ def optimize_create_stub_map():
     _patch_function(_create_stub_map, _create_stub_map_p)
 
 
-# Optimizes _StringComparisonMixin to use a 2x faster check.
+# Optimizes _StringComparisonMixin to use a faster check.
 def optimize_StringComparisonMixin__eq__():
     from parso.python.tree import _StringComparisonMixin
     from builtins import str
@@ -445,13 +421,6 @@ def optimize_ValueContext():
     ValueContext.name           = _forwarder("_value.name")
 
     ValueContext.get_value      = _unbound_getter("_value")
-
-
-def optimize_Name_is_definition():
-    from parso.python.tree import Name
-
-    # This just skips the wrapper.
-    Name.is_definition = Name.get_definition
 
 
 def optimize_ClassMixin():
@@ -522,6 +491,7 @@ def optimize_MergedFilter():
     from jedi.inference.filters import MergedFilter
     from textension.utils import starchain
     from builtins import list, map
+    from operator import methodcaller
 
     call_values = methodcaller("values")
 
@@ -678,23 +648,6 @@ def optimize_BaseName_properties():
     BaseName.name = _forwarder("_name.public_name")
 
 
-def optimize_complete_global_scope():
-    from jedi.api.completion import Completion, \
-        get_user_context, get_flow_scope_node, get_global_filters
-    from textension.utils import starchain
-    from builtins import map
-
-    get_values = methodcaller("values")
-
-    def _complete_global_scope(self: Completion):
-        context = get_user_context(self._module_context, self._position)
-        flow_scope_node = get_flow_scope_node(self._module_node, self._position)
-        filters = get_global_filters(context, self._position, flow_scope_node)
-        return starchain(map(get_values, filters))
-
-    # Completion._complete_global_scope = _complete_global_scope
-
-
 # Optimizes Leaf to use builtin descriptor for faster access.
 def optimize_Leaf():
     from parso.tree import Leaf
@@ -721,9 +674,9 @@ def optimize_split_lines():
         lines = string.splitlines(keepends=keepends)
         try:
             if string[-1] is "\n":
-                lines += [""]
+                lines += "",
         except:  # Assume IndexError
-            lines += [""]
+            lines += "",
         return lines
     _patch_function(split_lines, split_lines_o)
 
@@ -821,9 +774,9 @@ def optimize_iter_module_names():
                 if endswith(name, suffixes):
                     name = rsplit(name, ".", 1)[-2]
                     if name != "__init__":
-                        names += [name]
+                        names += name,
                 elif is_dir(entry) and isidentifier(name) and name != "__pycache__":
-                    names += [name]
+                    names += name,
 
             cache[paths] = set(names)
         return cache[paths]# | set([k for k in module_keys if "." not in k])
@@ -1202,7 +1155,7 @@ def optimize_NodesTree_copy_nodes():
 
                     if last_line > until_line:
                         if _func_or_class_has_suite(node):
-                            new_nodes += [node]
+                            new_nodes += node,
                         break
 
                     # with any.measure_total:
@@ -1224,7 +1177,7 @@ def optimize_NodesTree_copy_nodes():
                         if suite_node.type in {'error_leaf', 'error_node'}:
                             break
 
-                    new_nodes += [node]
+                    new_nodes += node,
 
         # Pop error nodes at the end from the list
         if new_nodes:
@@ -1259,7 +1212,7 @@ def optimize_NodesTree_copy_nodes():
                 suite = suite.children[-1]
 
             indent = _get_suite_indentation(suite)
-            added_indents.append(indent)
+            added_indents += indent,
 
             suite_tos = _NodesTreeNode(suite, indentation=_get_indentation(last_node))
             suite_nodes, new_working_stack, new_prefix, ai = self._copy_nodes(
@@ -1325,3 +1278,42 @@ def optimize_NodeOrLeaf_get_next_leaf():
         return self
 
     NodeOrLeaf.get_next_leaf = get_next_leaf
+
+
+def optimize_find_overload_functions():
+    from jedi.inference.value.function import _find_overload_functions
+    from itertools import compress, repeat
+    from operator import attrgetter, eq
+    from builtins import map
+
+    get_type = attrgetter("type")
+    rep_decorated = repeat("decorated")
+
+    def find_overload_functions(context, node):
+        ret = []
+
+        if node.type == "funcdef":
+            scope = node.parent
+            name_str = node.children[1].value
+            if scope.type == "decorated":
+                scope = scope.parent
+
+            children  = scope.children
+            selectors = map(eq, rep_decorated, map(get_type, children))
+
+            for dec in compress(children, selectors):
+                funcdef = dec.children[1]
+                if funcdef.children[1].value == name_str:
+
+                    # Can be ``decorator`` or ``decorators`` (plural).
+                    # The latter contains a list of ``decorator`` nodes.
+                    dec = dec.children[0]
+                    if dec.type == "decorators":
+                        dec = dec.children[0]
+
+                    if dec.children[1].value == "overload":
+                        ret += funcdef,
+        return ret
+
+    _patch_function(_find_overload_functions, find_overload_functions)
+

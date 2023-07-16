@@ -285,7 +285,7 @@ def get_module_definition_by_name(module, string_name):
 def get_all_module_names(module):
     pool = [module]
     for n in filter(is_basenode, pool):
-        pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
+        pool += (n.children[1],) if n.type in {"classdef", "funcdef"} else n.children
     return list(filter(is_namenode, pool))
 
 
@@ -377,7 +377,7 @@ def get_submodule_names():
                             assert find_spec(full_name)
                         except (ValueError, AssertionError, ModuleNotFoundError):
                             continue
-                names += [e]
+                names += e,
 
             result = list(map(SubModuleName, repeat(self.as_context()), names))
         return result

@@ -35,7 +35,7 @@ def optimize_defined_names():
 
                     # Must be one in {"atom", "star_expr"}
                     else:
-                        pool += [node.children[1]]
+                        pool += node.children[1],
                 else:
                     trailer_children = node.children[-1].children
                     value = trailer_children[0].value
@@ -153,7 +153,7 @@ def optimize_ExprStmt_get_defined_names():
                 name = children[i - 1]
                 if name.type not in {'testlist_star_expr', 'testlist_comp', 'exprlist',
                                      'testlist', 'atom', 'star_expr', 'power', 'atom_expr'}:
-                    ret += [name]
+                    ret += name,
                 else:
                     ret += _defined_names(name, include_setitem)
             i += 2

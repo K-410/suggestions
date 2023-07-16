@@ -107,7 +107,7 @@ def optimize_parser():
                 del stack[-1]
                 tos = stack[-1]
                 nodes = tos.nodes
-                nodes += [new_node]
+                nodes += new_node,
             else:
                 self.error_recovery(token)
                 return None
@@ -117,14 +117,14 @@ def optimize_parser():
         for dfa, node in zip(plan.dfa_pushes, stack_nodes):
             node.dfa = dfa
             node.nodes = []
-            stack += [node]
+            stack += node,
 
         leaf = new(cls)
         leaf.value = value
         leaf.line, leaf.column = start_pos
         leaf.prefix = prefix
 
-        stack[-1].nodes += [leaf]
+        stack[-1].nodes += leaf,
         return None
 
     Parser._add_token = _add_token

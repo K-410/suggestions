@@ -18,7 +18,7 @@ def unwrap(func):
     for cell in func.__closure__:
         contents = cell.cell_contents
         if is_func(contents):
-            funcs += [contents]
+            funcs += contents,
 
     assert len(funcs) == 1, f"Ambiguous unwrap, got {len(funcs)}: {funcs}"
     return funcs[0]

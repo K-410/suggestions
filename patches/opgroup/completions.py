@@ -89,7 +89,7 @@ def optimize_filter_names():
     from jedi.api.completion import filter_names
     from jedi.api.classes import Completion
     from jedi.api.helpers import _fuzzy_match
-    from textension.utils import noop_noargs, _patch_function, _named_index, consume
+    from textension.utils import noop_noargs, _patch_function, _named_index, consume, _TupleBase
     from itertools import compress, repeat
     from operator import itemgetter, attrgetter, eq
     from builtins import map, list, dict, zip
@@ -125,17 +125,16 @@ def optimize_filter_names():
             match_func = startswith
             completion_base = NewCompletion
 
-        class completion(tuple, completion_base):
-            __init__ = object.__init__
+        class completion(_TupleBase, completion_base):
             _like_name_length = like_name_len   # Static
             _cached_name = cached_name          # Static
             _stack = stack                      # Static
             _name = _named_index(0)
             _string_name_lower = _named_index(1)
 
-        comp = []
         strings = map(get_string, completions)
 
+        # Trailer completion. Show all names.
         if not like_name:
             comp = list(dict(zip(strings, completions)).values())
 
@@ -153,12 +152,14 @@ def optimize_filter_names():
 
             comp = list(tmp.values())
 
-        removals = []
-        for name in filter(get_name, comp):
-            if name.tree_name.parent.type == "del_stmt":
-                removals += [name]
-        if removals:
-            consume(map(comp.remove, removals))
+        # XXX: This is no longer relevant due to how definitions are fetched
+        # using specialized scope/module definition functions.
+        # removals = []
+        # for name in filter(get_name, comp):
+        #     if name.tree_name.parent.type == "del_stmt":
+        #         removals += name,
+        # if removals:
+        #     consume(map(comp.remove, removals))
         return map(completion, zip(comp, map(lower, map(get_string, comp))))
 
     _patch_function(filter_names, filter_names_o)

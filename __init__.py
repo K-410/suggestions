@@ -353,7 +353,7 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
 
             # We don't want garbage collection to spuriously run until things
             # have been rendered.
-            instance._temp_lines += [instance.lines]
+            instance._temp_lines += instance.lines,
             instance.lines = ret
 
             # TODO: Weak.
@@ -731,14 +731,14 @@ def enable():
     # In this case we add it to sys.path to make it globally importable.
     plugin_path = os.path.dirname(__file__)
     if plugin_path not in sys.path:  # TODO: Should be 'download', not root directory.
-        sys.path.append(plugin_path)
+        sys.path += plugin_path,
 
     utils.register_classes(classes)
 
     from textension import ui, prefs
     from textension.overrides import default
-    default.insert_hooks.append(on_insert)
-    default.delete_hooks.append(on_delete)
+    default.insert_hooks += on_insert,
+    default.delete_hooks += on_delete,
 
     Suggestions.preferences = prefs.add_settings(TEXTENSION_PG_suggestions)
     apply_custom_settings()

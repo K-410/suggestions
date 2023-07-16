@@ -115,7 +115,7 @@ def optimize_SelfAttributeFilter_values():
                 # Get name definitions.
                 for n in filter(is_namenode, pool):
                     if n.get_definition(include_setitem=True):
-                        names += [n]
+                        names += n,
 
                 names = list(self._filter(names))
                 names = list(map(self.name_class, repeat(context), names))
@@ -196,7 +196,7 @@ def optimize_ClassFilter_filter():
 
                 # Also check for overloaded/decorated functions.
                 if suite.parent is scope:
-                    tmp += [name]
+                    tmp += name,
                 else:
                     pass
 
@@ -205,7 +205,7 @@ def optimize_ClassFilter_filter():
                     # Either ``operator`` or ``annassign``.
                     # Annotations are assumed to exist on instances.
                     if parent.children[1].type == "operator" or instanced:
-                        tmp += [name]
+                        tmp += name,
         return tmp
 
     ClassFilter._filter = _filter
@@ -254,7 +254,7 @@ def optimize_AnonymousMethodExecutionFilter_values():
 
         # Get parameter name definitions.
         for param in filter(is_param, scope.children[2].children):
-            names += [param.children[0]]
+            names += param.children[0],
 
         # The suite.
         names += get_scope_name_definitions(scope.children[-1])
@@ -401,7 +401,7 @@ def get_scope_name_strings(scope):
     for n in filter(is_basenode, pool):
         if n.type in {"classdef", "funcdef"}:
             # Add straight to ``namedefs`` we know they are definitions.
-            namedefs += [n.children[1].value]
+            namedefs += n.children[1].value,
 
         elif n.type == "simple_stmt":
             n = n.children[0]
@@ -410,7 +410,7 @@ def get_scope_name_strings(scope):
                 name = n.children[0]
                 # Could be ``atom_expr``, as in dotted name. Skip those.
                 if name.type == "name":
-                    namedefs += [name.value]
+                    namedefs += name.value,
                 else:
                     print(name.type)
 
@@ -425,7 +425,7 @@ def get_scope_name_strings(scope):
                         if name.type == "import_as_name":
                             name, alias = name.children[::2]
                             if name.value == alias.value:
-                                namedefs += [alias.value]
+                                namedefs += alias.value,
 
             elif n.type == "atom":
                 # ``atom`` nodes are too ambiguous to extract names from.
@@ -433,14 +433,14 @@ def get_scope_name_strings(scope):
                 pool += n.children
 
         elif n.type == "decorated":
-            pool += [n.children[1]]
+            pool += n.children[1],
         else:
             pool += n.children
 
     # Get name definitions.
     for n in filter(is_namenode, pool):
         if n.get_definition(include_setitem=True):
-            namedefs += [n.value]
+            namedefs += n.value,
 
     keys = set(namedefs)
     exclude = set()
@@ -460,11 +460,11 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
     pool  = [value.tree_node]
 
     for n in filter(is_basenode, pool):
-        pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
+        pool += (n.children[1],) if n.type in {"classdef", "funcdef"} else n.children
 
     for n in filter(is_namenode, pool):
         if n.value in module_names:
-            names += [n]
+            names += n,
 
     ret = stub_filter._filter(names)
     ret = self[stub_filter] = list(map(DeferredStubName, zip(repeat(context), ret)))
@@ -514,7 +514,7 @@ def get_module_definition_by_name(module, string_name):
         pool = [module]
 
         for n in filter(is_basenode, pool):
-            pool += [n.children[1]] if n.type in {"classdef", "funcdef"} else n.children
+            pool += (n.children[1],) if n.type in {"classdef", "funcdef"} else n.children
 
         for n in filter(is_namenode, pool):
             if n.value == string_name and n.get_definition(include_setitem=True):

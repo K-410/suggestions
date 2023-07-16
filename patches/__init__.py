@@ -124,7 +124,7 @@ def patch_SequenceLiteralValue():
     def py__bases__(self: GenericClass):
         ret = []
         for base in self._wrapped_value.py__bases__():
-            ret += [_LazyGenericBaseClass(self, base, self._generics_manager)]
+            ret += _LazyGenericBaseClass(self, base, self._generics_manager),
         return ret
 
     GenericClass.py__bases__ = py__bases__
@@ -418,7 +418,7 @@ def patch_get_builtin_module_names():
                     continue
             # TypeError or AttributeError.
             except:
-                tmp += [name]
+                tmp += name,
         return builtin | set(tmp)
     
     _patch_function(functions.get_builtin_module_names, get_builtin_module_names)
@@ -620,7 +620,7 @@ def patch_get_importer_names():
                     # If we're completing ``bpy.a``, we only want ``app`` and not
                     # ``app.handlers``.
                     if "." not in name:
-                        ret += [name]
+                        ret += name,
                 if ret:
                     return [ImportName(self._module_context, n) for n in ret]
 

@@ -102,10 +102,10 @@ class NamesCache(dict):
             for n in filter(is_basenode, pool):
                 pool += n.children
                 if n.type == "global_stmt":
-                    globals_ += [n]
+                    globals_ += n,
 
             for n in filter(is_namenode, pool):
-                names[n.value] += [n]
+                names[n.value] += n,
             self[node] = dict_items(names)
 
         # Store the new set of module base nodes.

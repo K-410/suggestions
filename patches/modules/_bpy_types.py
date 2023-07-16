@@ -27,9 +27,6 @@ from bpy_types import RNAMeta, StructRNA
 rnadef_types = bpy.types.Property, bpy.types.Function
 rna_types = RNAMeta, StructRNA
 
-# Used by generic compiled values py__call__.
-_no_args = ValuesArguments(())
-
 
 def apply():
     patch_AnonymousParamName_infer()
@@ -193,8 +190,14 @@ def get_context_instance():
 def get_rna_value(obj, parent_value):
     if isinstance(obj, bpy.props._PropertyDeferred):
         return PropertyValue((getattr(bpy.types, obj.function.__name__), parent_value))
+
     if not isinstance(obj, type) and obj.as_pointer() == context_rna_pointer:
         return get_context_instance()
+
+    # ``bpy.data`` interception. We no longer deal with actual instances.
+    if isinstance(obj, bpy.types.BlendData):
+        if obj != obj.bl_rna:
+            return RnaInstance(RnaValue((obj.bl_rna, parent_value)))
     return RnaValue((obj.bl_rna, parent_value))
 
 
@@ -370,7 +373,7 @@ class RnaInstance(VirtualInstance):
 
             for rnadef in self.class_value.obj.parameters:
                 if rnadef.is_output:
-                    return rnadef_to_value(rnadef, self.class_value).py__call__(_no_args)
+                    return rnadef_to_value(rnadef, self.class_value).py__call__(arguments)
         print("RnaInstance.py__call__ returned nothing for", self)
         return NO_VALUES
 
@@ -437,9 +440,9 @@ class RnaValue(VirtualValue):
 
         for obj in type(self.obj.bl_rna).__mro__:
             if is_bpy_struct_subclass(obj) and obj is not StructRNA:
-                ret += [RnaValue((obj.bl_rna, self))]
+                ret += RnaValue((obj.bl_rna, self)),
             else:
-                ret += [make_compiled_value(obj, context)]
+                ret += make_compiled_value(obj, context),
         return ret
 
     def py__doc__(self):
@@ -462,11 +465,11 @@ class RnaFunction(RnaValue):
         rna = self.obj
         if rna.use_self:
             p = RnaFunctionParamName(value=self, name="self")
-            ret += [p]
+            ret += p,
 
         for param in self.obj.parameters:
             if not param.is_output:
-                ret += [RnaFunctionParamName(value=self, param_rna=param,)]
+                ret += RnaFunctionParamName(value=self, param_rna=param,),
         return ret
 
     @property
