@@ -21,7 +21,6 @@ def apply():
     optimize_ImportFrom_get_defined_names()
     optimize_create_stub_map()
     optimize_StringComparisonMixin__eq__()
-    optimize_AbstractNameDefinition_get_public_name()
     optimize_ValueContext()
     optimize_ClassMixin()
     optimize_Compiled_methods()
@@ -68,6 +67,7 @@ def apply():
     optimize_NodesTree_copy_nodes()
     optimize_NodeOrLeaf_get_next_leaf()
     optimize_find_overload_functions()
+    optimize_builtin_from_name()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -406,12 +406,6 @@ def optimize_StringComparisonMixin__eq__():
     _StringComparisonMixin.__hash__ = _forwarder("value.__hash__")
 
 
-def optimize_AbstractNameDefinition_get_public_name():
-    from jedi.inference.names import AbstractNameDefinition
-
-    AbstractNameDefinition.get_public_name = _unbound_getter("string_name")
-
-
 # Optimizes various ValueContext members to use method descriptors.
 def optimize_ValueContext():
     from jedi.inference.context import ValueContext
@@ -464,8 +458,10 @@ def optimize_Compiled_methods():
 # Optimizes CompiledName initializer to omit calling parent_value.as_context()
 # and instead make it on-demand.
 def optimize_CompiledName():
-    from jedi.inference.compiled.value import CompiledName
+    from jedi.inference.compiled.value import CompiledName, CompiledValue
     from ..tools import state
+    from operator import methodcaller
+    from textension.utils import _forwarder, _descriptor
 
     CompiledName._inference_state = state
 
@@ -474,6 +470,12 @@ def optimize_CompiledName():
         self.string_name = name
 
     CompiledName.__init__ = __init__
+
+    CompiledValue._context = _descriptor(methodcaller("as_context"))
+
+    CompiledName.parent_context = _forwarder("_parent_value._context")
+    CompiledName.get_root_context = _forwarder("parent_context.get_root_context")
+
 
 
 # Optimizes TreeContextMixin
@@ -641,11 +643,15 @@ def optimize_BaseName_properties():
     from jedi.api.classes import BaseName
 
     # Add properties to BaseName subclasses so 'public_name' becomes a descriptor.
+    AbstractNameDefinition.get_public_name = _unbound_getter("string_name")
     AbstractNameDefinition.public_name = property(AbstractNameDefinition.get_public_name)
     ParamNameWithEquals.public_name = property(ParamNameWithEquals.get_public_name)
     BaseTreeParamName.public_name = property(BaseTreeParamName.get_public_name)
 
     BaseName.name = _forwarder("_name.public_name")
+
+    AbstractNameDefinition.get_root_context = _forwarder("parent_context.get_root_context")
+    AbstractNameDefinition.api_type = _forwarder("parent_context.api_type")
 
 
 # Optimizes Leaf to use builtin descriptor for faster access.
@@ -903,7 +909,7 @@ def optimize_LazyInstanceClassName():
         tree_name     = _forwarder("_wrapped_name.tree_name")
 
         def __repr__(self):
-            return '%s(%s)' % (self.__class__.__name__, self._wrapped_name)
+            return f"LazyName({object.__repr__(self._wrapped_name)})"
 
     def _convert(self: InstanceClassFilter, names):
         return list(map(LazyName, zip(repeat(self._instance), names)))
@@ -1317,3 +1323,42 @@ def optimize_find_overload_functions():
 
     _patch_function(_find_overload_functions, find_overload_functions)
 
+
+def optimize_builtin_from_name():
+    from jedi.inference.gradual.typeshed import _load_from_typeshed
+    from jedi.inference.compiled.value import create_cached_compiled_value
+    from jedi.inference.compiled import builtin_from_name
+    from jedi.inference import InferenceState, ValueSet
+    from ..tools import get_handle, state
+    import builtins
+
+    @property
+    def builtins_module(self):
+        handle = get_handle(builtins)
+        value  = create_cached_compiled_value(state, handle, None)
+        py_value = ValueSet((value,))
+
+        stub_value = _load_from_typeshed(state, py_value, None, ("builtins",))
+
+        # Mutate property so builtins is loaded only once.
+        InferenceState.builtins_module = stub_value
+        return stub_value
+
+    InferenceState.builtins_module = builtins_module
+
+    cache = {}
+
+    def _builtin_from_name(inference_state, string):
+        if string not in cache:
+            stub_value = inference_state.builtins_module
+            if string in ('None', 'True', 'False'):
+                builtins, = stub_value.non_stub_value_set
+                filter_ = next(builtins.get_filters())
+            else:
+                filter_ = next(stub_value.get_filters())
+            name, = filter_.get(string)
+            value, = name.infer()
+            cache[string] = value
+        return cache[string]
+    
+    _patch_function(builtin_from_name, _builtin_from_name)
