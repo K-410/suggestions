@@ -9,12 +9,13 @@ from itertools import repeat
 from operator import getitem
 
 from ._mathutils import float_vector_map
-from ._bpy_types import MathutilsValue, PropArrayValue, RnaValue, NO_VALUES
-from ..common import VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition
+from ._bpy_types import MathutilsValue, PropArrayValue, IdPropCollectionValue, NO_VALUES, get_rna_value
+from ..common import VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, ValueSet
 
 
 def apply():
     fix_bpy_imports()
+    _add_collection_property()
 
 
 prop_names = (
@@ -47,12 +48,18 @@ vector_property_types = {
     "IntVectorProperty"
 }
 
-# TODO: CollectionProperty still needs implementation.
-# ``bpy_prop_collection_idprop`` isn't reachable anywhere else.
-# for cls in bpy.types.bpy_prop_collection.__subclasses__():
-#     if cls.__name__ == "bpy_prop_collection_idprop":
-#         simple_property_types["CollectionProperty"] = cls
-#         break
+
+def _add_collection_property():
+    # ``bpy_prop_collection_idprop`` is the base for CollectionProperty, but isn't
+    # available in bpy.types. It is however a subclass of ``bpy_prop_collection``.
+    for cls in bpy.types.bpy_prop_collection.__subclasses__():
+        if cls.__name__ == "bpy_prop_collection_idprop":
+            simple_property_types["CollectionProperty"] = cls
+            return None
+    else:
+        # Shouldn't happen unless the api broke.
+        print("Warning (Textension): _add_collection_property failed to find "
+              "bpy_prop_collection_idprop. This is a bug.")
 
 
 def _as_module(obj, name):
@@ -90,7 +97,7 @@ class VirtualFunction(VirtualValue):
         def instance_call(arguments):
             return (VirtualValue(str, self.as_context()).instance,)
         instance.py__call__ = instance_call
-        return (instance,)
+        return ValueSet((instance,))
 
 
 def infer_vector_type(name, arguments, parent):
@@ -116,16 +123,27 @@ def infer_pointer_type(arguments):
     return NO_VALUES
 
 
+def infer_collection_type(arguments):
+    if value := dict(arguments.unpack()).get("type"):
+        cls = simple_property_types["CollectionProperty"]
+        parent = value.context._value
+        return IdPropCollectionValue((cls, parent)).py__call__(value)
+    return NO_VALUES
+
+
 class PropertyFunction(VirtualFunction):
     def py__call__(self, arguments):
         instance = VirtualValue((bpy.props._PropertyDeferred, self)).instance
         instance.py__call__ = lambda *_, **__: self.py_instance__call__(arguments)
-        return (instance,)
+        return ValueSet((instance,))
 
     def py_instance__call__(self, arguments):
         func_name = self.obj.__name__
 
-        if func_name in simple_property_types:
+        if func_name == "CollectionProperty" in simple_property_types:
+            return infer_collection_type(arguments)
+
+        elif func_name in simple_property_types:
             obj = simple_property_types[func_name]
             return VirtualValue((obj, self)).py__call__(arguments)
 
@@ -136,7 +154,7 @@ class PropertyFunction(VirtualFunction):
             return infer_pointer_type(arguments)
 
         obj = getattr(bpy.types, func_name).bl_rna
-        return RnaValue((obj, self)).py__call__(arguments)
+        return get_rna_value(obj, self).py__call__(arguments)
 
 
 def fix_bpy_imports():

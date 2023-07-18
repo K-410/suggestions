@@ -3,13 +3,13 @@
 from jedi.inference.compiled.value import (
     CompiledValue, CompiledValueFilter, CompiledValueName, CompiledModule)
 from jedi.inference.lazy_value import LazyKnownValues, NO_VALUES, ValueSet
+from jedi.inference.arguments import AbstractArguments
 from jedi.inference.context import CompiledContext, GlobalNameFilter
 from jedi.inference.value import CompiledInstance, ModuleValue
 from jedi.inference.names import TreeNameDefinition
 from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
 from parso.python.tree import Name
 from parso.tree import BaseNode
-
 from parso.file_io import KnownContentFileIO
 from jedi.file_io import FileIOFolderMixin
 
@@ -17,7 +17,6 @@ from jedi.api import Script, Completion
 from itertools import repeat
 from operator import attrgetter
 from pathlib import Path
-from typing import Union
 
 from textension.utils import (
     _forwarder, _named_index, _unbound_getter, consume, falsy_noargs, inline,
@@ -41,16 +40,6 @@ get_cursor_focus = attrgetter("select_end_line_index", "select_end_character")
 for cls in iter(node_types := [BaseNode]):
     node_types += cls.__subclasses__()
 node_types: frozenset[BaseNode] = frozenset(node_types)
-
-
-def yield_filters_once(func):
-    memo = state.memoize_cache[func] = {}
-    def wrapper(self, is_instance=False, origin_scope=None):
-        if (key := (self, is_instance)) in memo:
-            return
-        memo[key] = result = list(func(self, is_instance))
-        yield from result
-    return wrapper
 
 
 def yield_once(func):
@@ -484,11 +473,10 @@ def _repr(obj):
 
 class VirtualInstance(CompiledInstance):
     is_stub         = falsy_noargs
-    is_instance     = falsy_noargs
+    is_instance     = truthy_noargs
     inference_state = state
 
     parent_context  = _forwarder("class_value.parent_context")
-    getitem_type    = _forwarder("class_value.getitem_type")
 
     def _as_context(self):
         return CompiledContext(self)
@@ -546,47 +534,30 @@ virtual_overrides = {}
 
 
 class VirtualName(_TupleBase, CompiledValueName):
-    _value: Union["VirtualValue", "VirtualInstance"]
     _inference_state = state
 
     parent_value: "VirtualValue" = _named_index(0)
     string_name:   str           = _named_index(1)
     is_instance:   bool          = _named_index(2)
 
-
     @property
     def parent_context(self):
         return self.parent_value.as_context()
 
     def py__doc__(self):
-        if value := self._value:
+        for value in self.infer():
             return value.py__doc__()
         return ""
 
     def docstring(self, raw=False, fast=True):
         return "VirtualName docstring goes here"
 
-    @state_cache
-    def _infer(self):
-        obj = self.parent_value.members[self.string_name]
-        value_type = VirtualValue
-        if obj in virtual_overrides:
-            value_type = virtual_overrides[obj]
-
-        value = value_type((obj, self.parent_value))
-        if self.is_instance:
-            value = value.instance
-        return value
-
     def infer(self):
-        return ValueSet((self._value,))
-
-    infer_compiled_value = infer
-    _value = _descriptor(_infer)
+        return self.parent_value.infer_name_cached(self)
 
     @property
     def api_type(self):
-        if value := self._value:
+        for value in self.infer():
             return value.api_type
         return "unknown"
 
@@ -595,31 +566,27 @@ class VirtualName(_TupleBase, CompiledValueName):
 
 
 class VirtualFilter(_TupleBase, CompiledValueFilter):
-    compiled_value: "VirtualValue"
-    is_instance: bool
-
     _inference_state = state
 
-    compiled_value = _named_index(0)
-    is_instance    = _named_index(1)
-
-    name_cls = VirtualName
+    compiled_value: "VirtualValue" = _named_index(0)
+    is_instance:     bool          = _named_index(1)
 
     def get(self, name_str: str):
-        value = self.compiled_value
-        if name_str in value.members:
-            return (self.name_cls((value, name_str, self.is_instance)),)
-        return ()
+        return self.compiled_value.get_filter_get(name_str, self.is_instance)
 
     def values(self):
-        value = self.compiled_value
-        return list(map(self.name_cls, zip(repeat(value), value.members)))
+        return self.compiled_value.get_filter_values(self.is_instance)
 
     def __repr__(self):
         return f"{_repr(self)}({_repr(self.compiled_value)})"
 
 
 class VirtualValue(_TupleBase, CompiledValue):
+    @inline
+    def __init__(self, elements):
+        """elements: A tuple of object and parent value."""
+        return _TupleBase.__init__
+
     is_compiled  = truthy_noargs
     is_class     = truthy_noargs
 
@@ -632,13 +599,29 @@ class VirtualValue(_TupleBase, CompiledValue):
     inference_state = state
 
     _api_type    = "unknown"
-    filter_cls   = VirtualFilter
     instance_cls = VirtualInstance
 
     parent_value: "VirtualValue"
 
     obj          = _named_index(0)
     parent_value = _named_index(1)
+
+    def infer_name(self, name: VirtualName):
+        obj = self.members[name.string_name]
+
+        data = (obj, self)
+        if obj in virtual_overrides:
+            value = virtual_overrides[obj](data)
+        else:
+            value = VirtualValue(data)
+
+        if name.is_instance:
+            value = value.instance
+        return ValueSet((value,))
+
+    @state_cache
+    def infer_name_cached(self, name: VirtualName):
+        return self.infer_name(name)
 
     # Just to satisfy jedi.
     @property
@@ -669,9 +652,8 @@ class VirtualValue(_TupleBase, CompiledValue):
     def py__call__(self, arguments=None):
         return ValueSet((self.instance_cls(self, arguments),))
 
-    @yield_filters_once
     def get_filters(self, is_instance=False, origin_scope=None):
-        return (self.filter_cls((self, is_instance)),)
+        return (VirtualFilter((self, is_instance)),)
 
     def get_qualified_names(self):
         return ()
@@ -686,10 +668,27 @@ class VirtualValue(_TupleBase, CompiledValue):
     @property
     @state_cache
     def members(self):
+        return self.get_members()
+
+    # Subclasses override this.
+    def get_members(self):
         return get_mro_dict(self.obj)
 
     def __repr__(self):
         return f"{_repr(self)}({repr(self.obj)})"
+
+    def get_filter_get(self, name_str: str, is_instance):
+        if name_str in self.members:
+            return (VirtualName((self, name_str, is_instance)),)
+        return ()
+
+    def get_filter_values(self, is_instance=False):
+        return list(map(VirtualName, zip(repeat(self), self.members)))
+
+
+class VirtualFunction(VirtualValue):
+    def __init__(self, reference):
+        self.ref = reference
 
 
 # Implements FileIO for bpy.types.Text so jedi can use diff-parsing on them.
@@ -817,3 +816,11 @@ def complete(text):
     from jedi.api import Interpreter
     line, column = get_cursor_focus(text)
     return Interpreter(text.as_string(), []).complete(line + 1, column)
+
+
+# Used by VirtualValue.py__call__ and other inference functions where we
+# don't have any arguments to unpack. For constructors.
+@inline
+class NoArguments(AbstractArguments):
+    def unpack(self, *args, **kw):
+        yield from ()

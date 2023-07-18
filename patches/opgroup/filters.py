@@ -287,10 +287,8 @@ def optimize_ParserTreeFilter_filter():
 
 def optimize_CompiledValue_get_filters():
     from jedi.inference.compiled.value import CompiledValue, CompiledValueFilter
-    from ..common import state, yield_filters_once
 
     # XXX: Disable decorator for now. Causes issues inside class bodies.
-    # @yield_filters_once
     def get_filters(self: CompiledValue, is_instance=False, origin_scope=None):
         yield CompiledValueFilter(state, self, is_instance)
 

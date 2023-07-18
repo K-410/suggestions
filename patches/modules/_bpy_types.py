@@ -5,7 +5,6 @@ from jedi.inference.value.instance import ValueSet, NO_VALUES
 from jedi.inference.lazy_value import LazyKnownValues
 from jedi.inference.signature import AbstractSignature
 from jedi.inference.compiled import builtin_from_name
-from jedi.inference.arguments import ValuesArguments
 
 from itertools import chain, repeat
 from inspect import Parameter
@@ -14,7 +13,7 @@ from operator import attrgetter
 from textension.utils import _context, _forwarder, inline, starchain
 
 from ._mathutils import float_vector_map
-from ..common import VirtualFilter, VirtualInstance, VirtualName, VirtualValue, get_mro_dict, state_cache, virtual_overrides
+from ..common import VirtualInstance, VirtualName, VirtualValue, get_mro_dict, state_cache, virtual_overrides, NoArguments
 from ..tools import runtime, state, make_compiled_value, make_instance
 
 import bpy
@@ -195,9 +194,9 @@ def get_rna_value(obj, parent_value):
         return get_context_instance()
 
     # ``bpy.data`` interception. We no longer deal with actual instances.
-    if isinstance(obj, bpy.types.BlendData):
-        if obj != obj.bl_rna:
-            return RnaInstance(RnaValue((obj.bl_rna, parent_value)))
+    if isinstance(obj, bpy.types.BlendData) and obj != obj.bl_rna:
+        return RnaInstance(get_rna_value(obj.bl_rna, parent_value))
+
     return RnaValue((obj.bl_rna, parent_value))
 
 
@@ -219,10 +218,6 @@ property_instance_map = {
 }
 
 
-# TODO: Is this needed?
-class PropertyFilter(VirtualFilter):
-    pass
-
 
 # TODO: Is this needed?
 class PropertyInstance(VirtualInstance):
@@ -231,7 +226,6 @@ class PropertyInstance(VirtualInstance):
 
 # TODO: Is this needed?
 class PropertyValue(VirtualValue):
-    filter_cls   = PropertyFilter
     instance_cls = PropertyInstance
 
 
@@ -244,7 +238,7 @@ def rnadef_to_value(rnadef, parent):
     type = rnadef.type
 
     if type == 'POINTER':
-        return RnaValue((rnadef.fixed_type, parent))
+        return get_rna_value(rnadef.fixed_type, parent)
     elif type == 'COLLECTION':
         return PropCollectionValue((rnadef, parent))
     
@@ -284,7 +278,7 @@ def rna_fallback_value(parent, name):
             # TODO: Still needs implementation.
             from jedi.inference.value.iterable import FakeTuple
             from jedi.inference.lazy_value import LazyKnownValue
-            v = LazyKnownValue(RnaValue((bpy.types.Object, parent)))
+            v = LazyKnownValue(get_rna_value(bpy.types.Object, parent))
             return ValueSet([FakeTuple(state, [v])])
 
 
@@ -299,10 +293,10 @@ class RnaName(VirtualName):
         if isinstance(parent, ContextInstance) and isinstance(obj, type):
             if isinstance(obj, types.GenericAlias):
                 from jedi.inference.value.iterable import FakeList, LazyKnownValue
-                v, = RnaValue((obj.__args__[0].bl_rna, parent)).py__call__(None)
+                v, = get_rna_value(obj.__args__[0].bl_rna, parent).py__call__(None)
                 return ValueSet([FakeList(state, [LazyKnownValue(v)])])
 
-            value = RnaValue((obj.bl_rna, parent))
+            value = get_rna_value(obj.bl_rna, parent)
 
         elif isinstance(obj, rnadef_types):
             value = rnadef_to_value(obj, parent) or make_compiled_value(obj, parent.as_context())
@@ -316,7 +310,7 @@ class RnaName(VirtualName):
             value = tmp
 
         elif name == "bl_rna":
-            return ValueSet((RnaValue((obj, parent)),))
+            return ValueSet((get_rna_value(obj, parent),))
 
         else:
             return NO_VALUES
@@ -324,31 +318,6 @@ class RnaName(VirtualName):
 
     def __repr__(self):
         return f"{repr(self.parent_value)}.{self.string_name}"
-
-
-# This class implements the RNA value lookup.
-class RnaFilter(VirtualFilter):
-    name_cls = RnaName
-
-    @state_cache
-    def values(self):
-        parent = self.compiled_value
-        bl_rna = parent.obj
-
-        if instanced := self.is_instance or bl_rna != bl_rna.bl_rna:
-            # Instances get everything
-            members = parent.members
-
-        else:
-            # Non-instances get bpy.types.Struct members and class members.
-            members  = RnaValue((bpy.types.Struct.bl_rna, parent)).members
-            members |= get_mro_dict(bl_rna)
-
-        data = zip(repeat(parent), members, repeat(instanced))
-        return list(map(RnaName, data))
-
-    def __repr__(self):
-        return f"RnaFilter({self.compiled_value.obj.identifier})"
 
 
 # Represents an instance of an RnaValue or RnaFunction.
@@ -369,7 +338,7 @@ class RnaInstance(VirtualInstance):
             # bpy_struct.copy() has ``bpy.types.ID`` as its return type,
             # so we need to map it to the real value.
             if self.obj.identifier == "copy":
-                return self.class_value.parent_value.py__call__(None)
+                return self.class_value.parent_value.py__call__(arguments)
 
             for rnadef in self.class_value.obj.parameters:
                 if rnadef.is_output:
@@ -380,7 +349,7 @@ class RnaInstance(VirtualInstance):
     # Implements subscript for bpy_prop_collections.
     def py__simple_getitem__(self, index):
         if isinstance(self.class_value, PropCollectionValue):
-            instance = RnaValue((self.class_value.obj.fixed_type, self.class_value)).instance
+            instance = get_rna_value(self.class_value.obj.fixed_type, self.class_value).instance
             return ValueSet((instance,))
         return NO_VALUES
 
@@ -402,8 +371,37 @@ get_rnadefs = attrgetter("functions", "properties")
 
 # RNA value created from struct RNA definition.
 class RnaValue(VirtualValue):
-    filter_cls   = RnaFilter
     instance_cls = RnaInstance
+
+    def infer_name(self, name: VirtualName):
+        name_str  = name.string_name
+        obj = self.members[name_str]
+
+        if isinstance(self, ContextInstance) and isinstance(obj, type):
+            if isinstance(obj, types.GenericAlias):
+                from jedi.inference.value.iterable import FakeList, LazyKnownValue
+                v, = get_rna_value(obj.__args__[0].bl_rna, self).py__call__(None)
+                return ValueSet([FakeList(state, [LazyKnownValue(v)])])
+
+            value = get_rna_value(obj.bl_rna, self)
+
+        elif isinstance(obj, rnadef_types):
+            value = rnadef_to_value(obj, self) or make_compiled_value(obj, self.as_context())
+
+        elif name_str == "id_data":
+            value = get_id_data(self)
+            # If this fails, some rna values aren't struct definitions.
+            assert value, f"Unhandled id_data object: {obj} ({name_str})"
+
+        elif tmp := rna_fallback_value(self, name_str):
+            value = tmp
+
+        elif name_str == "bl_rna":
+            return ValueSet((get_rna_value(obj, self),))
+
+        else:
+            return NO_VALUES
+        return value.py__call__(NoArguments)
 
     @property
     def api_type(self):
@@ -424,9 +422,7 @@ class RnaValue(VirtualValue):
     def py__name__(self):
         return self.obj.identifier
 
-    @property
-    @state_cache
-    def members(self):
+    def get_members(self):
         rna = self.obj.bl_rna
         return get_mro_dict(rna) | dict(starchain(map(prop_collection_items, get_rnadefs(rna))))
 
@@ -440,7 +436,7 @@ class RnaValue(VirtualValue):
 
         for obj in type(self.obj.bl_rna).__mro__:
             if is_bpy_struct_subclass(obj) and obj is not StructRNA:
-                ret += RnaValue((obj.bl_rna, self)),
+                ret += get_rna_value(obj.bl_rna, self),
             else:
                 ret += make_compiled_value(obj, context),
         return ret
@@ -448,14 +444,24 @@ class RnaValue(VirtualValue):
     def py__doc__(self):
         return self.obj.description
 
+    @state_cache
+    def get_filter_values(self, is_instance):
+        bl_rna = self.obj
 
-# TODO: Is this needed?
-class RnaFunctionFilter(VirtualFilter):
-    pass
+        if instanced := is_instance or bl_rna != bl_rna.bl_rna:
+            # Instances get everything
+            members = self.members
+
+        else:
+            # Non-instances get bpy.types.Struct members and class members.
+            members  = get_rna_value(bpy.types.Struct.bl_rna, self).members
+            members |= get_mro_dict(bl_rna)
+
+        data = zip(repeat(self), members, repeat(instanced))
+        return list(map(RnaName, data))
 
 
 class RnaFunction(RnaValue):
-    filter_cls = RnaFunctionFilter
 
     def get_signatures(self):
         return (RnaFunctionSignature(self, self, is_bound=True),)
@@ -472,9 +478,7 @@ class RnaFunction(RnaValue):
                 ret += RnaFunctionParamName(value=self, param_rna=param,),
         return ret
 
-    @property
-    @state_cache
-    def members(self):
+    def get_members(self):
         return get_mro_dict(bpy.types.bpy_func)
 
 
@@ -549,9 +553,7 @@ class MathutilsInstance(VirtualInstance):
 class MathutilsValue(VirtualValue):
     instance_cls = MathutilsInstance
 
-    @property
-    @state_cache
-    def members(self):
+    def get_members(self):
         mro_dict = get_mro_dict(self.obj)
         from ..tools import _descriptor_overrides
         if self.obj in _descriptor_overrides:
@@ -570,6 +572,7 @@ class MathutilsValue(VirtualValue):
 from mathutils import Vector
 virtual_overrides[Vector] = MathutilsValue
 
+
 # bpy.types.Object.[bound_box | rotation_axis_angle | etc.]
 class PropArrayValue(VirtualValue):
     # Implements subscript for bpy_prop_array types.
@@ -580,26 +583,41 @@ class PropArrayValue(VirtualValue):
     def py__iter__(self, contextualized_node=None):
         return ValueSet((LazyKnownValues(self.py__simple_getitem__(None)),))
 
-    @property
-    @state_cache
-    def members(self):
+    def get_members(self):
         return get_mro_dict(bpy.types.bpy_prop_array)
 
 
-class PropCollectionFilter(VirtualFilter):
-    name_cls = RnaName
-
-
 class PropCollectionValue(RnaValue):
-    filter_cls = PropCollectionFilter
-
-    @property
-    @state_cache
-    def members(self):
+    def get_members(self):
         mapping = get_mro_dict(bpy.types.bpy_prop_collection)
         if srna := self.obj.srna:
             mapping |= dict(chain(srna.functions.items(), srna.properties.items()))
         return mapping
+
+
+
+# For user-defined property collections, i.e CollectionProperty.
+class IdPropCollectionValue(VirtualValue):
+    values = NO_VALUES
+    
+    def infer_name(self, name: VirtualName):
+        name_str = name.string_name
+
+        # Currently only add/get are inferred from assigned values.
+        if name_str in {"add", "get"}:
+            return self.values.infer()
+
+        obj = self.members[name_str]
+        return ValueSet((make_compiled_value(obj, self.as_context()),))
+
+    def py__call__(self, arguments):
+        self.values = arguments
+        return ValueSet((self.instance_cls(self, arguments),))
+
+    def py__simple_getitem__(self, index):
+        for value in self.values.infer():
+            return value.py__call__(None)
+        return NO_VALUES
 
 
 class ContextInstance(RnaInstance):
@@ -610,13 +628,12 @@ class ContextInstance(RnaInstance):
 
     def __init__(self, obj):
         self._arguments  = None
-        self.filter = ContextInstanceFilter((self, True))
         from ._bpy import Importer_redirects
 
         module = Importer_redirects["bpy"]
         self._parent_context = module.as_context()
 
-        class_value = RnaValue((obj, module))
+        class_value = get_rna_value(obj, module)
         context_members = class_value.members.copy()
 
         for member in _bpy.context_members()["screen"]:
@@ -629,11 +646,21 @@ class ContextInstance(RnaInstance):
         self.members = context_members
         self.class_value = class_value
 
-    def get_filters(self, *_, **__):
-        yield self.filter
-
     def _get_value_filters(self, *_):
-        return (self.filter,)
+        yield from self.get_filters()
+
+    def get_filter_values(self, is_instance):
+        data = zip(repeat(self.compiled_value), _bpy.context_members()["screen"])
+        return super().get_filter_values(True) + list(map(RnaName, data))
+
+    def get_filter_get(self, name_str):
+        if ret := super().get_filter_get(name_str):
+            return ret
+        
+        # These aren't part of the screen context.
+        if name_str in context_type_map:
+            return ValueSet((NonScreenContextName((self.compiled_value, name_str)),))
+        return ()
 
 
 class NonScreenContextName(RnaName):
@@ -641,26 +668,11 @@ class NonScreenContextName(RnaName):
         name, is_collection = context_type_map[self.string_name]
         cls = getattr(bpy.types, name)
         
-        value = RnaValue((cls.bl_rna, self.parent_value)).py__call__(None)
+        value = get_rna_value(cls.bl_rna, self.parent_value).py__call__(None)
         if is_collection:
             from jedi.inference.value.iterable import FakeList, LazyKnownValue
             return ValueSet([FakeList(state, (LazyKnownValue(value),))])
         return value
-
-
-class ContextInstanceFilter(RnaFilter):
-    def values(self):
-        data = zip(repeat(self.compiled_value), _bpy.context_members()["screen"])
-        return super().values() + list(map(RnaName, data))
-
-    def get(self, name_str):
-        if ret := super().get(name_str):
-            return ret
-        
-        # These aren't part of the screen context.
-        if name_str in context_type_map:
-            return ValueSet((NonScreenContextName((self.compiled_value, name_str)),))
-        return ()
 
 
 # Patch jedi's anonymous parameter inference so that bpy.types.Operator
@@ -693,7 +705,7 @@ def patch_AnonymousParamName_infer():
                 continue
             cls_name = value.tree_node.children[1].value
             if cls := getattr(bpy.types, cls_name, None):
-                return RnaValue((cls, parent_value))
+                return get_rna_value(cls, parent_value)
         return None
 
     def infer(self: AnonymousParamName):
