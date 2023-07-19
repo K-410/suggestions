@@ -4,7 +4,7 @@ from jedi.inference.compiled.access import ALLOWED_DESCRIPTOR_ACCESS
 from jedi.inference.compiled.value import CompiledName, ValueSet
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter, StubName
 
-from textension.utils import instanced_default_cache, truthy_noargs, _named_index, _TupleBase, _patch_function
+from textension.utils import instanced_default_cache, truthy_noargs, _named_index, _TupleBase, lazy_overwrite
 from ..common import _check_flows, find_definition, state_cache
 from ..tools import is_basenode, is_namenode, state
 from operator import attrgetter
@@ -482,11 +482,11 @@ class CachedStubFilter(StubFilter):
         self._node_context  = parent_context
         self.cache = {}
 
-    @property
+    @lazy_overwrite
     def _parser_scope(self):
         return self.parent_context.tree_node
 
-    @property
+    @lazy_overwrite
     def _used_names(self):
         return self.parent_context.tree_node.get_root_node().get_used_names()
 
