@@ -93,7 +93,7 @@ def patch_convert_values():
         if only_stubs:
             prefer_stubs = False
         return convert_values(values, only_stubs=only_stubs, prefer_stubs=prefer_stubs, ignore_compiled=ignore_compiled)
-    convert_values = _patch_function(conversion.convert_values, convert_values)
+    # convert_values = _patch_function(conversion.convert_values, convert_values)
 
 
 # Fix unpickling errors jedi doesn't catch.

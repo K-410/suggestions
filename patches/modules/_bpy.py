@@ -10,7 +10,7 @@ from operator import getitem
 
 from ._mathutils import float_vector_map
 from ._bpy_types import MathutilsValue, PropArrayValue, IdPropCollectionValue, NO_VALUES, get_rna_value
-from ..common import VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, ValueSet
+from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, ValueSet
 
 
 def apply():
@@ -91,15 +91,6 @@ class PropsModule(VirtualModule):
         return super().py__getattribute__(name_or_str)
 
 
-class VirtualFunction(VirtualValue):
-    def py__call__(self, arguments):
-        instance = VirtualValue(bpy.props._PropertyDeferred, self.as_context()).instance
-        def instance_call(arguments):
-            return (VirtualValue(str, self.as_context()).instance,)
-        instance.py__call__ = instance_call
-        return ValueSet((instance,))
-
-
 def infer_vector_type(name, arguments, parent):
     if value := dict(arguments.unpack()).get("subtype"):
         if value.data.type == "string":
@@ -125,15 +116,16 @@ def infer_pointer_type(arguments):
 
 def infer_collection_type(arguments):
     if value := dict(arguments.unpack()).get("type"):
-        cls = simple_property_types["CollectionProperty"]
+        obj = simple_property_types["CollectionProperty"]
         parent = value.context._value
-        return IdPropCollectionValue((cls, parent)).py__call__(value)
+        return IdPropCollectionValue((obj, parent)).py__call__(value)
     return NO_VALUES
 
 
 class PropertyFunction(VirtualFunction):
     def py__call__(self, arguments):
-        instance = VirtualValue((bpy.props._PropertyDeferred, self)).instance
+        # TODO: This isn't ideal.
+        instance = VirtualValue((bpy.props._PropertyDeferred, self)).as_instance(arguments)
         instance.py__call__ = lambda *_, **__: self.py_instance__call__(arguments)
         return ValueSet((instance,))
 

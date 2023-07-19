@@ -330,56 +330,54 @@ def optimize_BaseTreeInstance_get_filters():
 
 def optimize_ClassMixin_get_filters():
     from jedi.inference.value.instance import InstanceClassFilter
-    from jedi.inference.value.klass import ClassMixin, ClassFilter, ValuesArguments, ClassValue
+    from jedi.inference.value.klass import ClassMixin, ClassFilter, ClassValue
     from jedi.inference.compiled import builtin_from_name
-    from textension.utils import instanced_default_cache
-    from ..common import state
+    from ..common import state, NoArguments, state_cache
 
-    def get_type_filter(self: dict, _):
-        type_ = builtin_from_name(state, "type")
-        instance, = type_.py__call__(None)
-        filter_ = None
 
-        for f in instance.class_value.get_filters(origin_scope=None, is_instance=True):
-            filter_ = InstanceClassFilter(instance, f)
-            break
+    cached_type_filter = None
 
-        return self.setdefault("type", (type_, filter_))
+    def get_cached_type_filter():
+        nonlocal cached_type_filter
 
-    stub_class_filter_cache = {}
-    type_cache = instanced_default_cache(get_type_filter)
+        if cached_type_filter is None:
+            instance, = builtin_from_name(state, "type").py__call__(NoArguments)
+            for f in instance.class_value.get_filters(origin_scope=None, is_instance=True):
+                cached_type_filter = InstanceClassFilter(instance, f)
+                break
+        return cached_type_filter
+
+    @state_cache
+    def get_cached_compiled_class_filters(cls: ClassValue, is_instance: bool):
+        filters = []
+        if cls.is_compiled():
+            filters += cls.get_filters(is_instance=is_instance)
+        return filters
 
     def _get_filters(self, origin_scope=None, is_instance=False, include_metaclasses=True, include_type_when_class=True):
-        if include_metaclasses:
-            metaclasses = self.get_metaclasses()
-            if metaclasses:
-                yield from self.get_metaclass_filters(metaclasses, is_instance)
+
+        filters = []
+        if metaclasses := include_metaclasses and self.get_metaclasses():
+            filters += self.get_metaclass_filters(metaclasses, is_instance)
 
         for cls in self.py__mro__():
             if cls.is_compiled():
-                yield from cls.get_filters(is_instance=is_instance)
+                filters += get_cached_compiled_class_filters(cls, is_instance)
             else:
-                yield ClassFilter(self, node_context=cls.as_context(), origin_scope=origin_scope, is_instance=is_instance)
+                filters += ClassFilter(self, cls.as_context(), None, origin_scope, is_instance),
 
-        if not is_instance and include_type_when_class:
-            # if "type" in type_cache:
-            #     return type_cache["type"]
+        if not is_instance and include_type_when_class and cached_type_filter is not self:
+            filters += get_cached_type_filter(),
+        return filters
 
-            type_ = builtin_from_name(self.inference_state, 'type')
-            if type_ != self:
-                args = ValuesArguments([])
-                from jedi.inference.value.instance import InstanceClassFilter
-                instance, = type_.py__call__(args)
-                for f in instance.class_value.get_filters(origin_scope=None, is_instance=True):
-                    type_cache["type"] = InstanceClassFilter(instance, f)
-                    return type_cache["type"]
+    stub_class_filter_cache = {}
 
     def get_filters(self: ClassValue, **kw):
-        # Stub filters are always cached.
         if self.is_stub():
+            # Stub filters are always cached.
             key = self.tree_node, tuple(kw.items())
             if key not in stub_class_filter_cache:
-                stub_class_filter_cache[key] = list(_get_filters(self, **kw))
+                stub_class_filter_cache[key] = _get_filters(self, **kw)
             return stub_class_filter_cache[key]
         return _get_filters(self, **kw)
 
@@ -487,9 +485,8 @@ class CachedStubFilter(StubFilter):
 
     def get(self, name):
         if name := get_module_definition_by_name(self._parser_scope, name):
-            names = self._convert_names((name,))
-            return names
-        return []
+            return (DeferredStubName((self.parent_context, name)),)
+        return ()
 
     def _filter(self, names):
         return self._check_flows(names)

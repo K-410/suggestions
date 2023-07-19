@@ -35,11 +35,21 @@ state_values = state.memoize_cache.values()
 get_start_pos = attrgetter("line", "column")
 get_cursor_focus = attrgetter("select_end_line_index", "select_end_character")
 
+scope_types = {"classdef", "comp_for", "file_input", "funcdef",  "lambdef",
+               "sync_comp_for"}
 
 # Used by various optimizations.
 for cls in iter(node_types := [BaseNode]):
     node_types += cls.__subclasses__()
 node_types: frozenset[BaseNode] = frozenset(node_types)
+
+
+# Used by VirtualValue.py__call__ and other inference functions where we
+# don't have any arguments to unpack. For constructors.
+@inline
+class NoArguments(AbstractArguments):
+    def unpack(self, *args, **kw):
+        yield from ()
 
 
 def yield_once(func):
@@ -237,37 +247,45 @@ def find_definition(context, ref: Name):
 
 
 def get_definition(ref: Name):
-    p = ref.parent
-    type  = p.type
     value = ref.value
+    scope = ref.parent
 
-    if type in {"funcdef", "classdef", "except_clause"}:
+    scope_types_ = scope_types
+    while scope.type not in scope_types_:
+        scope = scope.parent
 
-        # self is the class or function name.
-        children = p.children
+    if scope.type in {"funcdef", "classdef", "except_clause"}:
+
+        children = scope.children
         if value == children[1].value:  # Is the function/class name definition.
             return children[1]
 
-        # self is the e part of ``except X as e``.
-        elif type == "except_clause" and value == children[-1].value:
+        elif scope.type == "except_clause" and value == children[-1].value:
             return children[-1]
 
-    while p:
-        if p.type in definition_types:
-            for n in p.get_defined_names(True):
-                if value == n.value:
-                    return n
-        elif p.type == "file_input":
-            if n := get_module_definition_by_name(p, value):
-                return n
-        p = p.parent
+        # ``ref`` is probably an argument.
+        else:
+            scope = scope.parent
+
+    start = ref.line
+    for name in get_cached_scope_definitions(scope)[ref.value]:
+        if name.line <= start:
+            return name
+
+    return None
 
 
 @state_cache
-def get_module_definition_by_name(module, string_name):
-    for name in get_all_module_names(module):
-        if name.value == string_name and name.get_definition(include_setitem=True):
-            return name
+def get_cached_scope_definitions(scope):
+    from collections import defaultdict
+
+    cache = defaultdict(list)
+    scope_definitions = get_scope_name_definitions(scope)
+    for namedef in scope_definitions:
+        cache[namedef.value] += namedef,
+
+    cache.default_factory = repeat(()).__next__
+    return cache
 
 
 @state_cache
@@ -565,28 +583,7 @@ class VirtualName(_TupleBase, CompiledValueName):
         return f"{self.parent_value}.{self.string_name}"
 
 
-class VirtualFilter(_TupleBase, CompiledValueFilter):
-    _inference_state = state
-
-    compiled_value: "VirtualValue" = _named_index(0)
-    is_instance:     bool          = _named_index(1)
-
-    def get(self, name_str: str):
-        return self.compiled_value.get_filter_get(name_str, self.is_instance)
-
-    def values(self):
-        return self.compiled_value.get_filter_values(self.is_instance)
-
-    def __repr__(self):
-        return f"{_repr(self)}({_repr(self.compiled_value)})"
-
-
 class VirtualValue(_TupleBase, CompiledValue):
-    @inline
-    def __init__(self, elements):
-        """elements: A tuple of object and parent value."""
-        return _TupleBase.__init__
-
     is_compiled  = truthy_noargs
     is_class     = truthy_noargs
 
@@ -594,36 +591,37 @@ class VirtualValue(_TupleBase, CompiledValue):
     is_instance  = falsy_noargs
     is_module    = falsy_noargs
     is_stub      = falsy_noargs
+
     is_builtins_module = falsy_noargs
 
     inference_state = state
-
-    _api_type    = "unknown"
     instance_cls = VirtualInstance
 
-    parent_value: "VirtualValue"
+    obj                          = _named_index(0)
+    parent_value: "VirtualValue" = _named_index(1)
 
-    obj          = _named_index(0)
-    parent_value = _named_index(1)
+    @inline
+    def __init__(self, elements):
+        """elements: A tuple of object and parent value."""
+        return _TupleBase.__init__
 
     def infer_name(self, name: VirtualName):
         obj = self.members[name.string_name]
-
         data = (obj, self)
+
         if obj in virtual_overrides:
             value = virtual_overrides[obj](data)
         else:
             value = VirtualValue(data)
 
         if name.is_instance:
-            value = value.instance
+            value = value.as_instance()
         return ValueSet((value,))
 
     @state_cache
     def infer_name_cached(self, name: VirtualName):
         return self.infer_name(name)
 
-    # Just to satisfy jedi.
     @property
     def access_handle(self):
         return get_handle(self.obj)
@@ -634,11 +632,10 @@ class VirtualValue(_TupleBase, CompiledValue):
 
     @property
     def api_type(self):
-        return self._api_type
+        return "unknown"
 
-    @property
-    def instance(self):
-        return self.instance_cls(self)
+    def as_instance(self, arguments=NoArguments):
+        return self.instance_cls(self, arguments)
 
     def get_signatures(self):
         return ()
@@ -649,8 +646,8 @@ class VirtualValue(_TupleBase, CompiledValue):
     def py__name__(self):
         return "VirtualValue.py__name__ (override me)"
 
-    def py__call__(self, arguments=None):
-        return ValueSet((self.instance_cls(self, arguments),))
+    def py__call__(self, arguments=NoArguments):
+        return ValueSet((self.as_instance(arguments),))
 
     def get_filters(self, is_instance=False, origin_scope=None):
         return (VirtualFilter((self, is_instance)),)
@@ -674,9 +671,6 @@ class VirtualValue(_TupleBase, CompiledValue):
     def get_members(self):
         return get_mro_dict(self.obj)
 
-    def __repr__(self):
-        return f"{_repr(self)}({repr(self.obj)})"
-
     def get_filter_get(self, name_str: str, is_instance):
         if name_str in self.members:
             return (VirtualName((self, name_str, is_instance)),)
@@ -684,6 +678,25 @@ class VirtualValue(_TupleBase, CompiledValue):
 
     def get_filter_values(self, is_instance=False):
         return list(map(VirtualName, zip(repeat(self), self.members)))
+
+    def __repr__(self):
+        return f"{_repr(self)}({repr(self.obj)})"
+
+
+class VirtualFilter(_TupleBase, CompiledValueFilter):
+    _inference_state = state
+
+    compiled_value: VirtualValue | VirtualInstance = _named_index(0)
+    is_instance:     bool                          = _named_index(1)
+
+    def get(self, name_str: str):
+        return self.compiled_value.get_filter_get(name_str, self.is_instance)
+
+    def values(self):
+        return self.compiled_value.get_filter_values(self.is_instance)
+
+    def __repr__(self):
+        return f"{_repr(self)}({_repr(self.compiled_value)})"
 
 
 class VirtualFunction(VirtualValue):
@@ -776,7 +789,7 @@ class TextSession:
             self.file_io._content = ensure_blank_eol(self.code.splitlines(True))
             self.module.tree_node = state.grammar.parse(self.code, file_io=self.file_io, cache_path=self.file_io.path)
 
-        # Clear filters to reset since ``until_position`` since last time.
+        # Clear filters to reset ``until_position`` since last time.
         self.module.context.filters = None
 
 
@@ -816,11 +829,3 @@ def complete(text):
     from jedi.api import Interpreter
     line, column = get_cursor_focus(text)
     return Interpreter(text.as_string(), []).complete(line + 1, column)
-
-
-# Used by VirtualValue.py__call__ and other inference functions where we
-# don't have any arguments to unpack. For constructors.
-@inline
-class NoArguments(AbstractArguments):
-    def unpack(self, *args, **kw):
-        yield from ()

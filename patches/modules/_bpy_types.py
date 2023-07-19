@@ -13,7 +13,7 @@ from operator import attrgetter
 from textension.utils import _context, _forwarder, inline, starchain
 
 from ._mathutils import float_vector_map
-from ..common import VirtualInstance, VirtualName, VirtualValue, get_mro_dict, state_cache, virtual_overrides, NoArguments
+from ..common import VirtualInstance, VirtualName, VirtualFilter, VirtualValue, get_mro_dict, state_cache, virtual_overrides, NoArguments
 from ..tools import runtime, state, make_compiled_value, make_instance
 
 import bpy
@@ -349,8 +349,8 @@ class RnaInstance(VirtualInstance):
     # Implements subscript for bpy_prop_collections.
     def py__simple_getitem__(self, index):
         if isinstance(self.class_value, PropCollectionValue):
-            instance = get_rna_value(self.class_value.obj.fixed_type, self.class_value).instance
-            return ValueSet((instance,))
+            srna = self.class_value.obj.fixed_type
+            return ValueSet((get_rna_value(srna, self.class_value).as_instance(),))
         return NO_VALUES
 
     def py__getitem__(self, index_value_set, contextualized_node):
@@ -434,7 +434,7 @@ class RnaValue(VirtualValue):
         context = self.as_context()
         ret = [self]
 
-        for obj in type(self.obj.bl_rna).__mro__:
+        for obj in type(self.obj.bl_rna).__mro__[1:]:
             if is_bpy_struct_subclass(obj) and obj is not StructRNA:
                 ret += get_rna_value(obj.bl_rna, self),
             else:
@@ -649,17 +649,20 @@ class ContextInstance(RnaInstance):
     def _get_value_filters(self, *_):
         yield from self.get_filters()
 
+    def get_filters(self, **kw):
+        return (VirtualFilter((self, True)),)
+
     def get_filter_values(self, is_instance):
-        data = zip(repeat(self.compiled_value), _bpy.context_members()["screen"])
+        data = zip(repeat(self.class_value), _bpy.context_members()["screen"])
         return super().get_filter_values(True) + list(map(RnaName, data))
 
-    def get_filter_get(self, name_str):
-        if ret := super().get_filter_get(name_str):
+    def get_filter_get(self, name_str, _):
+        if ret := self.class_value.get_filter_get(name_str, True):
             return ret
         
         # These aren't part of the screen context.
         if name_str in context_type_map:
-            return ValueSet((NonScreenContextName((self.compiled_value, name_str)),))
+            return ValueSet((NonScreenContextName((self.class_value, name_str, True)),))
         return ()
 
 

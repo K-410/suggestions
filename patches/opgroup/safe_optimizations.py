@@ -5,7 +5,6 @@ from textension.utils import (
     _forwarder,
     _unbound_getter,
     _unbound_method,
-    _unbound_attrcaller,
     _patch_function,
     truthy_noargs,
     falsy,
@@ -1042,11 +1041,25 @@ def optimize_infer_expr_stmt():
     _patch_function(infer_expr_stmt, _infer_expr_stmt.__closure__[0].cell_contents)
 
 
+# Removes recursion protection, remove generator, move exception handling
+# outside the inner loop.
 def optimize_ClassMixin_py__mro__():
     from jedi.inference.value.klass import ClassMixin
 
-    # Skip recursion safe wrappers.
-    ClassMixin.py__mro__ = ClassMixin.py__mro__.__closure__[0].cell_contents
+    def py__mro__(self: ClassMixin):
+        mro = [self]
+        try:
+            for lazy_cls in self.py__bases__():
+                for cls in lazy_cls.infer()._set:
+                    mro += cls.py__mro__()
+
+        # If the object isn't a class, jedi is doing something wrong.
+        # The warning isn't useful to the user.
+        except AttributeError:
+            pass
+        return mro
+
+    ClassMixin.py__mro__ = py__mro__
 
 
 def optimize_Param_name():
@@ -1351,7 +1364,7 @@ def optimize_builtin_from_name():
     def _builtin_from_name(inference_state, string):
         if string not in cache:
             stub_value = inference_state.builtins_module
-            if string in ('None', 'True', 'False'):
+            if string in {"None", "True", "False"}:
                 builtins, = stub_value.non_stub_value_set
                 filter_ = next(builtins.get_filters())
             else:
