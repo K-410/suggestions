@@ -471,17 +471,24 @@ stub_values_cache = instanced_default_cache(get_stub_values)
 
 
 class CachedStubFilter(StubFilter):
+    _until_position   = None
+    _origin_scope     = None
     _parso_cache_node = None
+
     _check_flows = _check_flows
 
     def __init__(self, parent_context):
-        self._until_position = None
-        self._origin_scope   = None
-        self.parent_context  = parent_context
-        self._node_context   = parent_context
-        self._parser_scope   = parent_context.tree_node
-        self._used_names     = parent_context.tree_node.get_root_node().get_used_names()
+        self.parent_context = parent_context
+        self._node_context  = parent_context
         self.cache = {}
+
+    @property
+    def _parser_scope(self):
+        return self.parent_context.tree_node
+
+    @property
+    def _used_names(self):
+        return self.parent_context.tree_node.get_root_node().get_used_names()
 
     def get(self, name):
         if name := get_module_definition_by_name(self._parser_scope, name):

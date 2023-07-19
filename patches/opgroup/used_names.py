@@ -21,6 +21,7 @@ get_direct_node = attrgetter("tree_node.parent")
 def apply():
     optimize_Module_get_used_names()
     optimize_GlobalNameFilter_values()
+    optimize_AbstractUsedNamesFilter_init()
 
 
 def optimize_Module_get_used_names():
@@ -154,3 +155,50 @@ def finish(self: _NodesTreeNode):
     # Add updated module base nodes to the names cache.
     node_cache[self.tree_node].updates = set(
         filter(is_basenode, map(get_direct_node, self._node_children)))
+
+
+def optimize_AbstractUsedNamesFilter_init():
+    from jedi.inference.filters import _AbstractUsedNamesFilter, get_parso_cache_node
+
+    _AbstractUsedNamesFilter._used_names_ = None
+    _AbstractUsedNamesFilter._module_context = None
+    _AbstractUsedNamesFilter._parso_cache_node = None
+    _AbstractUsedNamesFilter._parso_cache_node_ = None
+
+    def __init__(self: _AbstractUsedNamesFilter, parent_context, node_context=None):
+        self._node_context  = node_context or parent_context
+        self.parent_context = parent_context
+
+    @property
+    def _used_names(self: _AbstractUsedNamesFilter):
+        if self._used_names_ is None:
+            self._used_names_ = self.module_context.tree_node.get_used_names()
+        return self._used_names_
+
+    @property
+    def module_context(self: _AbstractUsedNamesFilter):
+        if self._module_context is None:
+            self._module_context = self._node_context.get_root_context()
+        return self._module_context
+
+    @property
+    def _parso_cache_node(self: _AbstractUsedNamesFilter):
+        if self._parso_cache_node_ is None:
+            module_context = self.module_context
+            if path := module_context.py__file__():
+                if module_context.is_stub():
+                    grammar = module_context.inference_state.latest_grammar
+                else:
+                    grammar = module_context.inference_state.grammar
+                self._parso_cache_node_ = get_parso_cache_node(grammar, path)
+        return self._parso_cache_node_
+
+    @property
+    def _parser_scope(self: _AbstractUsedNamesFilter):
+        return self._node_context.tree_node
+
+    _AbstractUsedNamesFilter.__init__ = __init__
+    _AbstractUsedNamesFilter._used_names = _used_names
+    _AbstractUsedNamesFilter.module_context = module_context
+    _AbstractUsedNamesFilter._parso_cache_node = _parso_cache_node
+    _AbstractUsedNamesFilter._parser_scope = _parser_scope
