@@ -72,13 +72,15 @@ class DeferredCompiledName(tuple, CompiledName):
 def optimize_CompiledValueFilter_values():
     from jedi.inference.compiled.value import CompiledValueFilter
     from itertools import repeat
+    from ..common import state_cache
 
+    @state_cache
     def values(self: CompiledValueFilter):
         value = self.compiled_value
         obj = value.access_handle.access._obj
         sequences = zip(repeat(value), repeat(value.as_context()), dir(obj))
         # Note: type completions is not added, because why would we?
-        return map(DeferredCompiledName, sequences)
+        return list(map(DeferredCompiledName, sequences))
 
     CompiledValueFilter.values = values
 
