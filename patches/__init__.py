@@ -202,30 +202,24 @@ def patch_various_redirects():
 def patch_Completion_complete_inherited():
     from jedi.api.completion import Completion
     from parso.python.tree import search_ancestor
+    from itertools import islice
 
     def _complete_inherited(self: Completion, is_function=True):
         leaf = self._module_node.get_leaf_for_position(self._position, include_prefixes=True)
         cls = search_ancestor(leaf, 'classdef')
-        if cls is None:
-            return
 
-        # Complete the methods that are defined in the super classes.
-        class_value = self._module_context.create_value(cls)
+        ret = []
+        if cls and cls.start_pos[1] < leaf.start_pos[1]:
+            # Complete the methods that are defined in the super classes.
+            value = self._module_context.create_value(cls)
 
-        if cls.start_pos[1] >= leaf.start_pos[1]:
-            return
-
-        filters = class_value.get_filters(is_instance=True)
-        # The first dict is the dictionary of class itself.
-        next(filters)
-        for filter in filters:
-            for name in filter.values():
-                # TODO we should probably check here for properties
-                ret = name.api_type
-
-                # XXX: Here's the fix.
-                if ret == 'function' and is_function:
-                    yield name
+            filters = value.get_filters(is_instance=True)
+            # The first dict is the dictionary of class itself.
+            for filter in islice(filters, 1, None):
+                for name in filter.values():
+                    if name.api_type == "function" and is_function:
+                        ret += name,
+        return ret
 
     Completion._complete_inherited = _complete_inherited
 
