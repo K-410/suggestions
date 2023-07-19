@@ -654,7 +654,7 @@ class ContextInstance(RnaInstance):
 
     def get_filter_values(self, is_instance):
         data = zip(repeat(self.class_value), _bpy.context_members()["screen"])
-        return super().get_filter_values(True) + list(map(RnaName, data))
+        return self.class_value.get_filter_values(True) + list(map(RnaName, data))
 
     def get_filter_get(self, name_str, _):
         if ret := self.class_value.get_filter_get(name_str, True):
