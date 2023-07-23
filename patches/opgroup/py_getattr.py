@@ -1,14 +1,14 @@
 # Implements optimizations for various py__getattribute__ methods.
 
 from jedi.inference.syntax_tree import tree_name_to_values
-from jedi.inference.value.klass import ClassValue, ValueSet
+from jedi.inference.value.klass import ClassValue
 from jedi.inference.base_value import HelperValueMixin
 
 from itertools import repeat, compress
 from functools import reduce
 from operator import attrgetter, eq, or_
 
-from ..common import get_scope_name_definitions, state
+from ..common import get_scope_name_definitions, state, AggregateValues
 
 
 rep_state = repeat(state)
@@ -27,7 +27,7 @@ def py__getattribute__(self: ClassValue, name_or_str, name_context=None, positio
         results = map(tree_name_to_values, rep_state, repeat(self.as_context()), names)
 
         if values := list(results):
-            return ValueSet(reduce(or_, map(get_set, values)))
+            return AggregateValues(reduce(or_, map(get_set, values)))
         else:
             print("py_getattr failed to find:", name_or_str, f"({self})")
 

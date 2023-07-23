@@ -10,7 +10,7 @@ from operator import getitem
 
 from ._mathutils import float_vector_map
 from ._bpy_types import MathutilsValue, PropArrayValue, IdPropCollectionValue, NO_VALUES, get_rna_value
-from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, ValueSet
+from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, AggregateValues
 
 
 def apply():
@@ -127,7 +127,7 @@ class PropertyFunction(VirtualFunction):
         # TODO: This isn't ideal.
         instance = VirtualValue((bpy.props._PropertyDeferred, self)).as_instance(arguments)
         instance.py__call__ = lambda *_, **__: self.py_instance__call__(arguments)
-        return ValueSet((instance,))
+        return AggregateValues((instance,))
 
     def py_instance__call__(self, arguments):
         func_name = self.obj.__name__

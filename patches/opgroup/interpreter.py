@@ -239,7 +239,9 @@ def optimize_grammar_parse():
         # Jedi will sometimes parse small snippets as docstring modules.
         if not path and not file_io:
             lines = ensure_blank_eol(code.splitlines(True))
-            return Parser(self._pgen_grammar, start_nonterminal="file_input").parse(tokens=self._tokenizer(lines))
+            # ``start_symbol`` can sometimes be ``eval_input``. The difference
+            # is the type of root node Parser.parse returns.
+            return Parser(self._pgen_grammar, start_nonterminal=start_symbol or self._start_nonterminal).parse(tokens=self._tokenizer(lines))
 
         if not path:
             path = file_io.path
@@ -288,7 +290,7 @@ def optimize_grammar_parse():
 def optimize_tokenize_lines() -> None:
     from parso.python.tokenize import FStringNode, _close_fstring_if_necessary, \
         split_lines, _get_token_collection, tokenize_lines as _tokenize_lines, _find_fstring_string
-    from textension.utils import inline, _TupleBase, _named_index
+    from textension.utils import inline, Aggregation, _named_index
     from .interpreter import PythonTokenTypes
     from itertools import chain, count, repeat
     from operator import attrgetter
@@ -309,7 +311,7 @@ def optimize_tokenize_lines() -> None:
     FSTRING_STRING = PythonTokenTypes.FSTRING_STRING
     FSTRING_END    = PythonTokenTypes.FSTRING_END
 
-    class PythonToken2(_TupleBase):
+    class PythonToken2(Aggregation):
         type: PythonTokenTypes      = _named_index(0)
         string: str                 = _named_index(1)
         start_pos: tuple[int, int]  = _named_index(2)
@@ -631,6 +633,7 @@ def optimize_tokenize_lines() -> None:
 
                 else:
                     if token not in  {"...", ";"}:
+                        # TODO: Handle raw strings.
                         print("unhandled OP token:", repr(token), spos, prefix)
                     result += (OP, token, spos, prefix),
 

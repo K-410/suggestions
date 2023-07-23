@@ -1,11 +1,12 @@
 # This module implements optimizations for various filters and stubs.
 from jedi.inference.compiled.getattr_static import getattr_static
 from jedi.inference.compiled.access import ALLOWED_DESCRIPTOR_ACCESS
-from jedi.inference.compiled.value import CompiledName, ValueSet
+from jedi.inference.compiled.value import CompiledName
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter, StubName
+from jedi.inference.value.klass import ClassFilter
 
-from textension.utils import instanced_default_cache, truthy_noargs, _named_index, _TupleBase, lazy_overwrite
-from ..common import _check_flows, find_definition, state_cache
+from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder
+from ..common import _check_flows, state_cache, AggregateValues
 from ..tools import is_basenode, is_namenode, state
 from operator import attrgetter
 from itertools import repeat
@@ -15,6 +16,7 @@ def apply():
     optimize_SelfAttributeFilter_values()
     optimize_ClassFilter_values()
     optimize_ClassFilter_filter()
+    optimize_ClassFilter_get()
     optimize_AnonymousMethodExecutionFilter()
     optimize_ParserTreeFilter_values()
     optimize_CompiledValueFilter_values()
@@ -25,6 +27,26 @@ def apply():
     optimize_ClassMixin_get_filters()
 
     optimize_StubModules()
+
+
+# Pretty much same as ClassFilter, except using aggregate initialization
+# and expensive values are computed on-demand.
+class AggregateClassFilter(Aggregation, ClassFilter):
+    _class_value   = _named_index(0)
+    _context_value = _named_index(1)
+    _origin_scope  = _named_index(2)
+    _is_instance   = _named_index(3)
+
+    _parser_scope  = _forwarder("_context_value.tree_node")
+    until_position = None
+
+    @lazy_overwrite
+    def parent_context(self):
+        return self._class_value.as_context()
+
+    @lazy_overwrite
+    def _node_context(self):
+        return self._context_value.as_context()
 
 
 def is_allowed_getattr(obj, name):
@@ -63,7 +85,7 @@ class DeferredCompiledName(tuple, CompiledName):
 
     def infer(self):
         has_attribute, is_descriptor = is_allowed_getattr(self._parent_value, self.string_name)
-        return ValueSet([self.infer_compiled_value()])
+        return AggregateValues((self.infer_compiled_value(),))
 
 
 
@@ -127,46 +149,33 @@ def optimize_SelfAttributeFilter_values():
     SelfAttributeFilter.values = values
 
 
-def get_function_name_definitions(function):
-    
-    namedefs = []
-    pool  = function.children[:]
-    for n in filter(is_basenode, pool):
-        if n.type == "parameters":
-            namedefs += n.children[1].children[::2]
-        # pool += n.children
-
-    return namedefs
-
 def optimize_ClassFilter_values():
     from jedi.inference.value.klass import ClassFilter
+    from parso.python.tree import Class
     from ..common import DeferredDefinition, state_cache, get_scope_name_definitions
-    from ..tools import is_classdef
+    from builtins import list, map, zip
 
     stub_classdef_cache = {}
 
     @state_cache
     def values(self: ClassFilter):
-        context = self.parent_context
-        scope   = self._parser_scope
-        names   = []
+        scope = self._parser_scope
 
-        if is_classdef(scope):
+        if scope.__class__ is Class:
+            value = self._class_value
             # The class suite.
             scope = scope.children[-1]
+            names = []
 
-            # A user defined class' base can be a stub value, although the
-            # context still is non-stub. So we check the node context also
-            # to determine whether the class filter values can be cached.
-            if context.is_stub() or self._node_context.is_stub():
+            if self._context_value.is_stub():
                 if scope not in stub_classdef_cache:
                     stub_classdef_cache[scope] = self._filter(get_scope_name_definitions(scope))
                 names = stub_classdef_cache[scope]
             else:
                 names = get_scope_name_definitions(scope)
-                # names = self._filter(get_scope_name_definitions(scope))
 
-        return list(map(DeferredDefinition, zip(repeat(context), names)))
+            return list(map(DeferredDefinition, zip(repeat(value), names)))
+        return ()
 
     ClassFilter.values = values
     ClassFilter._check_flows = _check_flows
@@ -176,41 +185,26 @@ def optimize_ClassFilter_filter():
     from jedi.inference.value.klass import ClassFilter
 
     def _filter(self: ClassFilter, names):
-        instanced = self._is_instance
-        scope = self._parser_scope
         tmp = []
-
         for name in names:
-            parent = name.parent
-            parent_type = parent.type
-
-            if parent_type in {"funcdef", "classdef"}:
-                suite = parent.parent
-
-                # For decorators inside classes.
-                # XXX: Jedi still has some control of what gets passed to ``_filter``,
-                # so we can't blindly assume names to be remotely in the same scope.
-                if suite.type == "decorated":
-                    while p := suite.parent:
-                        if p is scope:
-                            break
-                        suite = p
-
-                # Also check for overloaded/decorated functions.
-                if suite.parent is scope:
-                    tmp += name,
-                else:
-                    pass
-
-            elif parent_type == "expr_stmt":
-                if parent.parent.parent.parent is scope:
-                    # Either ``operator`` or ``annassign``.
-                    # Annotations are assumed to exist on instances.
-                    if parent.children[1].type == "operator" or instanced:
-                        tmp += name,
+            # TODO: Use functional style.
+            if name.value.startswith("__") and not name.value.endswith("__"):
+                continue
+            tmp += name,
         return tmp
 
     ClassFilter._filter = _filter
+
+
+def optimize_ClassFilter_get():
+    from jedi.inference.value.klass import ClassFilter
+    from ..common import get_cached_scope_definitions, DeferredDefinition
+
+    def get(self: ClassFilter, name_str: str):
+        names = get_cached_scope_definitions(self._parser_scope)[name_str]
+        return list(map(DeferredDefinition, zip(repeat(self._class_value), names)))
+
+    ClassFilter.get = get
 
 
 def optimize_AnonymousMethodExecutionFilter():
@@ -332,9 +326,8 @@ def optimize_BaseTreeInstance_get_filters():
 
 def optimize_ClassMixin_get_filters():
     from jedi.inference.value.instance import InstanceClassFilter
-    from jedi.inference.value.klass import ClassMixin, ClassFilter, ClassValue
-    from jedi.inference.compiled import builtin_from_name
-    from ..common import state, NoArguments, state_cache
+    from jedi.inference.value.klass import ClassMixin, ClassValue
+    from ..common import NoArguments, state_cache, cached_builtins
 
 
     cached_type_filter = None
@@ -343,7 +336,7 @@ def optimize_ClassMixin_get_filters():
         nonlocal cached_type_filter
 
         if cached_type_filter is None:
-            instance, = builtin_from_name(state, "type").py__call__(NoArguments)
+            instance, = cached_builtins.type.py__call__(NoArguments)
             for f in instance.class_value.get_filters(origin_scope=None, is_instance=True):
                 cached_type_filter = InstanceClassFilter(instance, f)
                 break
@@ -352,8 +345,7 @@ def optimize_ClassMixin_get_filters():
     @state_cache
     def get_cached_compiled_class_filters(cls: ClassValue, is_instance: bool):
         filters = []
-        if cls.is_compiled():
-            filters += cls.get_filters(is_instance=is_instance)
+        filters += cls.get_filters(is_instance=is_instance)
         return filters
 
     def _get_filters(self, origin_scope=None, is_instance=False, include_metaclasses=True, include_type_when_class=True):
@@ -366,7 +358,7 @@ def optimize_ClassMixin_get_filters():
             if cls.is_compiled():
                 filters += get_cached_compiled_class_filters(cls, is_instance)
             else:
-                filters += ClassFilter(self, cls.as_context(), None, origin_scope, is_instance),
+                filters += AggregateClassFilter((self, cls, origin_scope, is_instance)),
 
         if not is_instance and include_type_when_class and cached_type_filter is not self:
             filters += get_cached_type_filter(),
@@ -386,11 +378,12 @@ def optimize_ClassMixin_get_filters():
     ClassMixin.get_filters = get_filters
 
 
-class DeferredStubName(_TupleBase, StubName):
+class DeferredStubName(Aggregation, StubName):
     parent_context = _named_index(0)
     tree_name      = _named_index(1)
 
 
+# TODO: Can this be removed in favor of cached scope name definitions?
 @state_cache
 def get_scope_name_strings(scope):
     namedefs = []
@@ -410,7 +403,7 @@ def get_scope_name_strings(scope):
                 if name.type == "name":
                     namedefs += name.value,
                 else:
-                    print(name.type)
+                    print("get_scope_name_strings:", repr(name.type))
 
             elif n.type == "import_from":
                 name = n.children[3]

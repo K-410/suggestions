@@ -2,12 +2,13 @@
 
 from jedi.inference.compiled.value import (
     CompiledValue, CompiledValueFilter, CompiledValueName, CompiledModule)
-from jedi.inference.lazy_value import LazyKnownValues, NO_VALUES, ValueSet
-from jedi.inference.arguments import AbstractArguments
+from jedi.inference.lazy_value import LazyKnownValues, LazyTreeValue
+from jedi.inference.arguments import AbstractArguments, TreeArguments
+from jedi.inference.compiled import builtin_from_name
 from jedi.inference.context import CompiledContext, GlobalNameFilter
-from jedi.inference.value import CompiledInstance, ModuleValue
-from jedi.inference.names import TreeNameDefinition
 from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
+from jedi.inference.names import TreeNameDefinition, NO_VALUES, ValueSet
+from jedi.inference.value import CompiledInstance, ModuleValue
 from parso.python.tree import Name
 from parso.tree import BaseNode
 from parso.file_io import KnownContentFileIO
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from textension.utils import (
     _forwarder, _named_index, _unbound_getter, consume, falsy_noargs, inline,
-     set_name, truthy_noargs, instanced_default_cache, _descriptor, _TupleBase)
+     set_name, truthy_noargs, instanced_default_cache, Aggregation, lazy_overwrite)
 
 from .tools import state, get_handle, factory, is_namenode, is_basenode, ensure_blank_eol
 
@@ -518,7 +519,7 @@ class VirtualInstance(CompiledInstance):
 
     def py__iter__(self, *args, **unused):
         if instance := self.py__simple_getitem__(0):
-            return ValueSet((LazyKnownValues(instance),))
+            return AggregateValues((LazyKnownValues(instance),))
         return NO_VALUES
 
     @property
@@ -551,7 +552,7 @@ class VirtualModule(CompiledModule):
 virtual_overrides = {}
 
 
-class VirtualName(_TupleBase, CompiledValueName):
+class VirtualName(Aggregation, CompiledValueName):
     _inference_state = state
 
     parent_value: "VirtualValue" = _named_index(0)
@@ -583,7 +584,7 @@ class VirtualName(_TupleBase, CompiledValueName):
         return f"{self.parent_value}.{self.string_name}"
 
 
-class VirtualValue(_TupleBase, CompiledValue):
+class VirtualValue(Aggregation, CompiledValue):
     is_compiled  = truthy_noargs
     is_class     = truthy_noargs
 
@@ -603,7 +604,7 @@ class VirtualValue(_TupleBase, CompiledValue):
     @inline
     def __init__(self, elements):
         """elements: A tuple of object and parent value."""
-        return _TupleBase.__init__
+        return Aggregation.__init__
 
     def infer_name(self, name: VirtualName):
         obj = self.members[name.string_name]
@@ -616,7 +617,7 @@ class VirtualValue(_TupleBase, CompiledValue):
 
         if name.is_instance:
             value = value.as_instance()
-        return ValueSet((value,))
+        return AggregateValues((value,))
 
     @state_cache
     def infer_name_cached(self, name: VirtualName):
@@ -647,7 +648,7 @@ class VirtualValue(_TupleBase, CompiledValue):
         return "VirtualValue.py__name__ (override me)"
 
     def py__call__(self, arguments=NoArguments):
-        return ValueSet((self.as_instance(arguments),))
+        return AggregateValues((self.as_instance(arguments),))
 
     def get_filters(self, is_instance=False, origin_scope=None):
         return (VirtualFilter((self, is_instance)),)
@@ -683,7 +684,7 @@ class VirtualValue(_TupleBase, CompiledValue):
         return f"{_repr(self)}({repr(self.obj)})"
 
 
-class VirtualFilter(_TupleBase, CompiledValueFilter):
+class VirtualFilter(Aggregation, CompiledValueFilter):
     _inference_state = state
 
     compiled_value: VirtualValue | VirtualInstance = _named_index(0)
@@ -712,9 +713,13 @@ class BpyTextBlockIO(KnownContentFileIO, FileIOFolderMixin):
     __init__ = object.__init__
 
 
-class DeferredDefinition(_TupleBase, TreeNameDefinition):
-    parent_context = _named_index(0)
+class DeferredDefinition(Aggregation, TreeNameDefinition):
+    parent_value   = _named_index(0)
     tree_name      = _named_index(1)
+
+    @lazy_overwrite
+    def parent_context(self):
+        return self.parent_value.as_context()
 
 
 class BpyTextModule(ModuleValue):
@@ -829,3 +834,48 @@ def complete(text):
     from jedi.api import Interpreter
     line, column = get_cursor_focus(text)
     return Interpreter(text.as_string(), []).complete(line + 1, column)
+
+
+class AggregateTreeArguments(Aggregation, TreeArguments):
+    _inference_state = state
+
+    context       = _named_index(0)
+    argument_node = _named_index(1)
+
+    @lazy_overwrite
+    def trailer(self):
+        return self[2]
+
+
+class AggregateLazyTreeValue(Aggregation, LazyTreeValue):
+    min = 1
+    max = 1
+
+    context = _named_index(0)
+    data    = _named_index(1)
+
+
+class AggregateLazyKnownValues(Aggregation, LazyKnownValues):
+    min = 1
+    max = 1
+
+    data = _named_index(0)
+
+
+@inline
+class cached_builtins:
+    def __getattr__(self, name: str, _b=set(__builtins__)):
+        if name in _b:
+            return self.__dict__.setdefault(name, builtin_from_name(state, name))
+        raise
+
+
+class AggregateValues(frozenset, ValueSet):
+    __slots__ = ()
+
+    __init__  = frozenset.__init__
+    __repr__  = ValueSet.__repr__
+
+    # ``_set`` refers to the instance itself aggregate itself.
+    # This makes it compatible with ValueSet methods.
+    _set = _forwarder("__init__.__self__")

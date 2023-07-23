@@ -1,19 +1,17 @@
 # This module implements RNA type inference.
 
 from jedi.inference.compiled.value import SignatureParamName
-from jedi.inference.value.instance import ValueSet, NO_VALUES
-from jedi.inference.lazy_value import LazyKnownValues
+from jedi.inference.lazy_value import LazyKnownValues, NO_VALUES
 from jedi.inference.signature import AbstractSignature
-from jedi.inference.compiled import builtin_from_name
 
 from itertools import chain, repeat
-from inspect import Parameter
 from operator import attrgetter
+from inspect import Parameter
 
 from textension.utils import _context, _forwarder, inline, starchain
 
 from ._mathutils import float_vector_map
-from ..common import VirtualInstance, VirtualName, VirtualFilter, VirtualValue, get_mro_dict, state_cache, virtual_overrides, NoArguments
+from ..common import VirtualInstance, VirtualName, VirtualFilter, VirtualValue, get_mro_dict, state_cache, virtual_overrides, NoArguments, cached_builtins, AggregateValues
 from ..tools import runtime, state, make_compiled_value, make_instance
 
 import bpy
@@ -249,7 +247,7 @@ def rnadef_to_value(rnadef, parent):
         if rnadef.subtype in float_vector_map:
             return MathutilsValue((float_vector_map[rnadef.subtype], parent))
         return PropArrayValue((rna_py_type_map[type], parent))
-    return builtin_from_name(state, rna_py_type_map[type].__name__)
+    return getattr(cached_builtins, rna_py_type_map[type].__name__)
 
 
 rna_fallbacks = {}
@@ -279,7 +277,7 @@ def rna_fallback_value(parent, name):
             from jedi.inference.value.iterable import FakeTuple
             from jedi.inference.lazy_value import LazyKnownValue
             v = LazyKnownValue(get_rna_value(bpy.types.Object, parent))
-            return ValueSet([FakeTuple(state, [v])])
+            return AggregateValues((FakeTuple(state, [v]),))
 
 
 # An RnaName doesn't have to infer to an RnaValue. It just means the name
@@ -294,7 +292,7 @@ class RnaName(VirtualName):
             if isinstance(obj, types.GenericAlias):
                 from jedi.inference.value.iterable import FakeList, LazyKnownValue
                 v, = get_rna_value(obj.__args__[0].bl_rna, parent).py__call__(None)
-                return ValueSet([FakeList(state, [LazyKnownValue(v)])])
+                return AggregateValues((FakeList(state, [LazyKnownValue(v)]),))
 
             value = get_rna_value(obj.bl_rna, parent)
 
@@ -310,7 +308,7 @@ class RnaName(VirtualName):
             value = tmp
 
         elif name == "bl_rna":
-            return ValueSet((get_rna_value(obj, parent),))
+            return AggregateValues((get_rna_value(obj, parent),))
 
         else:
             return NO_VALUES
@@ -350,7 +348,7 @@ class RnaInstance(VirtualInstance):
     def py__simple_getitem__(self, index):
         if isinstance(self.class_value, PropCollectionValue):
             srna = self.class_value.obj.fixed_type
-            return ValueSet((get_rna_value(srna, self.class_value).as_instance(),))
+            return AggregateValues((get_rna_value(srna, self.class_value).as_instance(),))
         return NO_VALUES
 
     def py__getitem__(self, index_value_set, contextualized_node):
@@ -381,7 +379,7 @@ class RnaValue(VirtualValue):
             if isinstance(obj, types.GenericAlias):
                 from jedi.inference.value.iterable import FakeList, LazyKnownValue
                 v, = get_rna_value(obj.__args__[0].bl_rna, self).py__call__(None)
-                return ValueSet([FakeList(state, [LazyKnownValue(v)])])
+                return AggregateValues((FakeList(state, [LazyKnownValue(v)]),))
 
             value = get_rna_value(obj.bl_rna, self)
 
@@ -397,7 +395,7 @@ class RnaValue(VirtualValue):
             value = tmp
 
         elif name_str == "bl_rna":
-            return ValueSet((get_rna_value(obj, self),))
+            return AggregateValues((get_rna_value(obj, self),))
 
         else:
             return NO_VALUES
@@ -513,7 +511,7 @@ class RnaFunctionParamName(SignatureParamName):
 
     def infer(self):
         if (annotated := self.annotated) is not _void:
-            return ValueSet((make_compiled_value(annotated, self.get_root_context()),))
+            return AggregateValues((make_compiled_value(annotated, self.get_root_context()),))
         return NO_VALUES
 
     def to_string(self):
@@ -546,7 +544,7 @@ class MathutilsInstance(VirtualInstance):
     def py__simple_getitem__(self, index):
         import mathutils
         if self.class_value.obj == mathutils.Vector:
-            return ValueSet((builtin_from_name(state, "float"),))
+            return AggregateValues((cached_builtins.float,))
         return NO_VALUES
 
 
@@ -577,11 +575,11 @@ virtual_overrides[Vector] = MathutilsValue
 class PropArrayValue(VirtualValue):
     # Implements subscript for bpy_prop_array types.
     def py__simple_getitem__(self, index):
-        return ValueSet((make_instance(self.obj, self.parent_context),))
+        return AggregateValues((make_instance(self.obj, self.parent_context),))
 
     # Implements for loop variable inference.
     def py__iter__(self, contextualized_node=None):
-        return ValueSet((LazyKnownValues(self.py__simple_getitem__(None)),))
+        return AggregateValues((LazyKnownValues(self.py__simple_getitem__(None)),))
 
     def get_members(self):
         return get_mro_dict(bpy.types.bpy_prop_array)
@@ -608,11 +606,11 @@ class IdPropCollectionValue(VirtualValue):
             return self.values.infer()
 
         obj = self.members[name_str]
-        return ValueSet((make_compiled_value(obj, self.as_context()),))
+        return AggregateValues((make_compiled_value(obj, self.as_context()),))
 
     def py__call__(self, arguments):
         self.values = arguments
-        return ValueSet((self.instance_cls(self, arguments),))
+        return AggregateValues((self.instance_cls(self, arguments),))
 
     def py__simple_getitem__(self, index):
         for value in self.values.infer():
@@ -662,7 +660,7 @@ class ContextInstance(RnaInstance):
         
         # These aren't part of the screen context.
         if name_str in context_type_map:
-            return ValueSet((NonScreenContextName((self.class_value, name_str, True)),))
+            return AggregateValues((NonScreenContextName((self.class_value, name_str, True)),))
         return ()
 
 
@@ -674,15 +672,16 @@ class NonScreenContextName(RnaName):
         value = get_rna_value(cls.bl_rna, self.parent_value).py__call__(None)
         if is_collection:
             from jedi.inference.value.iterable import FakeList, LazyKnownValue
-            return ValueSet([FakeList(state, (LazyKnownValue(value),))])
+            return AggregateValues((FakeList(state, (LazyKnownValue(value),)),))
         return value
 
 
 # Patch jedi's anonymous parameter inference so that bpy.types.Operator
 # method parameters can be automatically inferred.
 def patch_AnonymousParamName_infer():
-    from jedi.inference.names import AnonymousParamName, NO_VALUES, ValueSet
     from jedi.inference.value.instance import BoundMethod
+    from jedi.inference.names import AnonymousParamName, NO_VALUES
+    from ..common import AggregateValues
 
     is_RnaValue = RnaValue.__instancecheck__
     infer_orig = AnonymousParamName.infer
@@ -745,7 +744,7 @@ def patch_AnonymousParamName_infer():
                     instance = get_context_instance()
                 else:
                     instance, = rnadef_to_value(param, parent).py__call__(None)
-                return ValueSet((instance,))
+                return AggregateValues((instance,))
 
         return NO_VALUES
     AnonymousParamName.infer = infer

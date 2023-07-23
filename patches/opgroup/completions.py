@@ -88,15 +88,13 @@ def optimize_Completion_complete():
 def optimize_filter_names():
     from jedi.api.completion import filter_names
     from jedi.api.classes import Completion
-    from jedi.api.helpers import _fuzzy_match
-    from textension.utils import noop_noargs, _patch_function, _named_index, consume, _TupleBase
+    from textension.utils import noop_noargs, _patch_function, _named_index, Aggregation
     from itertools import compress, repeat
     from operator import itemgetter, attrgetter, eq
     from builtins import map, list, dict, zip
 
     from ..tools import state
     from jedi import settings
-
 
     class NewCompletion(Completion):
         _is_fuzzy = False
@@ -107,25 +105,19 @@ def optimize_filter_names():
         complete = property(noop_noargs)
         _inference_state = state
 
-    fuzzy_match = _fuzzy_match
-    startswith = str.startswith
-    lower = str.lower
-
+    lower  = str.lower
     strlen = str.__len__
     get_string = attrgetter("string_name")
-    get_name   = attrgetter("tree_name")
 
     def filter_names_o(inference_state, completions, stack, like_name, fuzzy, cached_name):
         like_name_len = strlen(like_name)
 
         if fuzzy:
-            match_func = fuzzy_match
             completion_base = FuzzyCompletion
         else:
-            match_func = startswith
             completion_base = NewCompletion
 
-        class completion(_TupleBase, completion_base):
+        class completion(Aggregation, completion_base):
             _like_name_length = like_name_len   # Static
             _cached_name = cached_name          # Static
             _stack = stack                      # Static
@@ -152,14 +144,6 @@ def optimize_filter_names():
 
             comp = list(tmp.values())
 
-        # XXX: This is no longer relevant due to how definitions are fetched
-        # using specialized scope/module definition functions.
-        # removals = []
-        # for name in filter(get_name, comp):
-        #     if name.tree_name.parent.type == "del_stmt":
-        #         removals += name,
-        # if removals:
-        #     consume(map(comp.remove, removals))
         return map(completion, zip(comp, map(lower, map(get_string, comp))))
 
     _patch_function(filter_names, filter_names_o)

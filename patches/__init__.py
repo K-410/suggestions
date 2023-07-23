@@ -122,9 +122,11 @@ def patch_NameWrapper_getattr():
 
 def patch_SequenceLiteralValue():
     from jedi.inference.gradual.base import GenericClass, _LazyGenericBaseClass
-    from jedi.cache import memoize_method
+    from jedi.inference.gradual.typing import TypedDict
+    from jedi.inference.value import TreeInstance
+    from .common import state, state_cache, state_cache_kw, AggregateValues
 
-    @memoize_method
+    @state_cache
     def py__bases__(self: GenericClass):
         ret = []
         for base in self._wrapped_value.py__bases__():
@@ -133,15 +135,12 @@ def patch_SequenceLiteralValue():
 
     GenericClass.py__bases__ = py__bases__
 
-    from jedi.inference.gradual.typing import TypedDict
-    from jedi.inference.base_value import ValueSet
-    from jedi.inference.value import TreeInstance
 
-    @memoize_method
+    @state_cache_kw
     def py__call__(self: GenericClass, arguments):
         if self.is_typeddict():
-            return ValueSet([TypedDict(self)])
-        return ValueSet([TreeInstance(self.inference_state, self.parent_context, self, arguments)])
+            return AggregateValues((TypedDict(self),))
+        return AggregateValues((TreeInstance(state, self.parent_context, self, arguments),))
 
     GenericClass.py__call__ = py__call__
 
@@ -227,9 +226,10 @@ def patch_Completion_complete_inherited():
 # Fallback for py__getattribute__.
 def patch_Value_py__getattribute__alternatives():
     from jedi.inference.compiled.value import CompiledValue, Value, NO_VALUES
-    from jedi.inference.value.instance import CompiledInstance, ValueSet
+    from jedi.inference.value.instance import CompiledInstance
 
     from .tools import make_compiled_value
+    from .common import AggregateValues
 
     # TODO: Make py__getattribute__alternatives for each (CompiledValue, CompiledInstance)
     #       if this patch is still applicable.
@@ -247,7 +247,7 @@ def patch_Value_py__getattribute__alternatives():
             try:
                 if obj in _descriptor_overrides:
                     descriptor = getattr(obj, name_or_str)
-                    return ValueSet((make_compiled_value(descriptor, self.as_context()),))
+                    return AggregateValues((make_compiled_value(descriptor, self.as_context()),))
             except TypeError:
                 pass
 
@@ -288,10 +288,11 @@ def patch_is_pytest_func():
 # gpu, mathutils, etc. Names are obtained from compiled modules using safety
 # principles similar to how Jedi does things in getattr_static.
 def patch_import_resolutions():
-    from jedi.inference.compiled.value import CompiledModule, ValueSet
+    from jedi.inference.compiled.value import CompiledModule
     from jedi.inference.imports import import_module
 
     from .tools import get_handle, state
+    from .common import AggregateValues
     import importlib
 
     module_cache = state.module_cache
@@ -301,9 +302,8 @@ def patch_import_resolutions():
         ret = import_module(state, name, parent_module, sys_path, prefer_stubs)
         if not ret:
             try:
-                module = importlib.import_module(".".join(name))
-                access_handle = get_handle(module)
-                ret = ValueSet((CompiledModule(state, access_handle),))
+                access_handle = get_handle(importlib.import_module(".".join(name)))
+                ret = AggregateValues((CompiledModule(state, access_handle),))
                 module_cache.add(name, ret)
             except ImportError:
                 pass
@@ -327,8 +327,8 @@ def patch_import_resolutions():
 # All which are reasons for Jedi completing them partially or not at all.
 # So instead of addressing each problem differently, we use virtual modules.
 def patch_Importer():
-    from jedi.inference.imports import Importer, ValueSet
-    from .common import Importer_redirects, state, is_namenode
+    from jedi.inference.imports import Importer
+    from .common import Importer_redirects, state, is_namenode, AggregateValues
 
     Importer._inference_state = state
     Importer._fixed_sys_path = None
@@ -340,7 +340,7 @@ def patch_Importer():
     # Import redirection for actual modules.
     def follow(self: Importer):
         if module := Importer_redirects.get(".".join(self._str_import_path)):
-            return ValueSet((module,))
+            return AggregateValues((module,))
         return follow(self)
 
     follow = _patch_function(Importer.follow, follow)
@@ -374,14 +374,12 @@ def patch_Importer():
     from jedi.inference.imports import _prepare_infer_import, search_ancestor
     from parso.python.tree import ImportFrom
 
-    is_import_from = ImportFrom.__instancecheck__
-
     def prepare_infer_import(module_context, tree_name):
         import_node = search_ancestor(tree_name, 'import_name', 'import_from')
         import_path = import_node.get_path_for_name(tree_name)
         from_name = None
 
-        if is_import_from(import_node):
+        if import_node.__class__ is ImportFrom:
             from_names = import_node.get_from_names()
             if len(from_names) + 1 == len(import_path):
                 from_name = import_path[-1]

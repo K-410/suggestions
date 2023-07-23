@@ -67,6 +67,11 @@ def apply():
     optimize_NodeOrLeaf_get_next_leaf()
     optimize_find_overload_functions()
     optimize_builtin_from_name()
+    optimize_get_metaclasses()
+    optimize_py__bases__()
+    optimize_is_annotation_name()
+    optimize_apply_decorators()
+    optimize_GenericClass()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -199,6 +204,7 @@ def optimize_BaseNode_get_leaf_for_position():
 
 def optimize_ValueSet_methods():
     from jedi.inference.base_value import ValueSet
+    from ..common import AggregateValues
 
     del ValueSet.__bool__
     ValueSet.__eq__   = _forwarder("_set.__eq__")
@@ -215,6 +221,14 @@ def optimize_ValueSet_methods():
         return ValueSet.from_sets(v.py__call__(args) for v in self._set)
     
     ValueSet.execute = execute
+
+    from operator import methodcaller
+    call_py__class__ = methodcaller("py__class__")
+
+    def py__class__(self: ValueSet):
+        return AggregateValues(map(call_py__class__, self._set))
+
+    ValueSet.py__class__ = py__class__
 
 
 def optimize_ValueContext_methods():
@@ -346,7 +360,7 @@ def optimize_ImportFrom_get_defined_names():
 # into a named tuple. Jedi can deal with whether or not the files are valid.
 def optimize_create_stub_map():
     from jedi.inference.gradual.typeshed import _create_stub_map
-    from textension.utils import _TupleBase, _named_index
+    from textension.utils import Aggregation, _named_index
     from itertools import compress
     from operator import methodcaller, not_
     from builtins import list, map, filter
@@ -356,7 +370,7 @@ def optimize_create_stub_map():
     is_ext = methodcaller("__contains__", ".")
     is_pyi = methodcaller("endswith", ".pyi")
 
-    class PathInfo2(_TupleBase):
+    class PathInfo2(Aggregation):
         path           = _named_index(0)
         is_third_party = _named_index(1)
 
@@ -418,10 +432,16 @@ def optimize_ValueContext():
 
 def optimize_ClassMixin():
     from jedi.inference.value.klass import ClassMixin, ClassContext
+    from ..common import cached_builtins
+    from textension.utils import _unbound_getter
+
+    # So we can use unbound getter.
+    ClassMixin.cached_builtins = cached_builtins
 
     ClassMixin.is_class       = truthy_noargs
     ClassMixin.is_class_mixin = truthy_noargs
 
+    ClassMixin.py__class__ = _unbound_getter("cached_builtins.type")
     ClassMixin.py__name__  = _unbound_getter("name.string_name")
     ClassMixin._as_context = _unbound_method(ClassContext)
 
@@ -631,9 +651,17 @@ def optimize_static_getmro():
 # Optimizes AbstractTreeName to use descriptors for some of its encapsulated properties.
 def optimize_AbstractTreeName_properties():
     from jedi.inference.names import AbstractTreeName
+    from textension.utils import soft_property
 
-    AbstractTreeName.start_pos   = _forwarder("tree_name.start_pos")
-    AbstractTreeName.string_name = _forwarder("tree_name.value")
+    AbstractTreeName.start_pos = _forwarder("tree_name.start_pos")
+
+    @soft_property
+    def string_name(prop, self, cls):
+        name_str = self.tree_name.value
+        self.string_name = name_str
+        return name_str
+
+    AbstractTreeName.string_name = string_name
 
 
 def optimize_BaseName_properties():
@@ -784,7 +812,7 @@ def optimize_iter_module_names():
                     names += name,
 
             cache[paths] = set(names)
-        return cache[paths]# | set([k for k in module_keys if "." not in k])
+        return cache[paths]
 
     _patch_function(_iter_module_names, _iter_module_names_o)
 
@@ -895,17 +923,17 @@ def optimize_LazyTreeValue_infer():
 
 # Just makes name conversions use aggregate initialization.
 def optimize_LazyInstanceClassName():
-    from jedi.inference.value.klass import ClassName
     from jedi.inference.value.instance import LazyInstanceClassName, InstanceClassFilter
-    from textension.utils import _TupleBase, _named_index
+    from textension.utils import Aggregation, _named_index
     from itertools import repeat
     from builtins import list, map, zip
 
-    class LazyName(_TupleBase, LazyInstanceClassName):
+    class LazyName(Aggregation, LazyInstanceClassName):
         _instance     = _named_index(0)
         _wrapped_name = _named_index(1)
 
         tree_name     = _forwarder("_wrapped_name.tree_name")
+        string_name   = _forwarder("_wrapped_name.tree_name.value")
 
         def __repr__(self):
             return f"LazyName({object.__repr__(self._wrapped_name)})"
@@ -954,7 +982,7 @@ def optimize_get_module_info():
 
 def optimize_tree_name_to_values():
     from jedi.inference.syntax_tree import tree_name_to_values
-    from ..common import state_cache
+    from ..common import state_cache, AggregateValues
 
     from jedi.inference.syntax_tree import ValueSet, infer_atom, ContextualizedNode, iterate_values, TreeNameDefinition, check_tuple_assignments, infer_expr_stmt, _apply_decorators, infer_node
     from jedi.inference.gradual import annotation
@@ -980,9 +1008,20 @@ def optimize_tree_name_to_values():
         # XXX: Removed predefined names code. Jedi doesn't even use it.
         cn = ContextualizedNode(context, node.children[3])
         is_async = node.parent.type == 'async_stmt'
-        for_types = iterate_values(cn.infer(), contextualized_node=cn, is_async=is_async)
+
+        for_values = []
+        for lazy_value in context.infer_node(node.children[3]):
+            for values in lazy_value.iterate(cn, is_async):
+                # for value in values.infer():
+                #     cls = value.py__class__()
+                #     if for_types and cls not in for_types:
+                #         return NO_VALUES
+                #     for_types.add(cls)
+                #     for_values += value,
+                for_values += values.infer()
+
         n = TreeNameDefinition(context, tree_name)
-        return check_tuple_assignments(n, for_types)
+        return check_tuple_assignments(n, AggregateValues(for_values))
 
     # This version searches for annotations more efficiently.
     @state_cache
@@ -1042,28 +1081,39 @@ def optimize_infer_expr_stmt():
 
 
 # Removes recursion protection, remove generator, move exception handling
-# outside the inner loop.
+# outside bases inference loop, support starred bases.
 def optimize_ClassMixin_py__mro__():
     from jedi.inference.value.klass import ClassMixin
+    from jedi.inference.value.iterable import Sequence
+    from textension.utils import starchain
+    from builtins import map, iter, list
+    from operator import methodcaller
+
+    call_infer = methodcaller("infer")
 
     def py__mro__(self: ClassMixin):
         mro = [self]
-        try:
-            for lazy_cls in self.py__bases__():
-                for cls in lazy_cls.infer()._set:
-                    mro += cls.py__mro__()
+        bases = list(self.py__bases__())
 
-        # If the object isn't a class, jedi is doing something wrong.
-        # The warning isn't useful to the user.
-        except AttributeError:
-            pass
+        while True:
+            try:
+                for cls in starchain(map(call_infer, iter(bases))):
+                    mro += cls.py__mro__()
+                break
+
+            # Support inferring bases: ``class A(*get_bases()): pass``.
+            # This is an obscure edge case, but supporting it is trivial.
+            except AttributeError:
+                if isinstance(cls, Sequence):  # type: ignore
+                    bases += cls.iterate()
+
         return mro
 
     ClassMixin.py__mro__ = py__mro__
 
 
 def optimize_Param_name():
-    from parso.python.tree import Param, Operator
+    from parso.python.tree import Param
 
     @property
     def name(self: Param):
@@ -1071,7 +1121,6 @@ def optimize_Param_name():
         if name.type == "name":
             return name
 
-        # XXX: Can we just check ``name.value`` here? Are there other operator types for param at position 0?
         # Could be star unpack.
         elif name.type == "operator" and name.value in "**":
             name = self.children[1]
@@ -1085,10 +1134,10 @@ def optimize_Param_name():
 
 def optimize_CompiledInstanceName():
     from jedi.inference.value.instance import CompiledInstanceName, CompiledInstanceClassFilter
-    from textension.utils import _TupleBase, _named_index
+    from textension.utils import Aggregation, _named_index
     from builtins import list, map, zip
 
-    class InstanceName(_TupleBase, CompiledInstanceName):
+    class InstanceName(Aggregation, CompiledInstanceName):
         _wrapped_name = _named_index(0)
 
         # This just makes optimized filter_names faster.
@@ -1118,6 +1167,7 @@ def optimize_NodesTree_copy_nodes():
     from parso.python.diff import _NodesTree, _NodesTreeNode, _func_or_class_has_suite, _is_flow_node, _ends_with_newline, _get_suite_indentation, split_lines, _get_indentation
     from itertools import islice
     from ..common import node_types
+    from parso.python.tree import EndMarker
 
     def _copy_nodes(self, working_stack, nodes, until_line, line_offset, prefix='', is_nested=False):
         new_nodes = []
@@ -1169,7 +1219,7 @@ def optimize_NodesTree_copy_nodes():
                         while next_leaf.__class__ in node_types:
                             next_leaf = next_leaf.children[0]
 
-                        if next_leaf.type == "endmarker" and "\n" in next_leaf.prefix:
+                        if next_leaf.__class__ is EndMarker and "\n" in next_leaf.prefix:
                             last_line = last_leaf.line + 1
 
                     if last_line > until_line:
@@ -1199,27 +1249,26 @@ def optimize_NodesTree_copy_nodes():
                     new_nodes += node,
 
         # Pop error nodes at the end from the list
-        if new_nodes:
-            while new_nodes:
-                last_node = new_nodes[-1]
-                if (last_node.type in ('error_leaf', 'error_node')
-                        or _is_flow_node(new_nodes[-1])):
+        while new_nodes:
+            last_node = new_nodes[-1]
+            if (last_node.type in ('error_leaf', 'error_node')
+                    or _is_flow_node(new_nodes[-1])):
+                new_nodes.pop()
+                while new_nodes:
+                    last_node = new_nodes[-1]
+                    if last_node.get_last_leaf().type == 'newline':
+                        break
                     new_nodes.pop()
-                    while new_nodes:
-                        last_node = new_nodes[-1]
-                        if last_node.get_last_leaf().type == 'newline':
-                            break
-                        new_nodes.pop()
-                    continue
-                if len(new_nodes) > 1 and new_nodes[-2].type == 'error_node':
-                    new_nodes.pop()
-                    continue
-                break
+                continue
+            if len(new_nodes) > 1 and new_nodes[-2].type == 'error_node':
+                new_nodes.pop()
+                continue
+            break
 
         if not new_nodes:
             return [], working_stack, prefix, added_indents
 
-        new_prefix = ''
+        new_prefix = ""
         tos = working_stack[-1]
         last_node = new_nodes[-1]
         had_valid_suite_last = False
@@ -1341,21 +1390,17 @@ def optimize_builtin_from_name():
     from jedi.inference.gradual.typeshed import _load_from_typeshed
     from jedi.inference.compiled.value import create_cached_compiled_value
     from jedi.inference.compiled import builtin_from_name
-    from jedi.inference import InferenceState, ValueSet
+    from jedi.inference import InferenceState
     from ..tools import get_handle, state
+    from ..common import AggregateValues
+    from textension.utils import lazy_overwrite
     import builtins
 
-    @property
-    def builtins_module(self):
+    @lazy_overwrite
+    def builtins_module(self: InferenceState):
         handle = get_handle(builtins)
         value  = create_cached_compiled_value(state, handle, None)
-        py_value = ValueSet((value,))
-
-        stub_value = _load_from_typeshed(state, py_value, None, ("builtins",))
-
-        # Mutate property so builtins is loaded only once.
-        InferenceState.builtins_module = stub_value
-        return stub_value
+        return _load_from_typeshed(state, AggregateValues((value,)), None, ("builtins",))
 
     InferenceState.builtins_module = builtins_module
 
@@ -1375,3 +1420,163 @@ def optimize_builtin_from_name():
         return cache[string]
     
     _patch_function(builtin_from_name, _builtin_from_name)
+
+
+def optimize_get_metaclasses():
+    from jedi.inference.value.klass import ClassValue
+    from ..common import AggregateValues, state_cache
+    from ..tools import is_pynode
+
+    def _get_metaclass(value: ClassValue):
+        # Only ``arglist`` is valid for metaclasses.
+        arglist = value.tree_node.children[3]
+        if arglist.type == "arglist":
+            for a in filter(is_pynode, arglist.children):
+                if a.type == "argument" and a.children[0].value == "metaclass":
+                    for metacls in value.parent_context.infer_node(a.children[2])._set:
+                        return metacls
+        return None
+
+    get_cached_metaclass = state_cache(_get_metaclass)
+
+    def get_metaclasses(self: ClassValue):
+        if metacls := _get_metaclass(self):
+            return AggregateValues((metacls,))
+
+        for lazy_base in self.py__bases__():
+            for value in lazy_base.infer()._set:
+
+                # Tree class values, as in, not compiled class values.
+                if value.__class__ is ClassValue:
+                    if metacls := get_cached_metaclass(value):
+                        return AggregateValues((metacls,))
+        return NO_VALUES
+
+    ClassValue.get_metaclasses = get_metaclasses
+
+
+def optimize_py__bases__():
+    from jedi.inference.value.klass import ClassValue
+    from itertools import repeat
+    from builtins import filter, zip, list, map
+
+    from ..common import state_cache, AggregateLazyKnownValues, AggregateLazyTreeValue, cached_builtins, AggregateValues
+    from ..tools import is_namenode, is_pynode
+
+    @state_cache
+    def py__bases__(self: ClassValue):
+        children = self.tree_node.children
+        arglist  = children[3]
+
+        if arglist.type == "name":
+            return (AggregateLazyTreeValue((self.parent_context, arglist)),)
+
+        elif arglist.type == "arglist":
+            names = list(filter(is_namenode, arglist.children))
+
+            # Star unack.
+            for node in filter(is_pynode, arglist.children):
+                if node.children[0].value is "*":
+                    names += node.children[1],
+
+            data = zip(repeat(self.parent_context), names)
+            return list(map(AggregateLazyTreeValue, data))
+
+        # Objects don't have ``object`` as base. ``type`` is fetched elsewhere.
+        elif children[1].value == "object" and self.parent_context.is_builtins_module():
+            return ()
+
+        return (AggregateLazyKnownValues((AggregateValues((cached_builtins.object,)),)),)
+
+    ClassValue.py__bases__ = py__bases__
+
+
+def optimize_is_annotation_name():
+    from jedi.inference.syntax_tree import _is_annotation_name
+    from parso.python.tree import Param, Function, ExprStmt
+
+    types  = {Param, Function, ExprStmt, type(None)}
+
+    def is_annotation_name(name):
+        tmp = name
+        while ancestor := tmp.parent:
+            if ancestor.__class__ in types:
+                break
+            tmp = ancestor
+        else:
+            return False
+
+        if ancestor.__class__ is ExprStmt:
+            ann = ancestor.children[1]
+            if ann.type == "annassign":
+                return ann.start_pos <= name.start_pos < ann.end_pos
+        elif ann := ancestor.annotation:
+            return ann.start_pos <= name.start_pos < ann.end_pos
+        return False
+
+    _patch_function(_is_annotation_name, is_annotation_name)
+
+
+def optimize_apply_decorators():
+    from jedi.inference.syntax_tree import _apply_decorators, FunctionValue, infer_trailer, Decoratee
+    from jedi.inference.arguments import ValuesArguments
+    from jedi.inference.value.klass import ClassMixin, FunctionAndClassBase, ClassValue
+    from parso.python.tree import PythonNode, Class, ClassOrFunc
+
+    from textension.utils import Aggregation, _named_index, _get_dict
+    from ..common import state, AggregateValues
+
+    class AggregatedClassValue(Aggregation, ClassMixin, FunctionAndClassBase):
+        inference_state = state
+        parent_context  = _named_index(0)
+        tree_node       = _named_index(1)
+
+        def __repr__(self):
+            return f"<ClassValue: {self.tree_node!r}>"
+
+    _get_dict(AggregatedClassValue).update(
+        {k: v for k, v in ClassValue.__dict__.items() if not k.startswith("_")})
+
+    def apply_decorators(context, node: ClassOrFunc):
+        if node.__class__ is Class:
+            decoratee_value = AggregatedClassValue((context, node))
+        else:
+            decoratee_value = FunctionValue.from_context(context, node)
+
+        values = AggregateValues((decoratee_value,))
+        if node.parent.type in {"async_funcdef", "decorated"}:
+
+            initial = values
+            for dec in reversed(node.get_decorators()):
+
+                dec_values = context.infer_node(dec.children[1])
+                if trailer_nodes := dec.children[2:-1]:
+                    trailer = PythonNode('trailer', trailer_nodes)
+                    trailer.parent = dec
+                    dec_values = infer_trailer(context, dec_values, trailer)
+
+                if dec_values:
+                    if values := dec_values.execute(ValuesArguments([values])):
+                        continue
+                return initial
+
+            if values != initial:
+                return AggregateValues(Decoratee(c, decoratee_value) for c in values)
+
+        return values
+
+    _patch_function(_apply_decorators, apply_decorators)
+
+
+def optimize_GenericClass():
+    from jedi.inference.gradual.base import GenericClass
+    from textension.utils import lazy_overwrite
+
+    GenericClass.is_stub   = _forwarder("_class_value.is_stub")
+    GenericClass.tree_node = _forwarder("_class_value.tree_node")
+    
+    @lazy_overwrite
+    def _wrapped_value(self: GenericClass):
+        return self._class_value
+
+    GenericClass._wrapped_value = _wrapped_value
