@@ -236,14 +236,14 @@ def optimize_grammar_parse():
               cache_path=None,
               file_io: BpyTextBlockIO = None):
 
-        # Jedi will sometimes parse small snippets as docstring modules.
-        if not path and not file_io:
-            lines = ensure_blank_eol(code.splitlines(True))
-            # ``start_symbol`` can sometimes be ``eval_input``. The difference
-            # is the type of root node Parser.parse returns.
-            return Parser(self._pgen_grammar, start_nonterminal=start_symbol or self._start_nonterminal).parse(tokens=self._tokenizer(lines))
-
         if not path:
+            # Jedi will sometimes parse small snippets as docstring modules.
+            if not file_io:
+                lines = ensure_blank_eol(code.splitlines(True))
+                # ``start_symbol`` can sometimes be ``eval_input``. The difference
+                # is the type of root node Parser.parse returns.
+                return Parser(self._pgen_grammar, start_nonterminal=start_symbol or self._start_nonterminal).parse(tokens=self._tokenizer(lines))
+
             path = file_io.path
 
         if isinstance(cache_path, str):
