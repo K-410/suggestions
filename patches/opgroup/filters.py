@@ -5,7 +5,7 @@ from jedi.inference.compiled.value import CompiledName
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter, StubName
 from jedi.inference.value.klass import ClassFilter
 
-from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder
+from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder, inline
 from ..common import _check_flows, state_cache, AggregateValues
 from ..tools import is_basenode, is_namenode, state
 from operator import attrgetter
@@ -27,6 +27,8 @@ def apply():
     optimize_ClassMixin_get_filters()
 
     optimize_StubModules()
+    optimize_ParserTreeFilter_get()
+    optimize_CompiledValueFilter_get_cached_name()
 
 
 # Pretty much same as ClassFilter, except using aggregate initialization
@@ -68,9 +70,12 @@ class DeferredCompiledName(tuple, CompiledName):
     
     _inference_state = state
 
-    _parent_value  = _named_index(0)  # parent_value
-    parent_context = _named_index(1)  # parent_value.as_context()
-    string_name    = _named_index(2)  # name
+    _parent_value  = _named_index(0)
+    string_name    = _named_index(1)
+
+    @property
+    def parent_context(self):
+        return self._parent_value.as_context()
 
     def py__doc__(self):
         if value := self.infer_compiled_value():
@@ -87,6 +92,8 @@ class DeferredCompiledName(tuple, CompiledName):
         has_attribute, is_descriptor = is_allowed_getattr(self._parent_value, self.string_name)
         return AggregateValues((self.infer_compiled_value(),))
 
+    infer_compiled_value = state_cache(CompiledName.infer_compiled_value.__closure__[0].cell_contents)
+
 
 
 # Optimizes ``values`` to not access attributes off a compiled value when
@@ -94,13 +101,21 @@ class DeferredCompiledName(tuple, CompiledName):
 def optimize_CompiledValueFilter_values():
     from jedi.inference.compiled.value import CompiledValueFilter
     from itertools import repeat
+    from builtins import dir
     from ..common import state_cache
+
+    def cached_dir(obj):
+        try:
+            return _cached_dir(obj)
+        except TypeError:
+            return dir(obj)
+
+    _cached_dir = state_cache(dir)
 
     @state_cache
     def values(self: CompiledValueFilter):
         value = self.compiled_value
-        obj = value.access_handle.access._obj
-        sequences = zip(repeat(value), repeat(value.as_context()), dir(obj))
+        sequences = zip(repeat(value), cached_dir(value.access_handle.access._obj))
         # Note: type completions is not added, because why would we?
         return list(map(DeferredCompiledName, sequences))
 
@@ -152,7 +167,7 @@ def optimize_SelfAttributeFilter_values():
 def optimize_ClassFilter_values():
     from jedi.inference.value.klass import ClassFilter
     from parso.python.tree import Class
-    from ..common import DeferredDefinition, state_cache, get_scope_name_definitions
+    from ..common import AggregateDefinition, state_cache, get_scope_name_definitions
     from builtins import list, map, zip
 
     stub_classdef_cache = {}
@@ -174,7 +189,7 @@ def optimize_ClassFilter_values():
             else:
                 names = get_scope_name_definitions(scope)
 
-            return list(map(DeferredDefinition, zip(repeat(value), names)))
+            return list(map(AggregateDefinition, zip(repeat(value), names)))
         return ()
 
     ClassFilter.values = values
@@ -198,13 +213,48 @@ def optimize_ClassFilter_filter():
 
 def optimize_ClassFilter_get():
     from jedi.inference.value.klass import ClassFilter
-    from ..common import get_cached_scope_definitions, DeferredDefinition
+    from ..common import get_cached_scope_definitions, AggregateDefinition
 
     def get(self: ClassFilter, name_str: str):
         names = get_cached_scope_definitions(self._parser_scope)[name_str]
-        return list(map(DeferredDefinition, zip(repeat(self._class_value), names)))
+        return list(map(AggregateDefinition, zip(repeat(self._class_value), names)))
 
     ClassFilter.get = get
+
+
+def optimize_ParserTreeFilter_get():
+    from jedi.inference.filters import ParserTreeFilter
+    from itertools import repeat
+    from ..common import get_cached_scope_definitions, AggregateDefinition, get_parent_scope_fast
+    from textension.utils import starchain, Aggregation, _named_index
+
+    # This exists as fallback when jedi returns None on get_value(), which is
+    # the case for comprehension contexts.
+    class NoValue(Aggregation):
+        __slots__ = ()
+        _context  = _named_index(0)
+
+        def as_context(self):
+            return self._context
+
+    def get(self: ParserTreeFilter, name_str: str):
+        scope = self._parser_scope
+
+        definitions = []
+        while scope:
+            if names := get_cached_scope_definitions(scope)[name_str]:
+                definitions += names,
+            scope = get_parent_scope_fast(scope)
+
+        if definitions:
+            value = self.parent_context.get_value() or NoValue((self.parent_context,))
+
+            values = repeat(value)
+            definitions[0] = filter_until(self._until_position, definitions[0])
+            return list(map(AggregateDefinition, zip(values, starchain(definitions))))
+        return []
+
+    ParserTreeFilter.get = get
 
 
 def optimize_AnonymousMethodExecutionFilter():
@@ -240,6 +290,7 @@ def optimize_ParserTreeFilter_values():
 
 def optimize_AnonymousMethodExecutionFilter_values():
     from jedi.inference.value.instance import AnonymousMethodExecutionFilter
+    from parso.python.tree import Lambda
     from ..common import get_scope_name_definitions
     from ..tools import is_param
 
@@ -247,18 +298,44 @@ def optimize_AnonymousMethodExecutionFilter_values():
 
         names = []
         scope = self._parser_scope
+        children = scope.children
+
+        # Lambda nodes have no parentheses that delimit parameters.
+        if scope.__class__ is Lambda:
+            params = children[1]
+            if params.type == "operator":  # The colon.
+                params = []
+            elif params.type == "param":
+                params = [params]
+        else:
+            params = children[2].children
 
         # Get parameter name definitions.
-        for param in filter(is_param, scope.children[2].children):
+        for param in filter(is_param, params):
             names += param.children[0],
 
         # The suite.
-        names += get_scope_name_definitions(scope.children[-1])
+        names += get_scope_name_definitions(children[-1])
         names = self._filter(names)
         return self._convert_names(names)
     
     AnonymousMethodExecutionFilter.values = values
     AnonymousMethodExecutionFilter._check_flows = _check_flows
+
+@inline
+def filter_until(position: int | None, names):
+    from itertools import compress
+    from operator import attrgetter
+    from builtins import map
+
+    get_start = attrgetter("start_pos")
+
+    def filter_until(position: int | None, names):
+        if position:
+            return compress(names, map(position.__gt__, map(get_start, names)))
+        return names
+
+    return filter_until
 
 
 def optimize_ParserTreeFilter_filter():
@@ -282,11 +359,11 @@ def optimize_ParserTreeFilter_filter():
 
 
 def optimize_CompiledValue_get_filters():
-    from jedi.inference.compiled.value import CompiledValue, CompiledValueFilter
+    from jedi.inference.compiled.value import CompiledValue
+    from ..common import AggregateCompiledValueFilter
 
-    # XXX: Disable decorator for now. Causes issues inside class bodies.
     def get_filters(self: CompiledValue, is_instance=False, origin_scope=None):
-        yield CompiledValueFilter(state, self, is_instance)
+        yield AggregateCompiledValueFilter((self, is_instance))
 
     CompiledValue.get_filters = get_filters
 
@@ -540,3 +617,17 @@ def optimize_StubModules():
 
     StubModuleValue.get_filters = get_filters
     StubModuleContext.is_stub   = truthy_noargs
+
+
+def optimize_CompiledValueFilter_get_cached_name():
+    from jedi.inference.compiled.value import CompiledValueFilter, EmptyCompiledName
+    from ..common import state_cache_kw
+
+    @state_cache_kw
+    def _get_cached_name(self: CompiledValueFilter, name, is_empty=False):
+        if is_empty:
+            return EmptyCompiledName(self._inference_state, name)
+        else:
+            return DeferredCompiledName((self.compiled_value, name))
+        
+    CompiledValueFilter._get_cached_name = _get_cached_name
