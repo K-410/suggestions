@@ -101,7 +101,6 @@ def optimize_imports_iter_module_names():
             string_name = _named_index(0)
 
         ret = _iter_module_names(None, search_path)
-        # add builtin module names
         if add_builtin_modules:
             ret = chain(get_builtin_module_names(None), ret)
         return list(map(module_name, zip(ret)))
@@ -161,7 +160,7 @@ def optimize_infer_node_if_inferred():
     memo = cache[_infer_node] = {}
 
     _patch_function(syntax_tree._infer_node_if_inferred, _infer_node_if_inferred)
-    _patch_function(infer_node, _infer_node_if_inferred.__closure__[0].cell_contents)
+    _patch_function(infer_node, _infer_node_if_inferred.__closure__[1].cell_contents)
 
 
 def optimize_remove_del_stmt():
@@ -212,22 +211,28 @@ def optimize_BaseNode_get_leaf_for_position():
 
 def optimize_ValueSet_methods():
     from jedi.inference.base_value import ValueSet
-    from ..common import AggregateValues
+    from ..common import AggregateValues, state
 
+    # We don't need a user-defined __bool__ method that ends up calling
+    # ``bool(self._set)``. Python falls back to ``__len__`` for truth tets.
     del ValueSet.__bool__
+
     ValueSet.__eq__   = _forwarder("_set.__eq__")
     ValueSet.__hash__ = _forwarder("_set.__hash__")
     ValueSet.__iter__ = _forwarder("_set.__iter__")
     ValueSet.__len__  = _forwarder("_set.__len__")
     ValueSet.__ne__   = _forwarder("_set.__ne__")
 
+    state_execute = state.execute
+
     # Skip wrappers that aren't useful.
-    def execute(self: ValueSet, args):
-        if len(self._set) == 1:
-            value, = self._set
-            return value.py__call__(args)
-        return ValueSet.from_sets(v.py__call__(args) for v in self._set)
-    
+    def execute(self: ValueSet, arguments):
+        result = []
+
+        for value in self._set:
+            result += state_execute(value, arguments)._set
+        return AggregateValues(result)
+
     ValueSet.execute = execute
 
     from operator import methodcaller
@@ -440,8 +445,8 @@ def optimize_ValueContext():
 
 def optimize_ClassMixin():
     from jedi.inference.value.klass import ClassMixin, ClassContext
-    from ..common import cached_builtins
     from textension.utils import _unbound_getter
+    from ..common import cached_builtins
 
     # So we can use unbound getter.
     ClassMixin.cached_builtins = cached_builtins
@@ -486,9 +491,9 @@ def optimize_Compiled_methods():
 # and instead make it on-demand.
 def optimize_CompiledName():
     from jedi.inference.compiled.value import CompiledName, CompiledValue
-    from ..tools import state
+    from textension.utils import _forwarder
     from operator import methodcaller
-    from textension.utils import _forwarder, _descriptor
+    from ..tools import state
 
     CompiledName._inference_state = state
 
@@ -498,9 +503,9 @@ def optimize_CompiledName():
 
     CompiledName.__init__ = __init__
 
-    CompiledValue._context = _descriptor(methodcaller("as_context"))
-
+    CompiledValue._context = property(methodcaller("as_context"))
     CompiledName.parent_context = _forwarder("_parent_value._context")
+
     CompiledName.get_root_context = _forwarder("parent_context.get_root_context")
 
 
@@ -992,7 +997,7 @@ def optimize_tree_name_to_values():
     from jedi.inference.syntax_tree import tree_name_to_values
     from ..common import state_cache, AggregateValues
 
-    from jedi.inference.syntax_tree import ValueSet, infer_atom, ContextualizedNode, iterate_values, TreeNameDefinition, check_tuple_assignments, infer_expr_stmt, _apply_decorators, infer_node
+    from jedi.inference.syntax_tree import infer_atom, ContextualizedNode, TreeNameDefinition, check_tuple_assignments, infer_expr_stmt, _apply_decorators, infer_node
     from jedi.inference.gradual import annotation
     from jedi.inference import imports
 
@@ -1010,7 +1015,7 @@ def optimize_tree_name_to_values():
         return enter_methods.execute_with_values()
 
     def infer_for(context, node, tree_name):
-        if node.type == 'for_stmt' and (types := annotation.find_type_from_comment_hint_for(context, node, tree_name)):
+        if node.type == "for_stmt" and (types := annotation.find_type_from_comment_hint_for(context, node, tree_name)):
             return types
 
         # XXX: Removed predefined names code. Jedi doesn't even use it.
@@ -1020,16 +1025,19 @@ def optimize_tree_name_to_values():
         for_values = []
         for lazy_value in context.infer_node(node.children[3]):
             for values in lazy_value.iterate(cn, is_async):
-                # for value in values.infer():
-                #     cls = value.py__class__()
-                #     if for_types and cls not in for_types:
-                #         return NO_VALUES
-                #     for_types.add(cls)
-                #     for_values += value,
                 for_values += values.infer()
 
         n = TreeNameDefinition(context, tree_name)
         return check_tuple_assignments(n, AggregateValues(for_values))
+
+    def infer_param(context, name):
+        context = context.parent_context
+        while context:
+            if ret := context.py__getattribute__(name):
+                return ret
+            context = context.parent_context
+        return NO_VALUES
+
 
     # This version searches for annotations more efficiently.
     @state_cache
@@ -1048,8 +1056,10 @@ def optimize_tree_name_to_values():
                 c = context.create_context(tree_name)
                 if c.is_module():
                     return NO_VALUES
-                names = next(c.get_filters()).get(tree_name.value)
-                return ValueSet.from_sets(name.infer() for name in names)
+                result = []
+                for name in next(c.get_filters()).get(tree_name.value):
+                    result += name.infer()
+                return AggregateValues(result)
             elif node.type not in ('import_from', 'import_name'):
                 return infer_atom(context.create_context(tree_name), tree_name)
 
@@ -1070,7 +1080,7 @@ def optimize_tree_name_to_values():
             exceptions = context.infer_node(tree_name.get_previous_sibling().get_previous_sibling())
             return exceptions.execute_with_values()
         elif typ == 'param':
-            return NO_VALUES
+            return infer_param(context, tree_name)
         elif typ == 'del_stmt':
             return NO_VALUES
         elif typ == 'namedexpr_test':
@@ -1172,8 +1182,7 @@ def optimize_AbstractContext_get_root_context():
 
 
 def optimize_NodesTree_copy_nodes():
-    from parso.python.diff import _NodesTree, _NodesTreeNode, _func_or_class_has_suite, _is_flow_node, _ends_with_newline, _get_suite_indentation, split_lines, _get_indentation
-    from itertools import islice
+    from parso.python.diff import _NodesTree, _NodesTreeNode, _func_or_class_has_suite, _is_flow_node, _ends_with_newline, split_lines
     from ..common import node_types
     from parso.python.tree import EndMarker
 
@@ -1182,12 +1191,11 @@ def optimize_NodesTree_copy_nodes():
         added_indents = []
 
         if is_nested:
-            indent = nodes[1].start_pos[1]
-            nodes = islice(nodes, 1, None)
+            indent = nodes[1].start_pos[1]  # Inlines ``_get_last_line``.
         else:
             indent = nodes[0].start_pos[1]
 
-
+        # Inlines ``_get_matching_indent_nodes`` into the main copy_nodes loop.
         if is_nested or indent in self.indents:
             for node in nodes:
                 if node.type in {"endmarker", "error_leaf"}:
@@ -1258,73 +1266,64 @@ def optimize_NodesTree_copy_nodes():
 
         # Pop error nodes at the end from the list
         while new_nodes:
-            last_node = new_nodes[-1]
-            if (last_node.type in ('error_leaf', 'error_node')
-                    or _is_flow_node(new_nodes[-1])):
-                new_nodes.pop()
+            if new_nodes[-1].type in {"error_leaf", "error_node"} or _is_flow_node(new_nodes[-1]):
+                del new_nodes[-1]
                 while new_nodes:
-                    last_node = new_nodes[-1]
-                    if last_node.get_last_leaf().type == 'newline':
+                    if new_nodes[-1].get_last_leaf().type == 'newline':
                         break
-                    new_nodes.pop()
+                    del new_nodes[-1]
                 continue
             if len(new_nodes) > 1 and new_nodes[-2].type == 'error_node':
-                new_nodes.pop()
+                del new_nodes[-1]
                 continue
             break
 
-        if not new_nodes:
-            return [], working_stack, prefix, added_indents
-
-        new_prefix = ""
-        tos = working_stack[-1]
-        last_node = new_nodes[-1]
-        had_valid_suite_last = False
-
-        # Pop incomplete suites from the list
-        if _func_or_class_has_suite(last_node):
-            suite = last_node
-            while suite.type != 'suite':
-                suite = suite.children[-1]
-
-            indent = _get_suite_indentation(suite)
-            added_indents += indent,
-
-            suite_tos = _NodesTreeNode(suite, indentation=_get_indentation(last_node))
-            suite_nodes, new_working_stack, new_prefix, ai = self._copy_nodes(
-                working_stack + [suite_tos], suite.children, until_line, line_offset,
-                is_nested=True,
-            )
-            added_indents += ai
-            if len(suite_nodes) < 2:
-                new_nodes.pop()
-                new_prefix = ''
-            else:
-                assert new_nodes
-                tos.add_child_node(suite_tos)
-                working_stack = new_working_stack
-                had_valid_suite_last = True
-
         if new_nodes:
-            if not _ends_with_newline(new_nodes[-1].get_last_leaf()) and not had_valid_suite_last:
-                p = new_nodes[-1].get_next_leaf().prefix
-                new_prefix = split_lines(p, keepends=True)[0]
+            new_prefix = ""
+            tos = working_stack[-1]
+            last_node = new_nodes[-1]
+            had_valid_suite_last = False
 
-            if had_valid_suite_last:
-                last = new_nodes[-1]
-                if last.type == 'decorated':
-                    last = last.children[-1]
-                if last.type in ('async_funcdef', 'async_stmt'):
-                    last = last.children[-1]
-                last_line_offset_leaf = last.children[-2].get_last_leaf()
-                assert last_line_offset_leaf == ':'
-            else:
-                last_line_offset_leaf = new_nodes[-1].get_last_leaf()
-            tos.add_tree_nodes(
-                prefix, new_nodes, line_offset, last_line_offset_leaf,
-            )
-            prefix = new_prefix
-            self._prefix_remainder = ''
+            # Pop incomplete suites from the list
+            if _func_or_class_has_suite(last_node):
+                suite = last_node
+                while suite.type != "suite":
+                    suite = suite.children[-1]
+
+                indent = suite.children[1].start_pos[1]
+                added_indents += indent,
+
+                suite_tos = _NodesTreeNode(suite, indentation=last_node.start_pos[1])
+                suite_nodes, new_working_stack, new_prefix, ai = self._copy_nodes(
+                    working_stack + [suite_tos], suite.children, until_line, line_offset, is_nested=True)
+                added_indents += ai
+                if len(suite_nodes) < 2:
+                    del new_nodes[-1]
+                    new_prefix = ""
+                else:
+                    assert new_nodes
+                    tos.add_child_node(suite_tos)
+                    working_stack = new_working_stack
+                    had_valid_suite_last = True
+
+            if new_nodes:
+                if had_valid_suite_last:
+                    last = new_nodes[-1]
+                    if last.type == "decorated":
+                        last = last.children[-1]
+                    if last.type in {"async_funcdef", "async_stmt"}:
+                        last = last.children[-1]
+                    last_line_offset_leaf = last.children[-2].get_last_leaf()
+                    assert last_line_offset_leaf == ":"
+                else:
+                    last_line_offset_leaf = new_nodes[-1].get_last_leaf()
+                    if not _ends_with_newline(last_line_offset_leaf):
+                        p = new_nodes[-1].get_next_leaf().prefix
+                        new_prefix = split_lines(p, keepends=True)[0]
+
+                tos.add_tree_nodes(prefix, new_nodes, line_offset, last_line_offset_leaf)
+                prefix = new_prefix
+                self._prefix_remainder = ""
 
         return new_nodes, working_stack, prefix, added_indents
 
@@ -1396,8 +1395,8 @@ def optimize_find_overload_functions():
 
 def optimize_builtin_from_name():
     from jedi.inference.gradual.typeshed import _load_from_typeshed
-    from jedi.inference.compiled.value import create_cached_compiled_value
     from jedi.inference.compiled import builtin_from_name
+    from jedi.inference.compiled.value import CompiledModule
     from jedi.inference import InferenceState
     from ..tools import get_handle, state
     from ..common import AggregateValues
@@ -1406,8 +1405,7 @@ def optimize_builtin_from_name():
 
     @lazy_overwrite
     def builtins_module(self: InferenceState):
-        handle = get_handle(builtins)
-        value  = create_cached_compiled_value(state, handle, None)
+        value = CompiledModule(state, get_handle(builtins), None)
         return _load_from_typeshed(state, AggregateValues((value,)), None, ("builtins",))
 
     InferenceState.builtins_module = builtins_module
@@ -1448,8 +1446,13 @@ def optimize_get_metaclasses():
     get_cached_metaclass = state_cache(_get_metaclass)
 
     def get_metaclasses(self: ClassValue):
-        if metacls := _get_metaclass(self):
-            return AggregateValues((metacls,))
+        # XXX: Same as ``_get_metaclass``.
+        arglist = self.tree_node.children[3]
+        if arglist.type == "arglist":
+            for a in filter(is_pynode, arglist.children):
+                if a.type == "argument" and a.children[0].value == "metaclass":
+                    for metacls in self.parent_context.infer_node(a.children[2])._set:
+                        return AggregateValues((metacls,))
 
         for lazy_base in self.py__bases__():
             for value in lazy_base.infer()._set:
@@ -1476,7 +1479,7 @@ def optimize_py__bases__():
         children = self.tree_node.children
         arglist  = children[3]
 
-        if arglist.type == "name":
+        if arglist.type in {"name", "atom_expr"}:
             return (AggregateLazyTreeValue((self.parent_context, arglist)),)
 
         elif arglist.type == "arglist":
