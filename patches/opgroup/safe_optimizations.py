@@ -72,6 +72,14 @@ def apply():
     optimize_is_annotation_name()
     optimize_apply_decorators()
     optimize_GenericClass()
+    optimize_get_executed_param_names_and_issues()
+    optimize_SequenceLiteralValue()
+    optimize_AccessHandle_get_access_path_tuples()
+    optimize_safe_literal_eval()
+    optimize_DirectObjectAccess_dir()
+    optimize_FileIO_read()
+    optimize_AccessHandle_shit()
+    optimize_ExactValue_py__class__()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -1580,3 +1588,300 @@ def optimize_GenericClass():
         return self._class_value
 
     GenericClass._wrapped_value = _wrapped_value
+
+
+def optimize_get_executed_param_names_and_issues():
+    from jedi.inference.value.iterable import FakeTuple, FakeDict
+    from jedi.inference.lazy_value import LazyKnownValue, LazyUnknownValue
+    from jedi.inference.analysis import add as add_analysis
+    from jedi.inference.param import get_executed_param_names_and_issues, _error_argument_count, _add_argument_issue
+    from parso.python.tree import Name, Operator, Param, Function
+    from collections import deque
+    from ..common import AggregateExecutedParamName, AggregateLazyTreeValue
+
+    is_param = Param.__instancecheck__
+
+    def _get_executed_param_names_and_issues(function_value, arguments):
+        def too_many_args(argument):
+            _issues = issues
+            m = _error_argument_count(funcdef, arglen)
+            if arguments.get_calling_nodes():
+                _issues += _add_argument_issue('type-error-too-many-arguments', argument, message=m),
+            else:
+                _issues += None,
+
+        issues = []
+        param_dict = {}
+        result_params = []
+        funcdef = function_value.tree_node
+        default_param_context = function_value.get_default_param_context()
+
+        unpacked_va = list(arguments.unpack(funcdef))
+        arglen = len(unpacked_va)
+
+        arg_deque = deque(unpacked_va)
+        
+        non_matching_keys = {}
+        keys_used = {}
+        keys_only = False
+        had_multiple_value_error = False
+
+        if funcdef.__class__ is Function:
+            nodes = funcdef.children[2].children
+        else:
+            nodes = funcdef.children[1:-2]
+        
+        for param in filter(is_param, nodes):
+
+            # Inlined from optimized ``Param.name``.
+            name = param.children[0]
+            cls = name.__class__
+            if cls is not Name:
+                if cls is Operator and name.value in "**":  # Could be star unpack.
+                    name = param.children[1]
+                if name.type == "tfpdef":  # Could also be nested after operator.
+                    name = name.children[0]
+            param_name = name.value
+            param_dict[param_name] = param
+
+            is_default = False
+            key = None
+            argument = None
+
+            while arg_deque:
+                key, argument = arg_deque[0]
+                del arg_deque[0]
+                if not key:
+                    break
+
+                keys_only = True
+                if key in param_dict:
+                    key_param = param_dict[key]
+                    if key in keys_used:
+                        had_multiple_value_error = True
+                        m = ("TypeError: %s() got multiple values for keyword argument '%s'."
+                            % (funcdef.name, key))
+                        for contextualized_node in arguments.get_calling_nodes():
+                            issues += add_analysis(contextualized_node.context,
+                                'type-error-multiple-values', contextualized_node.node, message=m),
+                    else:
+                        keys_used[key] = AggregateExecutedParamName((function_value, arguments, key_param, argument, False))
+                else:
+                    non_matching_keys[key] = argument
+
+            if param_name in keys_used:
+                result_params += keys_used[param_name],
+                continue
+
+            if param.children[0].__class__ is Operator and param.children[0].value in "**":
+                if len(param.children[0].value) == 1:
+                    lazy_value_list = []
+                    if argument:
+                        lazy_value_list += argument,
+                        while arg_deque and not arg_deque[0][0]:
+                            key, argument = arg_deque[0]
+                            del arg_deque[0]
+                            lazy_value_list += argument,
+                    seq = FakeTuple(function_value.inference_state, lazy_value_list)
+                    result_arg = LazyKnownValue(seq)
+                else:
+                    if argument:
+                        too_many_args(argument)
+                    dct = FakeDict(function_value.inference_state, dict(non_matching_keys))
+                    result_arg = LazyKnownValue(dct)
+                    non_matching_keys = {}
+            elif argument:
+                result_arg = argument
+
+            elif default := param.default:
+                result_arg = AggregateLazyTreeValue((default_param_context, default))
+                is_default = True
+            else:
+                result_arg = LazyUnknownValue()
+                if not keys_only:
+                    for contextualized_node in arguments.get_calling_nodes():
+                        m = _error_argument_count(funcdef, arglen)
+                        issues += add_analysis(
+                            contextualized_node.context,
+                            'type-error-too-few-arguments',
+                            contextualized_node.node,
+                            message=m),
+
+            result_params += AggregateExecutedParamName((function_value, arguments, param, result_arg, is_default)),
+            if result_arg.__class__ is not LazyUnknownValue:
+                keys_used[param_name] = result_params[-1]
+
+        if keys_only:
+            for k in param_dict.keys() - keys_used.keys():
+                param = param_dict[k]
+
+                if not (non_matching_keys or had_multiple_value_error or param.star_count or param.default):
+                    for contextualized_node in arguments.get_calling_nodes():
+                        m = _error_argument_count(funcdef, arglen)
+                        issues += add_analysis(contextualized_node.context,
+                            'type-error-too-few-arguments', contextualized_node.node, message=m),
+
+        for key, lazy_value in non_matching_keys.items():
+            m = "TypeError: %s() got an unexpected keyword argument '%s'." % (funcdef.name, key)
+            issues += _add_argument_issue('type-error-keyword-argument', lazy_value, message=m),
+
+        if arg_deque:
+            too_many_args(arg_deque[0][1])
+        return result_params, issues
+
+    _patch_function(get_executed_param_names_and_issues, _get_executed_param_names_and_issues)
+
+
+def optimize_SequenceLiteralValue():
+    from jedi.inference.value.dynamic_arrays import _internal_check_array_additions
+    from jedi.inference.value.iterable import SequenceLiteralValue, Slice, LazyKnownValue
+    from ..common import AggregateLazyTreeValue, AggregateValues
+
+    real_check_array_additions = _internal_check_array_additions.__closure__[1].cell_contents.__closure__[0].cell_contents
+
+    def py__iter__(self: SequenceLiteralValue, contextualized_node=None):
+        context = self._defining_context
+        for node in self.get_tree_entries():
+            if node == ':' or node.type == 'subscript':
+                yield LazyKnownValue(Slice(context, None, None, None))
+            else:
+                yield AggregateLazyTreeValue((context, node))
+
+        if self.array_type in {"list", "set"}:
+            yield from real_check_array_additions(context, self)
+
+    SequenceLiteralValue.py__iter__ = py__iter__
+
+    from jedi.inference.gradual import conversion
+    from jedi.inference import imports
+    from jedi.inference import base_value
+
+    conversion.ValueSet = AggregateValues
+    base_value.ValueSet = AggregateValues
+    imports.ValueSet = AggregateValues
+
+
+# AccessHandle doesn't have ``get_access_path_tuples``, but jedi treats it as
+# such via ``__getattr__``. Exception based attribute forwarding is slow.
+def optimize_AccessHandle_get_access_path_tuples():
+    from jedi.inference.compiled.subprocess import AccessHandle
+    from textension.utils import lazy_overwrite
+    from builtins import type, isinstance
+    from ..common import get_handle, state_cache
+    from types import ModuleType
+    from sys import modules as sys_modules
+    import builtins
+
+    is_module = ModuleType.__instancecheck__
+
+    @state_cache
+    def get_access_path_tuples(self: AccessHandle):
+        ret = []
+        tmp = []
+
+        obj = self.access._obj
+        try:
+            obj = obj.__objclass__
+            tmp += obj,
+        except AttributeError:  # AttributeError
+            pass
+
+        try:
+            tmp += sys_modules[obj.__module__],
+
+        except (AttributeError, KeyError):  # AttributeError/KeyError
+            if not is_module(obj):
+                tmp += builtins,
+
+
+        for obj in tmp[::-1]:
+            handle = get_handle(obj)
+            ret += (handle.py__name__(), handle),
+        return ret + [(self.py__name__(), self)]
+
+    AccessHandle.get_access_path_tuples = get_access_path_tuples
+
+    def py__name__(self: AccessHandle):
+        obj = self.access._obj
+        if not isinstance(obj, type):
+            return type(obj).__name__
+        return obj.__name__
+
+    AccessHandle.py__name__ = py__name__
+
+    @lazy_overwrite
+    def is_allowed_getattr(self: AccessHandle):
+        return self.access.is_allowed_getattr
+    
+    AccessHandle.is_allowed_getattr = is_allowed_getattr
+
+    @lazy_overwrite
+    def getattr_paths(self: AccessHandle):
+        return self.access.getattr_paths
+    
+    AccessHandle.getattr_paths = getattr_paths
+
+
+def optimize_safe_literal_eval():
+    from jedi.inference.compiled.subprocess.functions import safe_literal_eval
+    from builtins import compile, TypeError
+    from ast import PyCF_ONLY_AST
+
+    def _safe_literal_eval(_, value):
+        try:
+            return compile(value, "", "eval", PyCF_ONLY_AST).body.value
+        except TypeError:
+            return safe_literal_eval(value)
+        
+    safe_literal_eval = _patch_function(safe_literal_eval, _safe_literal_eval)
+
+
+def optimize_DirectObjectAccess_dir():
+    from jedi.inference.compiled.access import DirectObjectAccess
+    from ..common import state_cache
+    from builtins import dir
+
+    @state_cache
+    def _dir(self: DirectObjectAccess):
+        return dir(self._obj)
+    
+    DirectObjectAccess.dir = _dir
+
+
+def optimize_FileIO_read():
+    from parso.file_io import FileIO
+    from builtins import open
+    from io import TextIOWrapper
+
+    io_read = TextIOWrapper.read
+
+    def read(self: FileIO):
+        try:
+            with open(self.path, "rt") as f:
+                return io_read(f)
+        except:
+            with open(self.path, "rb") as f:
+                return io_read(f)
+
+    FileIO.read = read
+
+
+def optimize_AccessHandle_shit():
+    from jedi.inference.compiled.subprocess import AccessHandle
+
+    # def py__path__(self: AccessHandle):
+    #     return self.access.py__path__()
+    
+    # AccessHandle.py__path__ = py__path__
+
+    AccessHandle.__getattr__ = _forwarder("access.__getattribute__")
+
+
+def optimize_ExactValue_py__class__():
+    from jedi.inference.compiled import ExactValue
+    from ..common import cached_builtins
+
+    def py__class__(self: ExactValue):
+        return getattr(cached_builtins, self._compiled_value.access_handle.access._obj.__class__.__name__)
+
+    ExactValue.py__class__ = py__class__
