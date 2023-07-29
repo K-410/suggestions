@@ -60,3 +60,8 @@ def optimize_memos():
     _ValueWrapperBase.create_cached = classmethod(
         state_cache_kw(unwrap(_ValueWrapperBase.create_cached.__func__))
     )
+
+    from jedi.inference.imports import infer_import
+    from textension.utils import _patch_function
+
+    _patch_function(infer_import, state_cache(infer_import.__closure__[1].cell_contents))
