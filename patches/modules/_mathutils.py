@@ -6,7 +6,7 @@ from ..tools import _add_rtype_overrides, _add_descriptor_overrides
 
 
 # Blender FloatProperty subtype-to-mathutils type mapping.
-float_vector_map = {
+float_subtypes = {
     "ACCELERATION": Vector,
     "DIRECTION":    Vector,
     "TRANSLATION":  Vector,

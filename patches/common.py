@@ -2,10 +2,13 @@
 
 from jedi.inference.compiled.value import (
     CompiledValue, CompiledValueFilter, CompiledValueName, CompiledModule)
+from jedi.inference.syntax_tree import tree_name_to_values
+from jedi.inference.value.klass import ClassValue
 from jedi.inference.lazy_value import LazyKnownValues, LazyTreeValue
 from jedi.inference.arguments import AbstractArguments, TreeArguments
 from jedi.inference.compiled import builtin_from_name
 from jedi.inference.context import CompiledContext, GlobalNameFilter
+from jedi.inference.param import ExecutedParamName
 from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
 from jedi.inference.names import TreeNameDefinition, NO_VALUES, ValueSet
 from jedi.inference.value import CompiledInstance, ModuleValue
@@ -18,10 +21,12 @@ from jedi.api import Script, Completion
 from itertools import repeat
 from operator import attrgetter
 from pathlib import Path
+import types
 
 from textension.utils import (
     _forwarder, _named_index, _unbound_getter, consume, falsy_noargs, inline,
-     set_name, truthy_noargs, instanced_default_cache, Aggregation, lazy_overwrite)
+     set_name, truthy_noargs, instanced_default_cache, Aggregation, starchain,
+     lazy_overwrite, namespace)
 
 from .tools import state, get_handle, factory, is_namenode, is_basenode, ensure_blank_eol
 
@@ -38,6 +43,8 @@ get_cursor_focus = attrgetter("select_end_line_index", "select_end_character")
 
 scope_types = {"classdef", "comp_for", "file_input", "funcdef",  "lambdef",
                "sync_comp_for"}
+
+runtime = namespace(is_reset=True)
 
 # Used by various optimizations.
 for cls in iter(node_types := [BaseNode]):
@@ -80,31 +87,60 @@ def sessions(self: dict, text_id):
 def reset_state():
     # The memoize cache stores a dict of dicts keyed to functions.
     # The first level is never cleared. This lowers the cache overhead.
-    consume(map(dict.clear, state_values))
+
+    # Assign a new cache to registered closures. Faster than dict.clear().
+    for cell in _closures:
+        cell.cell_contents = {}
+
+    consume(map(dict.clear, filter(None, state_values)))
+
+    # Prevent memory leak. Otherwise access handles are stored forever.
+    state.compiled_subprocess._handles.clear()
+    state.compiled_subprocess = state.environment.get_inference_state_subprocess(state)
+
     state.reset_recursion_limitations()
     state.inferred_element_counts = {}
+    runtime.is_reset = True
+
+
+_closures = []
 
 
 def state_cache(func):
-    memo = state.memoize_cache[func] = {}
-    @set_name(func.__name__ + " (state_cache)")
+    try:
+        func_name = func.__name__
+    except AttributeError:
+        func_name = str(func)
+
+    cache = {}
+
+    # The name is mostly for introspection.
+    @set_name(func_name + " (cached)")
     def wrapper(*args):
-        if args not in memo:
-            memo[args] = func(*args)
-        return memo[args]
+        if args not in cache:
+            cache[args] = func(*args)
+        return cache[args]
+
+    cache_closure = wrapper.__closure__[0]
+    _closures.append(cache_closure)
     return wrapper
 
 
 def state_cache_kw(func):
     from textension.utils import dict_items
     from builtins import tuple
-    memo = state.memoize_cache[func] = {}
-    @set_name(func.__name__ + " (state_cache_kw)")
+
+    cache = {}
+
+    @set_name(func.__name__ + " (cached)")
     def wrapper(*args, **kw):
         key = (args, tuple(dict_items(kw)))
-        if key not in memo:
-            memo[key] = func(*args, **kw)
-        return memo[key]
+        if key not in cache:
+            cache[key] = func(*args, **kw)
+        return cache[key]
+
+    cache_closure = wrapper.__closure__[0]
+    _closures.append(cache_closure)
     return wrapper
 
 
@@ -123,8 +159,15 @@ definition_types = {
 
 @state_cache
 def get_scope_name_definitions(scope):
+
+    # Jedi allows ill-formed function/lambda constructs, so we can't assume
+    # ``scope`` is even a BaseNode. This is bad, but the alternative is fixing
+    # the grammar and I'm not going to touch that.
+    if not is_basenode(scope):
+        return ()
+
     namedefs = []
-    pool  = scope.children[:]
+    pool = scope.children[:]
 
 
     # XXX: This code is for testing.
@@ -153,8 +196,9 @@ def get_scope_name_definitions(scope):
                     namedefs += name,
 
                 # ``a, b = X``. Here we take ``a`` and ``b``.
+                # Could be ``atom_expr``, i.e ``x.a, y.a = Z``, skip those.
                 elif name.type == "testlist_star_expr":
-                    namedefs += name.children[::2]
+                    namedefs += filter(is_namenode, name.children[::2])
 
                 # ``a.b = c``. Not a definition.
                 elif name.type == "atom_expr":
@@ -197,17 +241,21 @@ def get_scope_name_definitions(scope):
         elif n.type == "decorated":
             pool += n.children[1],
 
-        elif n.type == "for_stmt":
-
+        elif n.type in {"for_stmt", "if_stmt"}:
             # Add the suite to pool.
             pool += n.children[-1].children
 
             name = n.children[1]
+            if name.type == "comparison":
+                name = name.children[0]
+
             if name.type == "exprlist":
                 namedefs += filter(is_namenode, name.children)
-            else:
-                assert name.type == "name"
+            elif name.type == "name":
                 namedefs += name,
+
+        elif n.type in {"error_node", "arglist"}:
+            continue
         else:
             pool += n.children
 
@@ -219,23 +267,9 @@ def get_scope_name_definitions(scope):
     return namedefs
 
 
-def find_definition(context, ref: Name):
+def find_definition(ref: Name):
     if namedef := get_definition(ref):
-        return TreeNameDefinition(context, namedef)
-
-    # Inlined position adjustment from _get_global_filters_for_name.
-    # if position:
-    #     n = ref
-    #     lambdef = None
-    #     while n := n.parent:
-    #         type = n.type
-    #         if type in {"classdef", "funcdef", "lambdef"}:
-    #             if type == "lambdef":
-    #                 lambdef = n
-    #             elif position < n.children[-2].start_pos:
-    #                 if not lambdef or position < lambdef.children[-2].start_pos:
-    #                     position = n.start_pos
-    #                 break
+        return namedef
 
     node = ref
     while node := node.parent:
@@ -243,7 +277,7 @@ def find_definition(context, ref: Name):
         if node.type != "error_node":
             for name in filter(is_namenode, node.children):
                 if name.value == ref.value and name is not ref:
-                    return TreeNameDefinition(context, name)
+                    return name
     return None
 
 
@@ -268,9 +302,9 @@ def get_definition(ref: Name):
         else:
             scope = scope.parent
 
-    start = ref.line
+    start = ref.line, ref.column
     for name in get_cached_scope_definitions(scope)[ref.value]:
-        if name.line <= start:
+        if (name.line, name.column) < start:
             return name
 
     return None
@@ -287,14 +321,6 @@ def get_cached_scope_definitions(scope):
 
     cache.default_factory = repeat(()).__next__
     return cache
-
-
-@state_cache
-def get_all_module_names(module):
-    pool = [module]
-    for n in filter(is_basenode, pool):
-        pool += (n.children[1],) if n.type in {"classdef", "funcdef"} else n.children
-    return list(filter(is_namenode, pool))
 
 
 # This version doesn't include flow checks nor read or write to cache.
@@ -713,13 +739,18 @@ class BpyTextBlockIO(KnownContentFileIO, FileIOFolderMixin):
     __init__ = object.__init__
 
 
-class DeferredDefinition(Aggregation, TreeNameDefinition):
-    parent_value   = _named_index(0)
-    tree_name      = _named_index(1)
+class AggregateDefinition(Aggregation, TreeNameDefinition):
+    parent_value = _named_index(0)
+    tree_name    = _named_index(1)
 
     @lazy_overwrite
     def parent_context(self):
         return self.parent_value.as_context()
+
+    def __repr__(self):
+        if self.start_pos is None:
+            return f"<{super().__repr__()}: string_name={self.string_name}>"
+        return f"<{super().__repr__()}: string_name={self.string_name} start_pos={self.start_pos}>"
 
 
 class BpyTextModule(ModuleValue):
@@ -774,8 +805,9 @@ class BpyTextModuleContext(MixedModuleContext):
         return self.filters
 
     def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
-        if namedef := find_definition(self, name_or_str):
-            return namedef.infer()
+        if namedef := find_definition(name_or_str):
+            return tree_name_to_values(state, self, namedef)
+
         print("BpyTextModuleContext py__getattribute__ failed for", name_or_str)
         return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
 
@@ -814,7 +846,10 @@ class interpreter(Script):
     _get_module_context = _unbound_getter("context")
 
     def complete(self, text: bpy.types.Text):
-        reset_state()
+        if not runtime.is_reset:
+            reset_state()
+
+        bpy.app.timers.register(reset_state)
 
         self.session = sessions[text.id]
         self.session.update_from_text(text)
@@ -828,6 +863,7 @@ class interpreter(Script):
 def complete(text):
     from .opgroup.interpreter import _use_new_interpreter
 
+    runtime.is_reset = False
     if _use_new_interpreter:
         return interpreter.complete(text)
     
@@ -837,6 +873,7 @@ def complete(text):
 
 
 class AggregateTreeArguments(Aggregation, TreeArguments):
+    __slots__ = ()
     _inference_state = state
 
     context       = _named_index(0)
@@ -848,14 +885,19 @@ class AggregateTreeArguments(Aggregation, TreeArguments):
 
 
 class AggregateLazyTreeValue(Aggregation, LazyTreeValue):
+    __slots__ = ()
     min = 1
     max = 1
+
+    # Needed because of LazyTreeValue.infer.
+    _predefined_names = types.MappingProxyType({})
 
     context = _named_index(0)
     data    = _named_index(1)
 
 
 class AggregateLazyKnownValues(Aggregation, LazyKnownValues):
+    __slots__ = ()
     min = 1
     max = 1
 
@@ -870,12 +912,44 @@ class cached_builtins:
         raise
 
 
+@inline
+def get_builtin_value(name_str: str) -> ClassValue:
+    return cached_builtins.__getattribute__
+
+
 class AggregateValues(frozenset, ValueSet):
     __slots__ = ()
 
     __init__  = frozenset.__init__
     __repr__  = ValueSet.__repr__
 
-    # ``_set`` refers to the instance itself aggregate itself.
+    # ``_set`` refers to the aggregate instance itself.
     # This makes it compatible with ValueSet methods.
     _set = _forwarder("__init__.__self__")
+
+    @classmethod
+    def from_sets(cls, sets):
+        return AggregateValues(starchain(sets))
+
+
+AggregateValues._from_frozen_set = classmethod(AggregateValues.__new__)
+
+
+class AggregateExecutedParamName(Aggregation, ExecutedParamName):
+    function_value = _named_index(0)
+    arguments      = _named_index(1)
+    param_node     = _named_index(2)
+    _lazy_value    = _named_index(3)
+    _is_default    = _named_index(4)
+
+    tree_name = _forwarder("param_node.name")
+
+    @lazy_overwrite
+    def parent_context(self):
+        return self.function_value.get_default_param_context()
+
+
+class AggregateCompiledValueFilter(Aggregation, CompiledValueFilter):
+    _inference_state = state
+    compiled_value   = _named_index(0)
+    is_instance      = _named_index(1)

@@ -1,6 +1,7 @@
 # This module implements import resolution for bpy.
 
 from jedi.inference.names import SubModuleName
+from jedi.inference.syntax_tree import tree_name_to_values
 import bpy
 import _bpy
 
@@ -8,9 +9,9 @@ from types import ModuleType
 from itertools import repeat
 from operator import getitem
 
-from ._mathutils import float_vector_map
+from ._mathutils import float_subtypes
 from ._bpy_types import MathutilsValue, PropArrayValue, IdPropCollectionValue, NO_VALUES, get_rna_value
-from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, AggregateValues
+from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, AggregateValues, state
 
 
 def apply():
@@ -94,7 +95,7 @@ class PropsModule(VirtualModule):
 def infer_vector_type(name, arguments, parent):
     if value := dict(arguments.unpack()).get("subtype"):
         if value.data.type == "string":
-            if obj := float_vector_map.get(value.data._get_payload()):
+            if obj := float_subtypes.get(value.data._get_payload()):
                 return MathutilsValue((obj, parent)).py__call__(None)
 
     obj = simple_property_types[name.replace("Vector", "")]
@@ -108,8 +109,8 @@ def infer_pointer_type(arguments):
         if ref.type == "atom_expr":
             return value.infer().py__call__(None)
 
-        if namedef := find_definition(value.context, ref):
-            for value in namedef.infer():
+        if namedef := find_definition(ref):
+            for value in tree_name_to_values(state, value.context, namedef):
                 return value.py__call__(None)
     return NO_VALUES
 

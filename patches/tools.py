@@ -64,10 +64,7 @@ api.InferenceState.__init__ = object.__init__
 
 state.analysis = collections.deque(maxlen=25)
 state.allow_descriptor_getattr = True
-# Use external memoize cache so cached functions that rely on it can
-# access it even before the inference state exists.
-state.memoize_cache = collections.defaultdict(dict)
-
+state.memoize_cache = {}
 
 runtime = namespace(context_rna=None)
 

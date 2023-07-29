@@ -10,7 +10,7 @@ from inspect import Parameter
 
 from textension.utils import _context, _forwarder, inline, starchain
 
-from ._mathutils import float_vector_map
+from ._mathutils import float_subtypes
 from ..common import VirtualInstance, VirtualName, VirtualFilter, VirtualValue, get_mro_dict, state_cache, virtual_overrides, NoArguments, cached_builtins, AggregateValues
 from ..tools import runtime, state, make_compiled_value, make_instance
 
@@ -169,7 +169,7 @@ context_type_map = {
 }
 
 
-rna_py_type_map = {
+rna_py_types = {
     "STRING": str,
     "ENUM": str,
     "INT": int,
@@ -237,17 +237,21 @@ def rnadef_to_value(rnadef, parent):
 
     if type == 'POINTER':
         return get_rna_value(rnadef.fixed_type, parent)
+
     elif type == 'COLLECTION':
         return PropCollectionValue((rnadef, parent))
     
-    assert type in rna_py_type_map, f"rnadef_to_value failed for {rnadef} ({parent}), type: {type}"
+    assert type in rna_py_types, f"rnadef_to_value failed for {rnadef} ({parent}), type: {type}"
 
-    # ``INT``, ``FLOAT`` and ``BOOLEAN`` can be vectors.
-    if type not in {'STRING', 'ENUM'} and rnadef.array_length != 0:
-        if rnadef.subtype in float_vector_map:
-            return MathutilsValue((float_vector_map[rnadef.subtype], parent))
-        return PropArrayValue((rna_py_type_map[type], parent))
-    return getattr(cached_builtins, rna_py_type_map[type].__name__)
+    # Possible vector type strings: INT, FLOAT, BOOLEAN
+    if type not in {'STRING', 'ENUM'} and (rnadef.is_array or rnadef.array_length):
+
+        if rnadef.subtype in float_subtypes:
+            return MathutilsValue((float_subtypes[rnadef.subtype], parent))
+
+        return PropArrayValue((rna_py_types[type], parent))
+
+    return getattr(cached_builtins, rna_py_types[type].__name__)
 
 
 rna_fallbacks = {}
@@ -668,12 +672,12 @@ class NonScreenContextName(RnaName):
     def infer(self):
         name, is_collection = context_type_map[self.string_name]
         cls = getattr(bpy.types, name)
-        
-        value = get_rna_value(cls.bl_rna, self.parent_value).py__call__(None)
+
+        value, = get_rna_value(cls.bl_rna, self.parent_value).py__call__(None)
         if is_collection:
             from jedi.inference.value.iterable import FakeList, LazyKnownValue
-            return AggregateValues((FakeList(state, (LazyKnownValue(value),)),))
-        return value
+            value = FakeList(state, (LazyKnownValue(value),))
+        return AggregateValues((value,))
 
 
 # Patch jedi's anonymous parameter inference so that bpy.types.Operator
