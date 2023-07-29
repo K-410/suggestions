@@ -44,6 +44,8 @@ def _apply_patches():
     patch_get_user_context()
     patch_Importer()
     patch_get_importer_names()
+    patch_getattr_stack_overflows()
+    patch_cache_signatures()
 
 
 def _apply_optimizations():
@@ -148,6 +150,7 @@ def patch_SequenceLiteralValue():
 # Removes calls to __getattr__ for dynamic forwarding. This is an effort to
 # eliminate most stack overflows during debugging.
 def patch_various_redirects():
+    from textension.utils import _soft_forwarder, soft_property
     from jedi.inference.value.iterable import SequenceLiteralValue
 
     SequenceLiteralValue.parent_context = _forwarder("_wrapped_value.parent_context")
@@ -156,6 +159,8 @@ def patch_various_redirects():
     SequenceLiteralValue.is_module      = _forwarder("_wrapped_value.is_module")
     SequenceLiteralValue.is_stub        = _forwarder("_wrapped_value.is_stub")
     SequenceLiteralValue.is_instance    = _forwarder("_wrapped_value.is_instance")
+    SequenceLiteralValue.__iter__       = _forwarder("_wrapped_value.__iter__")
+    SequenceLiteralValue.array_type     = _soft_forwarder("_wrapped_value.array_type")
 
     from jedi.inference.gradual.base import GenericClass
 
@@ -169,7 +174,12 @@ def patch_various_redirects():
     GenericClass.list_type_vars      = _forwarder("_wrapped_value.list_type_vars")
     GenericClass.is_stub             = _forwarder("_wrapped_value.is_stub")
     GenericClass.is_instance         = _forwarder("_wrapped_value.is_instance")
-    
+
+    @soft_property
+    def _class_value(self):
+        raise AttributeError
+    GenericClass._class_value = _class_value
+
     from jedi.inference.gradual.type_var import TypeVar, TypeVarClass
 
     TypeVar.get_safe_value       = _forwarder("_wrapped_value.get_safe_value")
@@ -626,7 +636,8 @@ def patch_get_importer_names():
 
 
 def patch_ExactValue():
-    from jedi.inference.compiled import ExactValue, LazyValueWrapper
+    from jedi.inference.compiled import ExactValue
+    from textension.utils import truthy_noargs, falsy_noargs
     from .common import state
 
     # We don't want the indirection that tests against a list of names.
@@ -636,12 +647,16 @@ def patch_ExactValue():
     ExactValue.access_handle     = _forwarder("_compiled_value.access_handle")
     ExactValue.execute_operation = _forwarder("_compiled_value.execute_operation")
     ExactValue.get_safe_value    = _forwarder("_compiled_value.get_safe_value")
-    ExactValue.is_bound_method   = _forwarder("_compiled_value")
-    ExactValue.is_compiled       = _forwarder("_compiled_value.is_compiled")
+    ExactValue.is_bound_method   = _forwarder("_compiled_value.is_bound_method")
+    ExactValue.is_compiled       = truthy_noargs
     ExactValue.negate            = _forwarder("_compiled_value.negate")
     ExactValue.py__bool__        = _forwarder("_compiled_value.py__bool__")
+    ExactValue.parent_context    = _forwarder("_compiled_value.parent_context")
+    ExactValue._arguments        = _forwarder("_compiled_value._arguments")
+    ExactValue.is_stub           = falsy_noargs
+    ExactValue.get_filters       = _forwarder("_compiled_value.get_filters")
 
-    def __init__(self, compiled_value):
+    def __init__(self: ExactValue, compiled_value):
         self._compiled_value = compiled_value
 
     ExactValue.__init__ = __init__
@@ -662,3 +677,22 @@ def patch_ValueWrapperBase():
     _ValueWrapperBase.py__doc__       = _forwarder("_wrapped_value.py__doc__")
 
     _ValueWrapperBase.get_default_param_context = _forwarder("_wrapped_value.get_default_param_context")
+
+
+def patch_getattr_stack_overflows():
+    from jedi.plugins.stdlib import SuperInstance
+    from textension.utils import _soft_attribute_error
+
+    SuperInstance.inference_state = _soft_attribute_error
+    SuperInstance._instance = _soft_attribute_error
+
+
+# ``cache_signatures`` uses an unmanaged cache and causes inferred values to
+# be retained indefinitely. This just skips the cache.
+def patch_cache_signatures():
+    from textension.plugins.suggestions.jedi.api.helpers import infer, cache_signatures
+
+    def _cache_signatures(inference_state, context, bracket_leaf, code_lines, user_pos):
+        return infer(inference_state, context, bracket_leaf.get_previous_leaf())
+    
+    _patch_function(cache_signatures, _cache_signatures)
