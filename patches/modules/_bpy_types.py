@@ -11,7 +11,7 @@ from inspect import Parameter
 from textension.utils import _context, _forwarder, inline, starchain
 
 from ._mathutils import float_subtypes
-from ..common import VirtualInstance, VirtualName, VirtualFilter, VirtualValue, get_mro_dict, state_cache, virtual_overrides, NoArguments, cached_builtins, AggregateValues
+from ..common import VirtualInstance, VirtualName, VirtualFilter, VirtualValue, get_mro_dict, get_builtin_value, state_cache, cached_builtins, virtual_overrides, NoArguments, AggregateValues
 from ..tools import runtime, state, make_compiled_value, make_instance
 
 import bpy
@@ -251,7 +251,7 @@ def rnadef_to_value(rnadef, parent):
 
         return PropArrayValue((rna_py_types[type], parent))
 
-    return getattr(cached_builtins, rna_py_types[type].__name__)
+    return get_builtin_value(rna_py_types[type].__name__)
 
 
 rna_fallbacks = {}

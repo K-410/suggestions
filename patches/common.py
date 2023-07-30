@@ -10,18 +10,18 @@ from jedi.inference.compiled import builtin_from_name
 from jedi.inference.context import CompiledContext, GlobalNameFilter
 from jedi.inference.param import ExecutedParamName
 from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
-from jedi.inference.names import TreeNameDefinition, NO_VALUES, ValueSet
+from jedi.inference.names import TreeNameDefinition, NO_VALUES, ValueSet, StubName
 from jedi.inference.value import CompiledInstance, ModuleValue
 from parso.python.tree import Name
 from parso.tree import BaseNode
 from parso.file_io import KnownContentFileIO
 from jedi.file_io import FileIOFolderMixin
-
 from jedi.api import Script, Completion
 from itertools import repeat
 from operator import attrgetter
 from pathlib import Path
 import types
+import functools
 
 from textension.utils import (
     _forwarder, _named_index, _unbound_getter, consume, falsy_noargs, inline,
@@ -739,20 +739,6 @@ class BpyTextBlockIO(KnownContentFileIO, FileIOFolderMixin):
     __init__ = object.__init__
 
 
-class AggregateDefinition(Aggregation, TreeNameDefinition):
-    parent_value = _named_index(0)
-    tree_name    = _named_index(1)
-
-    @lazy_overwrite
-    def parent_context(self):
-        return self.parent_value.as_context()
-
-    def __repr__(self):
-        if self.start_pos is None:
-            return f"<{super().__repr__()}: string_name={self.string_name}>"
-        return f"<{super().__repr__()}: string_name={self.string_name} start_pos={self.start_pos}>"
-
-
 class BpyTextModule(ModuleValue):
     string_names = ("__main__",)
 
@@ -872,8 +858,40 @@ def complete(text):
     return Interpreter(text.as_string(), []).complete(line + 1, column)
 
 
+@inline
+class cached_builtins:
+    __slots__ = ("__dict__",)
+
+    def __getattr__(self, name: str, _b=set(__builtins__)):
+        if name in _b:
+            return self.__dict__.setdefault(name, builtin_from_name(state, name))
+        raise AttributeError(name)
+
+
+@inline
+def get_builtin_value(name_str: str) -> ClassValue:
+    return functools.partial(getattr, cached_builtins)
+
+
+class AggregateTreeNameDefinition(Aggregation, TreeNameDefinition):
+    __slots__ = ()
+
+    parent_value = _named_index(0)
+    tree_name    = _named_index(1)
+
+    @lazy_overwrite
+    def parent_context(self):
+        return self.parent_value.as_context()
+
+    def __repr__(self):
+        if self.start_pos is None:
+            return f"<{super().__repr__()}: string_name={self.string_name}>"
+        return f"<{super().__repr__()}: string_name={self.string_name} start_pos={self.start_pos}>"
+
+
 class AggregateTreeArguments(Aggregation, TreeArguments):
     __slots__ = ()
+
     _inference_state = state
 
     context       = _named_index(0)
@@ -886,6 +904,7 @@ class AggregateTreeArguments(Aggregation, TreeArguments):
 
 class AggregateLazyTreeValue(Aggregation, LazyTreeValue):
     __slots__ = ()
+
     min = 1
     max = 1
 
@@ -898,23 +917,11 @@ class AggregateLazyTreeValue(Aggregation, LazyTreeValue):
 
 class AggregateLazyKnownValues(Aggregation, LazyKnownValues):
     __slots__ = ()
+
     min = 1
     max = 1
 
     data = _named_index(0)
-
-
-@inline
-class cached_builtins:
-    def __getattr__(self, name: str, _b=set(__builtins__)):
-        if name in _b:
-            return self.__dict__.setdefault(name, builtin_from_name(state, name))
-        raise
-
-
-@inline
-def get_builtin_value(name_str: str) -> ClassValue:
-    return cached_builtins.__getattribute__
 
 
 class AggregateValues(frozenset, ValueSet):
@@ -922,6 +929,7 @@ class AggregateValues(frozenset, ValueSet):
 
     __init__  = frozenset.__init__
     __repr__  = ValueSet.__repr__
+    _from_frozen_set = object.__new__
 
     # ``_set`` refers to the aggregate instance itself.
     # This makes it compatible with ValueSet methods.
@@ -932,10 +940,9 @@ class AggregateValues(frozenset, ValueSet):
         return AggregateValues(starchain(sets))
 
 
-AggregateValues._from_frozen_set = classmethod(AggregateValues.__new__)
-
-
 class AggregateExecutedParamName(Aggregation, ExecutedParamName):
+    __slots__ = ()
+
     function_value = _named_index(0)
     arguments      = _named_index(1)
     param_node     = _named_index(2)
@@ -950,6 +957,30 @@ class AggregateExecutedParamName(Aggregation, ExecutedParamName):
 
 
 class AggregateCompiledValueFilter(Aggregation, CompiledValueFilter):
+    __slots__ = ()
+
     _inference_state = state
     compiled_value   = _named_index(0)
     is_instance      = _named_index(1)
+
+
+# Does what ``Abstractfilter._filter()`` does, just a lot faster.
+@inline
+def filter_until(pos: int | None, names):
+    from itertools import compress
+    from operator import attrgetter
+    from builtins import map
+
+    start_pos = attrgetter("line", "column")
+
+    def filter_until(pos: int | None, names):
+        if pos:
+            return compress(names, map(pos.__gt__, map(start_pos, names)))
+        return names
+
+    return filter_until
+
+
+class AggregateStubName(Aggregation, StubName):
+    parent_context = _named_index(0)
+    tree_name      = _named_index(1)

@@ -31,11 +31,9 @@ def optimize_Module_get_used_names():
 
 def optimize_GlobalNameFilter_values():
     from jedi.inference.filters import GlobalNameFilter
-    from itertools import repeat, compress
-    from builtins import filter, map
+    from builtins import filter
     from ..tools import is_basenode
-
-    get_position = attrgetter("line", "column")
+    from ..common import filter_until
 
     def is_valid(stmt, branch):
         pool = branch.children[:]
@@ -62,10 +60,9 @@ def optimize_GlobalNameFilter_values():
                 names += glob.children[1::2]
             else:
                 globs.remove(glob)
-
-        if pos := self._until_position:
-            names = compress(names, map(pos.__gt__, map(get_position, names)))
-        return map(self.name_class, repeat(self.parent_context), names)
+        
+        names = filter_until(self._until_position, names)
+        return self._convert_names(names)
 
     GlobalNameFilter.values = values
 

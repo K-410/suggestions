@@ -2,13 +2,12 @@
 from jedi.inference.compiled.getattr_static import getattr_static
 from jedi.inference.compiled.access import ALLOWED_DESCRIPTOR_ACCESS
 from jedi.inference.compiled.value import CompiledName
-from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter, StubName
+from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter
 from jedi.inference.value.klass import ClassFilter
 
-from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder, inline
-from ..common import _check_flows, state_cache, AggregateValues
+from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder
+from ..common import _check_flows, state_cache, AggregateValues, AggregateStubName
 from ..tools import is_basenode, is_namenode, state
-from operator import attrgetter
 from itertools import repeat
 
 
@@ -29,6 +28,7 @@ def apply():
     optimize_StubModules()
     optimize_ParserTreeFilter_get()
     optimize_CompiledValueFilter_get_cached_name()
+    optimize_AbstractUsedNamesFilter_convert_names()
 
 
 # Pretty much same as ClassFilter, except using aggregate initialization
@@ -126,9 +126,8 @@ def optimize_CompiledValueFilter_values():
 # for self-assigned definitions to within a class' methods.
 def optimize_SelfAttributeFilter_values():
     from jedi.inference.value.instance import SelfAttributeFilter
-    from ..tools import is_basenode, is_namenode, is_funcdef, is_classdef
-    from itertools import repeat
     from parso.python.tree import Class
+    from ..tools import is_basenode, is_namenode, is_funcdef
 
     def values(self: SelfAttributeFilter):
         scope = self._parser_scope
@@ -156,9 +155,8 @@ def optimize_SelfAttributeFilter_values():
                     if n.get_definition(include_setitem=True):
                         names += n,
 
-                names = list(self._filter(names))
-                names = list(map(self.name_class, repeat(context), names))
-                return names
+                names = self._filter(names)
+                return self._convert_names(names)
         return []
 
     SelfAttributeFilter.values = values
@@ -167,12 +165,11 @@ def optimize_SelfAttributeFilter_values():
 def optimize_ClassFilter_values():
     from jedi.inference.value.klass import ClassFilter
     from parso.python.tree import Class
-    from ..common import AggregateDefinition, state_cache, get_scope_name_definitions
+    from ..common import AggregateTreeNameDefinition, get_scope_name_definitions
     from builtins import list, map, zip
 
     stub_classdef_cache = {}
 
-    @state_cache
     def values(self: ClassFilter):
         scope = self._parser_scope
 
@@ -189,7 +186,8 @@ def optimize_ClassFilter_values():
             else:
                 names = get_scope_name_definitions(scope)
 
-            return list(map(AggregateDefinition, zip(repeat(value), names)))
+            # XXX: Not correct. Should be AggregateClassName.
+            return list(map(AggregateTreeNameDefinition, zip(repeat(value), names)))
         return ()
 
     ClassFilter.values = values
@@ -213,20 +211,21 @@ def optimize_ClassFilter_filter():
 
 def optimize_ClassFilter_get():
     from jedi.inference.value.klass import ClassFilter
-    from ..common import get_cached_scope_definitions, AggregateDefinition
+    from ..common import get_cached_scope_definitions, AggregateTreeNameDefinition
 
     def get(self: ClassFilter, name_str: str):
         names = get_cached_scope_definitions(self._parser_scope)[name_str]
-        return list(map(AggregateDefinition, zip(repeat(self._class_value), names)))
+        # TODO: Not correct. Should use aggregated ClassName.
+        return list(map(AggregateTreeNameDefinition, zip(repeat(self._class_value), names)))
 
     ClassFilter.get = get
 
 
 def optimize_ParserTreeFilter_get():
     from jedi.inference.filters import ParserTreeFilter
-    from itertools import repeat
-    from ..common import get_cached_scope_definitions, AggregateDefinition, get_parent_scope_fast
     from textension.utils import starchain, Aggregation, _named_index
+    from itertools import repeat
+    from ..common import get_cached_scope_definitions, AggregateTreeNameDefinition, get_parent_scope_fast, filter_until
 
     # This exists as fallback when jedi returns None on get_value(), which is
     # the case for comprehension contexts.
@@ -249,9 +248,9 @@ def optimize_ParserTreeFilter_get():
         if definitions:
             value = self.parent_context.get_value() or NoValue((self.parent_context,))
 
-            values = repeat(value)
             definitions[0] = filter_until(self._until_position, definitions[0])
-            return list(map(AggregateDefinition, zip(values, starchain(definitions))))
+            # XXX: Don't call _convert_names - the value is indetermined.
+            return list(map(AggregateTreeNameDefinition, zip(repeat(value), starchain(definitions))))
         return []
 
     ParserTreeFilter.get = get
@@ -259,15 +258,12 @@ def optimize_ParserTreeFilter_get():
 
 def optimize_AnonymousMethodExecutionFilter():
     from jedi.inference.value.instance import AnonymousMethodExecutionFilter
-    from ..common import get_scope_name_definitions
+    from ..common import get_cached_scope_definitions
 
     def get(self: AnonymousMethodExecutionFilter, name_string):
-        scope = self._parser_scope
-
-        names = self._filter(get_scope_name_definitions(scope))
-        names = [n for n in names if n.value == name_string]
-        names = self._convert_names(names)
-        return names
+        names = get_cached_scope_definitions(self._parser_scope)[name_string]
+        names = self._filter(names)
+        return self._convert_names(names)
 
     AnonymousMethodExecutionFilter.get = get
     AnonymousMethodExecutionFilter._check_flows = _check_flows
@@ -278,9 +274,7 @@ def optimize_ParserTreeFilter_values():
     from ..common import get_scope_name_definitions
 
     def values(self: ParserTreeFilter):
-        scope   = self._parser_scope
-
-        names = get_scope_name_definitions(scope)
+        names = get_scope_name_definitions(self._parser_scope)
         names = self._filter(names)
         return self._convert_names(names)
     
@@ -295,7 +289,6 @@ def optimize_AnonymousMethodExecutionFilter_values():
     from ..tools import is_param
 
     def values(self: AnonymousMethodExecutionFilter):
-
         names = []
         scope = self._parser_scope
         children = scope.children
@@ -322,37 +315,16 @@ def optimize_AnonymousMethodExecutionFilter_values():
     AnonymousMethodExecutionFilter.values = values
     AnonymousMethodExecutionFilter._check_flows = _check_flows
 
-@inline
-def filter_until(position: int | None, names):
-    from itertools import compress
-    from operator import attrgetter
-    from builtins import map
-
-    get_start = attrgetter("start_pos")
-
-    def filter_until(position: int | None, names):
-        if position:
-            return compress(names, map(position.__gt__, map(get_start, names)))
-        return names
-
-    return filter_until
-
 
 def optimize_ParserTreeFilter_filter():
     from jedi.inference.filters import ParserTreeFilter
-    from itertools import compress
-    from builtins import map
-    from ..common import _check_flows
-
-    get_start = attrgetter("start_pos")
+    from ..common import _check_flows, filter_until
 
     def _filter(self: ParserTreeFilter, names):
-        if until := self._until_position:
-            names = compress(names, map(until.__gt__, map(get_start, names)))
+        names = filter_until(self._until_position, names)
 
         # XXX: Needed because jedi still calls this with names from all over.
         names = [n for n in names if self._is_name_reachable(n)]
-
         return _check_flows(self, names)
 
     ParserTreeFilter._filter = _filter
@@ -406,13 +378,12 @@ def optimize_ClassMixin_get_filters():
     from jedi.inference.value.klass import ClassMixin, ClassValue
     from ..common import NoArguments, state_cache, cached_builtins
 
-
     cached_type_filter = None
 
     def get_cached_type_filter():
         nonlocal cached_type_filter
 
-        if cached_type_filter is None:
+        if not cached_type_filter:
             instance, = cached_builtins.type.py__call__(NoArguments)
             for f in instance.class_value.get_filters(origin_scope=None, is_instance=True):
                 cached_type_filter = InstanceClassFilter(instance, f)
@@ -421,9 +392,7 @@ def optimize_ClassMixin_get_filters():
 
     @state_cache
     def get_cached_compiled_class_filters(cls: ClassValue, is_instance: bool):
-        filters = []
-        filters += cls.get_filters(is_instance=is_instance)
-        return filters
+        return list(cls.get_filters(is_instance=is_instance))
 
     def _get_filters(self, origin_scope=None, is_instance=False, include_metaclasses=True, include_type_when_class=True):
 
@@ -455,12 +424,6 @@ def optimize_ClassMixin_get_filters():
     ClassMixin.get_filters = get_filters
 
 
-class DeferredStubName(Aggregation, StubName):
-    parent_context = _named_index(0)
-    tree_name      = _named_index(1)
-
-
-# TODO: Can this be removed in favor of cached scope name definitions?
 @state_cache
 def get_scope_name_strings(scope):
     namedefs = []
@@ -534,8 +497,7 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
         if n.value in module_names:
             names += n,
 
-    ret = stub_filter._filter(names)
-    ret = self[stub_filter] = list(map(DeferredStubName, zip(repeat(context), ret)))
+    ret = self[stub_filter] = stub_filter._convert_names(stub_filter._filter(names))
     return ret
 
 
@@ -564,7 +526,7 @@ class CachedStubFilter(StubFilter):
 
     def get(self, name):
         if name := get_module_definition_by_name(self._parser_scope, name):
-            return (DeferredStubName((self.parent_context, name)),)
+            return (AggregateStubName((self.parent_context, name)),)
         return ()
 
     def _filter(self, names):
@@ -631,3 +593,22 @@ def optimize_CompiledValueFilter_get_cached_name():
             return DeferredCompiledName((self.compiled_value, name))
         
     CompiledValueFilter._get_cached_name = _get_cached_name
+
+
+def optimize_AbstractUsedNamesFilter_convert_names():
+    from jedi.inference.gradual.stub_value import StubFilter
+    from jedi.inference.filters import _AbstractUsedNamesFilter
+    from jedi.api.interpreter import MixedParserTreeFilter
+    from ..common import AggregateTreeNameDefinition
+
+    _AbstractUsedNamesFilter.name_class = AggregateTreeNameDefinition
+
+    # XXX: Technically not correct. Should be AggregateMixedTreeName, but at
+    # no point has the superclass infer never returned a value.
+    MixedParserTreeFilter.name_class = AggregateTreeNameDefinition
+    StubFilter.name_class = AggregateStubName
+
+    def _convert_names(self: _AbstractUsedNamesFilter, names):
+        return list(map(self.name_class, zip(repeat(self.parent_context._value), names)))
+
+    _AbstractUsedNamesFilter._convert_names = _convert_names

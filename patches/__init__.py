@@ -202,10 +202,6 @@ def patch_various_redirects():
     TypingClassWithGenerics.is_stub     = _forwarder("_wrapped_value.is_stub")
     TypingClassWithGenerics.is_instance = _forwarder("_wrapped_value.is_instance")
 
-    from jedi.inference.compiled import ExactValue
-
-    ExactValue.py__class__ = _forwarder("_wrapped_value.py__class__")
-
 
 # Fixes jedi erroneously yielding wrong inherited methods.
 def patch_Completion_complete_inherited():
@@ -690,9 +686,9 @@ def patch_getattr_stack_overflows():
 # ``cache_signatures`` uses an unmanaged cache and causes inferred values to
 # be retained indefinitely. This just skips the cache.
 def patch_cache_signatures():
-    from textension.plugins.suggestions.jedi.api.helpers import infer, cache_signatures
+    from jedi.api.helpers import infer, cache_signatures
 
     def _cache_signatures(inference_state, context, bracket_leaf, code_lines, user_pos):
         return infer(inference_state, context, bracket_leaf.get_previous_leaf())
-    
+
     _patch_function(cache_signatures, _cache_signatures)

@@ -1414,12 +1414,14 @@ def optimize_builtin_from_name():
 
     def _builtin_from_name(inference_state, string):
         if string not in cache:
-            stub_value = inference_state.builtins_module
+            builtins = inference_state.builtins_module
+
+            # These are not defined in the builtins stub.
             if string in {"None", "True", "False"}:
-                builtins, = stub_value.non_stub_value_set
-                filter_ = next(builtins.get_filters())
-            else:
-                filter_ = next(stub_value.get_filters())
+                builtins, = builtins.non_stub_value_set
+
+            filters = builtins.get_filters()
+            filter_ = next(filters)
             name, = filter_.get(string)
             value, = name.infer()
             cache[string] = value
