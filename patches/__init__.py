@@ -46,6 +46,7 @@ def _apply_patches():
     patch_get_importer_names()
     patch_getattr_stack_overflows()
     patch_cache_signatures()
+    patch_AbstractContext_check_for_additional_knowledge()
 
 
 def _apply_optimizations():
@@ -692,3 +693,28 @@ def patch_cache_signatures():
         return infer(inference_state, context, bracket_leaf.get_previous_leaf())
 
     _patch_function(cache_signatures, _cache_signatures)
+
+
+# Fixes ``get_parent_scope`` returning None when ``flow_scope`` is a module.
+def patch_AbstractContext_check_for_additional_knowledge():
+    from jedi.inference.context import AbstractContext
+    from jedi.inference.finder import check_flow_information
+    from .common import is_namenode, NO_VALUES, walk_scopes
+
+    def _check_for_additional_knowledge(self, name_or_str, context, position):
+        context = context or self
+
+        if is_namenode(name_or_str) and not context.is_instance():
+            flow  = name_or_str
+            module_node = context.get_root_context().tree_node
+            base_nodes  = {context.tree_node, module_node}
+
+            if not any(b.type in {"comp_for", "sync_comp_for"} for b in base_nodes):
+                for flow in walk_scopes(flow, False):
+                    if n := check_flow_information(context, flow, name_or_str, position):
+                        return n
+                    elif flow in base_nodes:
+                        break
+        return NO_VALUES
+
+    AbstractContext._check_for_additional_knowledge = _check_for_additional_knowledge

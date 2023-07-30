@@ -418,12 +418,10 @@ def get_submodule_names():
     return get_submodule_names
 
 
-# A modified version of reachability check used by various optimizations.
-@factory
-def trace_flow(node, origin_scope):
-    from jedi.inference.flow_analysis import get_flow_branch_keyword, _break_check
-    from parso.python.tree import Keyword
+@inline
+def walk_scopes(scope, include_scopes: bool):
     from itertools import compress, count
+    from parso.python.tree import Keyword
 
     flows  = {"for_stmt", "if_stmt", "try_stmt", "while_stmt", "with_stmt"}
     scopes = {"classdef", "comp_for", "file_input", "funcdef",  "lambdef",
@@ -433,7 +431,7 @@ def trace_flow(node, origin_scope):
     is_keyword = Keyword.__instancecheck__
 
     @state_cache
-    def iter_flows(node, include_scopes):
+    def walk_scopes(node, include_scopes):
         if include_scopes and (parent := node.parent):
             type = parent.type
 
@@ -467,13 +465,22 @@ def trace_flow(node, origin_scope):
                     continue
                 yield scope
         return None
+    return walk_scopes
+
+
+# A modified version of reachability check used by various optimizations.
+@inline
+def trace_flow(node, origin_scope):
+    from jedi.inference.flow_analysis import get_flow_branch_keyword, _break_check
+
+    from .common import walk_scopes
 
     @state_cache
     def trace_flow(name, origin_scope):
         if origin_scope is not None:
             branch_matches = True
-            for flow_scope in iter_flows(origin_scope, False):  # 0.5ms (274)
-                if flow_scope in iter_flows(name, False):
+            for flow_scope in walk_scopes(origin_scope, False):  # 0.5ms (274)
+                if flow_scope in walk_scopes(name, False):
                     node_keyword   = get_flow_branch_keyword(flow_scope, name)
                     origin_keyword = get_flow_branch_keyword(flow_scope, origin_scope)
 
@@ -486,7 +493,7 @@ def trace_flow(node, origin_scope):
 
             if branch_matches:
                 first_flow_scope = None
-                for first_flow_scope in iter_flows(name, True):
+                for first_flow_scope in walk_scopes(name, True):
                     break
                 while origin_scope:
                     if first_flow_scope is origin_scope:
@@ -495,7 +502,7 @@ def trace_flow(node, origin_scope):
 
         # XXX: For testing. What's the point of break check?
         # if first_flow_scope is None:
-        #     first_flow_scope = next(iter_flows(name, True), None)
+        #     first_flow_scope = next(walk_scope(name, True), None)
         # return _break_check(context, value_scope, first_flow_scope, name)
         return name
     return trace_flow
@@ -794,7 +801,6 @@ class BpyTextModuleContext(MixedModuleContext):
         if namedef := find_definition(name_or_str):
             return tree_name_to_values(state, self, namedef)
 
-        print("BpyTextModuleContext py__getattribute__ failed for", name_or_str)
         return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
 
 
@@ -984,3 +990,13 @@ def filter_until(pos: int | None, names):
 class AggregateStubName(Aggregation, StubName):
     parent_context = _named_index(0)
     tree_name      = _named_index(1)
+
+
+# This exists as fallback when jedi returns None on get_value(), which is
+# the case for comprehension contexts.
+class AggregateComprehensionValue(Aggregation):
+    __slots__ = ()
+    _context  = _named_index(0)
+
+    def as_context(self):
+        return self._context

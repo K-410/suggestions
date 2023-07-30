@@ -80,6 +80,7 @@ def apply():
     optimize_FileIO_read()
     optimize_AccessHandle_shit()
     optimize_ExactValue_py__class__()
+    optimize_Sequence_get_wrapped_value()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -1532,27 +1533,28 @@ def optimize_is_annotation_name():
 
 def optimize_apply_decorators():
     from jedi.inference.syntax_tree import _apply_decorators, FunctionValue, infer_trailer, Decoratee
-    from jedi.inference.arguments import ValuesArguments
     from jedi.inference.value.klass import ClassMixin, FunctionAndClassBase, ClassValue
+    from jedi.inference.arguments import ValuesArguments
     from parso.python.tree import PythonNode, Class, ClassOrFunc
-
-    from textension.utils import Aggregation, _named_index, _get_dict
     from ..common import state, AggregateValues
+    from textension.utils import _get_dict
 
-    class AggregatedClassValue(Aggregation, ClassMixin, FunctionAndClassBase):
+    class SimplerClassValue(ClassMixin, FunctionAndClassBase):
         inference_state = state
-        parent_context  = _named_index(0)
-        tree_node       = _named_index(1)
+
+        def __init__(self, parent_context, tree_node):
+            self.parent_context = parent_context
+            self.tree_node = tree_node
 
         def __repr__(self):
             return f"<ClassValue: {self.tree_node!r}>"
 
-    _get_dict(AggregatedClassValue).update(
+    _get_dict(SimplerClassValue).update(
         {k: v for k, v in ClassValue.__dict__.items() if not k.startswith("_")})
 
     def apply_decorators(context, node: ClassOrFunc):
         if node.__class__ is Class:
-            decoratee_value = AggregatedClassValue((context, node))
+            decoratee_value = SimplerClassValue(context, node)
         else:
             decoratee_value = FunctionValue.from_context(context, node)
 
@@ -1564,7 +1566,7 @@ def optimize_apply_decorators():
 
                 dec_values = context.infer_node(dec.children[1])
                 if trailer_nodes := dec.children[2:-1]:
-                    trailer = PythonNode('trailer', trailer_nodes)
+                    trailer = PythonNode("trailer", trailer_nodes)
                     trailer.parent = dec
                     dec_values = infer_trailer(context, dec_values, trailer)
 
@@ -1884,9 +1886,35 @@ def optimize_AccessHandle_shit():
 
 def optimize_ExactValue_py__class__():
     from jedi.inference.compiled import ExactValue
-    from ..common import cached_builtins
+    from ..common import get_builtin_value
 
     def py__class__(self: ExactValue):
-        return getattr(cached_builtins, self._compiled_value.access_handle.access._obj.__class__.__name__)
+        return get_builtin_value(
+            self._compiled_value.access_handle.access._obj.__class__.__name__)
 
     ExactValue.py__class__ = py__class__
+
+
+# Optimizes Sequence._get_wrapped_value to defer getting generics until it's
+# actually needed. Which is during py__getitem__, and not trailer completion.
+def optimize_Sequence_get_wrapped_value():
+    from jedi.inference.gradual.generics import TupleGenericManager
+    from jedi.inference.value.iterable import Sequence
+    from jedi.inference.gradual.base import GenericClass
+    from ..common import get_builtin_value
+
+    class DeferredTupleGenericManager(TupleGenericManager):
+        def __init__(self, sequence):
+            self.sequence = sequence
+
+        @property
+        def _tuple(self):
+            return self.sequence._get_generics()
+    
+    def _get_wrapped_value(self):
+        sequence_type = get_builtin_value(self.array_type)
+        manager = DeferredTupleGenericManager(self)
+        c, = GenericClass(sequence_type, manager).execute_annotation()
+        return c
+
+    Sequence._get_wrapped_value = _get_wrapped_value

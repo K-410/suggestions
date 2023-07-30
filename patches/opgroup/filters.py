@@ -223,18 +223,9 @@ def optimize_ClassFilter_get():
 
 def optimize_ParserTreeFilter_get():
     from jedi.inference.filters import ParserTreeFilter
-    from textension.utils import starchain, Aggregation, _named_index
+    from textension.utils import starchain
     from itertools import repeat
-    from ..common import get_cached_scope_definitions, AggregateTreeNameDefinition, get_parent_scope_fast, filter_until
-
-    # This exists as fallback when jedi returns None on get_value(), which is
-    # the case for comprehension contexts.
-    class NoValue(Aggregation):
-        __slots__ = ()
-        _context  = _named_index(0)
-
-        def as_context(self):
-            return self._context
+    from ..common import get_cached_scope_definitions, AggregateTreeNameDefinition, get_parent_scope_fast, filter_until, AggregateComprehensionValue
 
     def get(self: ParserTreeFilter, name_str: str):
         scope = self._parser_scope
@@ -246,10 +237,10 @@ def optimize_ParserTreeFilter_get():
             scope = get_parent_scope_fast(scope)
 
         if definitions:
-            value = self.parent_context.get_value() or NoValue((self.parent_context,))
+            # TODO: Implement AggregateComprehensionValue in the comprehension context.
+            value = self.parent_context.get_value() or AggregateComprehensionValue((self.parent_context,))
 
             definitions[0] = filter_until(self._until_position, definitions[0])
-            # XXX: Don't call _convert_names - the value is indetermined.
             return list(map(AggregateTreeNameDefinition, zip(repeat(value), starchain(definitions))))
         return []
 
@@ -599,7 +590,7 @@ def optimize_AbstractUsedNamesFilter_convert_names():
     from jedi.inference.gradual.stub_value import StubFilter
     from jedi.inference.filters import _AbstractUsedNamesFilter
     from jedi.api.interpreter import MixedParserTreeFilter
-    from ..common import AggregateTreeNameDefinition
+    from ..common import AggregateTreeNameDefinition, AggregateComprehensionValue
 
     _AbstractUsedNamesFilter.name_class = AggregateTreeNameDefinition
 
@@ -609,6 +600,8 @@ def optimize_AbstractUsedNamesFilter_convert_names():
     StubFilter.name_class = AggregateStubName
 
     def _convert_names(self: _AbstractUsedNamesFilter, names):
-        return list(map(self.name_class, zip(repeat(self.parent_context._value), names)))
+        # TODO: Implement AggregateComprehensionValue in the comprehension context.
+        value = self.parent_context.get_value() or AggregateComprehensionValue((self.parent_context,))
+        return list(map(self.name_class, zip(repeat(value), names)))
 
     _AbstractUsedNamesFilter._convert_names = _convert_names
