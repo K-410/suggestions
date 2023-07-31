@@ -43,6 +43,7 @@ class Suggestions(ui.widgets.ListBox):
     st:  bpy.types.SpaceTextEditor
     _temp_lines             = []
 
+    font_id: int            = 0
     is_visible: bool        = False
     last_position           = (0, 0)
     sync_key                = ()
@@ -70,6 +71,8 @@ class Suggestions(ui.widgets.ListBox):
     foreground_color       = (0.4, 0.7, 1.0, 1.0)
     match_foreground_color = (0.87, 0.60, 0.25, 1.0)
 
+    show_description: bool = False
+
     def __init__(self, st: bpy.types.SpaceTextEditor):
         super().__init__(parent=None)
 
@@ -90,6 +93,7 @@ class Suggestions(ui.widgets.ListBox):
             # TODO: Setting this in the poll isn't a good idea.
             self.last_position = -1, -1
             self.sync_key = ()
+            self.is_visible = False
         return False
 
     def sync_cursor(self, line_index) -> None:
@@ -109,7 +113,9 @@ class Suggestions(ui.widgets.ListBox):
 
         self.rect.draw(x, y, w, h)
         super().draw()  # ListBox.draw
-        self.description.draw()
+
+        if self.show_description:
+            self.description.draw()
 
     def draw_entry(self, entry, x: int, y: int):
         length = entry.get_completion_prefix_length()
@@ -123,14 +129,14 @@ class Suggestions(ui.widgets.ListBox):
             prefix = string[:length]
 
             if self.use_bold_matches:
-                blf.enable(1, BLF_BOLD)
+                blf.enable(self.font_id, BLF_BOLD)
 
-            blf.position(1, x, y, 0)
-            blf.color(1, *self.match_foreground_color)
-            blf.draw(1, prefix)
-            blf.disable(1, BLF_BOLD)
+            blf.position(self.font_id, x, y, 0)
+            blf.color(self.font_id, *self.match_foreground_color)
+            blf.draw(self.font_id, prefix)
+            blf.disable(self.font_id, BLF_BOLD)
 
-            x += blf.dimensions(1, prefix)[0]
+            x += blf.dimensions(self.font_id, prefix)[0]
             self.draw_string(string[length:], x, y)
 
     def dismiss(self):
@@ -141,6 +147,12 @@ class Suggestions(ui.widgets.ListBox):
 
     def hit_test(self, x, y):
         return self.description.hit_test(x, y) or super().hit_test(x, y)
+
+    def toggle_description(self, visible: bool = None):
+        if visible is None:
+            visible = not self.show_description
+        self.show_description = visible
+        utils.safe_redraw()
 
 
 @utils.factory
@@ -281,7 +293,7 @@ def dismiss():
 def on_insert(line, column, fmt) -> None:
     """Hook for TEXTENSION_OT_insert"""
     if _context.edit_text.lines[line].body[column - 1] not in separators and fmt != b"#":
-        deferred_complete()
+        deferred_complete(toggle_description=False)
     else:
         dismiss()
 
@@ -296,13 +308,13 @@ def on_delete(line, column, fmt) -> None:
         instance = get_instance()
         instance.sync_cursor(line)
         if instance.poll() and fmt != b"#":  # If visible, run completions again.
-            deferred_complete()
+            deferred_complete(toggle_description=False)
 
 
-def deferred_complete():
+def deferred_complete(toggle_description=True):
     def wrapper(ctx=_context.copy()):
         with _context.temp_override(**ctx):
-            bpy.ops.textension.suggestions_complete('INVOKE_DEFAULT')
+            bpy.ops.textension.suggestions_complete('INVOKE_DEFAULT', toggle_description=toggle_description)
     utils.defer(wrapper)
 
 
@@ -320,17 +332,21 @@ def _enable_gc():
 
 
 class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
-    utils.km_def("Text Generic", 'SPACE', 'PRESS', ctrl=1)
+    toggle_description: bpy.props.BoolProperty(default=True)
 
     poll = utils.text_poll
 
     def invoke(self, context, event):
+        instance = get_instance()
+
+        if instance.is_visible and self.toggle_description:
+            instance.toggle_description()
+            return {'FINISHED'}
+    
         if not runtime.loaded:
             _setup(force=True)
 
         text = context.edit_text
-        instance = get_instance()
-
         nlines = context.space_data.drawcache.total_lines
 
         # Line index is O(N) so avoid syncing cursor as much as possible.
