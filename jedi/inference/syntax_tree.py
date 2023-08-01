@@ -2,6 +2,7 @@
 Functions inferring the syntax tree.
 """
 import copy
+import itertools
 
 from parso.python import tree
 
@@ -328,8 +329,8 @@ def infer_atom(context, atom):
         c = atom.children
         # Parentheses without commas are not tuples.
         if c[0] == '(' and not len(c) == 2 \
-                and not(c[1].type == 'testlist_comp'
-                        and len(c[1].children) > 1):
+                and not (c[1].type == 'testlist_comp'
+                         and len(c[1].children) > 1):
             return context.infer_node(c[1])
 
         try:
@@ -515,10 +516,20 @@ def _literals_to_types(inference_state, result):
 
 def _infer_comparison(context, left_values, operator, right_values):
     state = context.inference_state
+    if isinstance(operator, str):
+        operator_str = operator
+    else:
+        operator_str = str(operator.value)
     if not left_values or not right_values:
         # illegal slices e.g. cause left/right_result to be None
         result = (left_values or NO_VALUES) | (right_values or NO_VALUES)
         return _literals_to_types(state, result)
+    elif operator_str == "|" and all(
+        value.is_class() or value.is_compiled()
+        for value in itertools.chain(left_values, right_values)
+    ):
+        # ^^^ A naive hack for PEP 604
+        return ValueSet.from_sets((left_values, right_values))
     else:
         # I don't think there's a reasonable chance that a string
         # operation is still correct, once we pass something like six
