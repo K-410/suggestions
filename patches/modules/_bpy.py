@@ -75,10 +75,11 @@ def _as_module(obj, name):
 
 # Needs to exist for import redirects.
 class BpyModule(VirtualModule):
-    pass
+    _name = "bpy"
 
 
 class OpsModule(VirtualModule):
+    _name = "bpy.ops"
     def get_submodule_names(self, only_modules=False):
         sub = map(getitem, map(str.partition, _bpy.ops.dir(), repeat("_OT_")), repeat(0))
         names = set(map(str.lower, set(sub)))
@@ -86,6 +87,7 @@ class OpsModule(VirtualModule):
 
 
 class PropsModule(VirtualModule):
+    _name = "bpy.props"
     def py__getattribute__(self, name_or_str, **kw):
         if value := prop_func_map.get(name_or_str.value):
             return (value,)

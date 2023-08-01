@@ -973,9 +973,12 @@ def optimize_get_module_info():
         if full_name in modules:
             try:
                 spec = module_getattr(modules[full_name], "__spec__")
-                with open(spec.origin, "rb") as f:
-                    content = f.read()
-                return KnownContentFileIO(spec.origin, content), bool(spec.submodule_search_locations)
+                path = spec.origin
+
+                if path.endswith(".py"):
+                    with open(path, "rb") as f:
+                        content = f.read()
+                    return KnownContentFileIO(path, content), bool(spec.submodule_search_locations)
             except:
                 pass
 
@@ -996,7 +999,7 @@ def optimize_get_module_info():
 
 def optimize_tree_name_to_values():
     from jedi.inference.syntax_tree import tree_name_to_values
-    from ..common import state_cache, AggregateValues
+    from ..common import state_cache_default, AggregateValues
 
     from jedi.inference.syntax_tree import infer_atom, ContextualizedNode, TreeNameDefinition, check_tuple_assignments, infer_expr_stmt, _apply_decorators, infer_node
     from jedi.inference.gradual import annotation
@@ -1041,7 +1044,7 @@ def optimize_tree_name_to_values():
 
 
     # This version searches for annotations more efficiently.
-    @state_cache
+    @state_cache_default(NO_VALUES)
     def _tree_name_to_values(inference_state, context, tree_name):
         n = tree_name
         while n := n.parent:
@@ -1113,10 +1116,11 @@ def optimize_ClassMixin_py__mro__():
     def py__mro__(self: ClassMixin):
         mro = [self]
         bases = list(self.py__bases__())
+        iter_bases = iter(bases)
 
         while True:
             try:
-                for cls in starchain(map(call_infer, iter(bases))):
+                for cls in starchain(map(call_infer, iter_bases)):
                     mro += cls.py__mro__()
                 break
 
@@ -1387,7 +1391,8 @@ def optimize_find_overload_functions():
                     if dec.type == "decorators":
                         dec = dec.children[0]
 
-                    if dec.children[1].value == "overload":
+                    dec_name = dec.children[1]
+                    if dec_name.type == "name" and dec_name.value == "overload":
                         ret += funcdef,
         return ret
 

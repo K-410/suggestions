@@ -289,8 +289,12 @@ def rna_fallback_value(parent, name):
 class RnaName(VirtualName):
     def infer(self):
         parent = self.parent_value
+        members = parent.members
         name  = self.string_name
-        obj = parent.members[name]
+        if name not in members:
+            return NO_VALUES
+
+        obj = members[name]
 
         if isinstance(parent, ContextInstance) and isinstance(obj, type):
             if isinstance(obj, types.GenericAlias):

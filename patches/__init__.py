@@ -47,6 +47,7 @@ def _apply_patches():
     patch_getattr_stack_overflows()
     patch_cache_signatures()
     patch_AbstractContext_check_for_additional_knowledge()
+    patch_ValueNameMixin_get_defining_qualified_value()
 
 
 def _apply_optimizations():
@@ -595,6 +596,7 @@ def patch_get_importer_names():
     from itertools import repeat, compress
     import sys
     from .tools import is_namenode, is_operator
+    from importlib.util import find_spec
 
     startswith = str.startswith
     modules = sys.modules.keys()
@@ -606,6 +608,16 @@ def patch_get_importer_names():
             if op.value is ".":
                 # Compose the import statement and look for it in sys.modules.
                 comp = ".".join(n.value for n in names)
+
+                if "." in comp:
+                    if module := sys.modules.get(comp):
+                        spec = getattr(module, "__spec__", None)
+                    else:
+                        spec = find_spec(comp)
+
+                    # If a module or spec exists, run stock behavior.
+                    if spec:
+                        break
 
                 # Jedi may omit the trailing part from names. Add it back.
                 leaf = self._module_node.get_leaf_for_position(self._original_position)
@@ -718,3 +730,17 @@ def patch_AbstractContext_check_for_additional_knowledge():
         return NO_VALUES
 
     AbstractContext._check_for_additional_knowledge = _check_for_additional_knowledge
+
+
+# Patches ``get_defining_qualified_value`` for cases where ``parent_context``
+# is None, which happens for module values.
+def patch_ValueNameMixin_get_defining_qualified_value():
+    from jedi.inference.names import ValueNameMixin
+
+    def get_defining_qualified_value(self: ValueNameMixin):
+        if context := self.parent_context:
+            if context.is_module() or context.is_class():
+                return self.parent_context.get_value()  # Might be None
+        return None
+
+    ValueNameMixin.get_defining_qualified_value = get_defining_qualified_value

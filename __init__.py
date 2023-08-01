@@ -35,7 +35,17 @@ class TEXT_OT_autocomplete(OpOverride):
 
 
 class Description(ui.widgets.TextView):
+    parent: "Suggestions"
+
     def draw(self):
+        parent = self.parent
+        active = parent.active
+        if active.index != -1:
+            entry = parent.lines[active.index]
+            string = entry.docstring(fast=False)
+            self.set_from_string(string)
+        else:
+            self.set_from_string()
         return super().draw()
 
 
@@ -43,7 +53,7 @@ class Suggestions(ui.widgets.ListBox):
     st:  bpy.types.SpaceTextEditor
     _temp_lines             = []
 
-    font_id: int            = 0
+    font_id: int            = 1
     is_visible: bool        = False
     last_position           = (0, 0)
     sync_key                = ()

@@ -126,6 +126,29 @@ def state_cache(func):
     return wrapper
 
 
+def state_cache_default(default):
+    def decorator(func):
+        try:
+            func_name = func.__name__
+        except AttributeError:
+            func_name = str(func)
+
+        cache = {}
+
+        # The name is mostly for introspection.
+        @set_name(func_name + " (cached)")
+        def wrapper(*args):
+            if args not in cache:
+                cache[args] = default
+                cache[args] = func(*args)
+            return cache[args]
+
+        cache_closure = wrapper.__closure__[0]
+        _closures.append(cache_closure)
+        return wrapper
+    return decorator
+
+
 def state_cache_kw(func):
     from textension.utils import dict_items
     from builtins import tuple
@@ -214,6 +237,10 @@ def get_scope_name_definitions(scope):
             # The only 2 import statement types.
             elif n.type in {"import_name", "import_from"}:
                 name = n.children[-1]
+
+                # ``import collections.abc`` is not a definition.
+                if name.type == "dotted_name":
+                    continue
 
                 # The definition is potentially the last child, but
                 # watch out for any closing parens or star operator.
@@ -568,6 +595,7 @@ class VirtualInstance(CompiledInstance):
 
 
 class VirtualModule(CompiledModule):
+    _name = None
     inference_state = state
     parent_context  = None
 
@@ -580,6 +608,9 @@ class VirtualModule(CompiledModule):
 
     def __repr__(self):
         return f"<{type(self).__name__} {self.obj}>"
+
+    def py__name__(self):
+        return self._name
 
 
 virtual_overrides = {}
@@ -988,8 +1019,18 @@ def filter_until(pos: int | None, names):
 
 
 class AggregateStubName(Aggregation, StubName):
-    parent_context = _named_index(0)
-    tree_name      = _named_index(1)
+    parent_value = _named_index(0)
+    tree_name    = _named_index(1)
+
+    @lazy_overwrite
+    def parent_context(self):
+        return self.parent_value.as_context()
+
+    def __repr__(self):
+        if self.start_pos is None:
+            return '<%s: string_name=%s>' % (self.__class__.__name__, self.string_name)
+        return '<%s: string_name=%s start_pos=%s>' % (self.__class__.__name__,
+                                                      self.string_name, self.start_pos)
 
 
 # This exists as fallback when jedi returns None on get_value(), which is

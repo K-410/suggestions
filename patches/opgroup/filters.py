@@ -475,20 +475,65 @@ def get_scope_name_strings(scope):
 
 def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
     context = stub_filter.parent_context
-    value   = context._value
-    module_names = get_scope_name_strings(value.tree_node)
 
-    names = []
-    pool  = [value.tree_node]
+    scope = context._value.tree_node
+
+    namedefs = []
+    pool  = scope.children[:]
 
     for n in filter(is_basenode, pool):
-        pool += (n.children[1],) if n.type in {"classdef", "funcdef"} else n.children
+        if n.type in {"classdef", "funcdef"}:
+            # Add straight to ``namedefs`` we know they are definitions.
+            namedefs += n.children[1],
 
+        elif n.type == "simple_stmt":
+            n = n.children[0]
+
+            if n.type == "expr_stmt":
+                name = n.children[0]
+                # Could be ``atom_expr``, as in dotted name. Skip those.
+                if name.type == "name":
+                    namedefs += name,
+                else:
+                    print("get_scope_name_strings:", repr(name.type))
+
+            elif n.type == "import_from":
+                name = n.children[3]
+                if name.type == "operator":
+                    name = n.children[4]
+
+                # Only matching aliased imports are exported for stubs.
+                if name.type == "import_as_names":
+                    for name in name.children[::2]:
+                        if name.type == "import_as_name":
+                            name, alias = name.children[::2]
+                            if name.value == alias.value:
+                                namedefs += alias,
+
+            elif n.type == "atom":
+                # ``atom`` nodes are too ambiguous to extract names from.
+                # Just into the pool and look for names the old way.
+                pool += n.children
+
+        elif n.type == "decorated":
+            pool += n.children[1],
+        else:
+            pool += n.children
+
+    # Get name definitions.
     for n in filter(is_namenode, pool):
-        if n.value in module_names:
-            names += n,
+        if n.get_definition(include_setitem=True):
+            namedefs += n,
 
-    ret = self[stub_filter] = stub_filter._convert_names(stub_filter._filter(names))
+    tmp = []
+    for name in reversed(namedefs):
+        value = name.value
+        if value[0] is "_" != value[:2][-1]:
+            continue
+        tmp += name,
+
+
+    ret = self[stub_filter] = stub_filter._convert_names(stub_filter._filter(tmp))
     return ret
 
 
@@ -517,7 +562,7 @@ class CachedStubFilter(StubFilter):
 
     def get(self, name):
         if name := get_module_definition_by_name(self._parser_scope, name):
-            return (AggregateStubName((self.parent_context, name)),)
+            return (AggregateStubName((self.parent_context.get_value(), name)),)
         return ()
 
     def _filter(self, names):
