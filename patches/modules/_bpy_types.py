@@ -299,7 +299,7 @@ class RnaName(VirtualName):
         if isinstance(parent, ContextInstance) and isinstance(obj, type):
             if isinstance(obj, types.GenericAlias):
                 from jedi.inference.value.iterable import FakeList, LazyKnownValue
-                v, = get_rna_value(obj.__args__[0].bl_rna, parent).py__call__(None)
+                v, = get_rna_value(obj.__args__[0].bl_rna, parent).py__call__(NoArguments)
                 return AggregateValues((FakeList(state, [LazyKnownValue(v)]),))
 
             value = get_rna_value(obj.bl_rna, parent)
@@ -320,7 +320,7 @@ class RnaName(VirtualName):
 
         else:
             return NO_VALUES
-        return value.py__call__(None)
+        return value.py__call__(NoArguments)
 
     def __repr__(self):
         return f"{repr(self.parent_value)}.{self.string_name}"
@@ -386,7 +386,7 @@ class RnaValue(VirtualValue):
         if isinstance(self, ContextInstance) and isinstance(obj, type):
             if isinstance(obj, types.GenericAlias):
                 from jedi.inference.value.iterable import FakeList, LazyKnownValue
-                v, = get_rna_value(obj.__args__[0].bl_rna, self).py__call__(None)
+                v, = get_rna_value(obj.__args__[0].bl_rna, self).py__call__(NoArguments)
                 return AggregateValues((FakeList(state, [LazyKnownValue(v)]),))
 
             value = get_rna_value(obj.bl_rna, self)
@@ -622,7 +622,7 @@ class IdPropCollectionValue(VirtualValue):
 
     def py__simple_getitem__(self, index):
         for value in self.values.infer():
-            return value.py__call__(None)
+            return value.py__call__(NoArguments)
         return NO_VALUES
 
 
@@ -677,7 +677,7 @@ class NonScreenContextName(RnaName):
         name, is_collection = context_type_map[self.string_name]
         cls = getattr(bpy.types, name)
 
-        value, = get_rna_value(cls.bl_rna, self.parent_value).py__call__(None)
+        value, = get_rna_value(cls.bl_rna, self.parent_value).py__call__(NoArguments)
         if is_collection:
             from jedi.inference.value.iterable import FakeList, LazyKnownValue
             value = FakeList(state, (LazyKnownValue(value),))
@@ -751,7 +751,7 @@ def patch_AnonymousParamName_infer():
                 if param.identifier == "context":
                     instance = get_context_instance()
                 else:
-                    instance, = rnadef_to_value(param, parent).py__call__(None)
+                    instance, = rnadef_to_value(param, parent).py__call__(NoArguments)
                 return AggregateValues((instance,))
 
         return NO_VALUES
