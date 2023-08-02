@@ -381,7 +381,12 @@ class RnaValue(VirtualValue):
 
     def infer_name(self, name: VirtualName):
         name_str  = name.string_name
-        obj = self.members[name_str]
+        members = self.members
+
+        if name_str not in members:
+            return NO_VALUES
+
+        obj = members[name_str]
 
         if isinstance(self, ContextInstance) and isinstance(obj, type):
             if isinstance(obj, types.GenericAlias):
