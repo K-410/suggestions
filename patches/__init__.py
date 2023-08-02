@@ -48,6 +48,7 @@ def _apply_patches():
     patch_cache_signatures()
     patch_AbstractContext_check_for_additional_knowledge()
     patch_ValueNameMixin_get_defining_qualified_value()
+    patch_DirectAccess_key_errors()
 
 
 def _apply_optimizations():
@@ -744,3 +745,17 @@ def patch_ValueNameMixin_get_defining_qualified_value():
         return None
 
     ValueNameMixin.get_defining_qualified_value = get_defining_qualified_value
+
+
+# Handles are cleared to stop memory leaks. Jedi reports KeyError on handles,
+# which is weird considering jedi itself chooses the extra indirection. This
+# patch simply bypasses the whole indirection.
+def patch_DirectAccess_key_errors():
+    from jedi.inference.compiled.subprocess import AccessHandle
+
+    # XXX: Not needed?
+    # def py__path__(self: AccessHandle):
+    #     return self.access.py__path__()
+    # AccessHandle.py__path__ = py__path__
+
+    AccessHandle.__getattr__ = _forwarder("access.__getattribute__")
