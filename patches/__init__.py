@@ -47,7 +47,6 @@ def _apply_patches():
     patch_getattr_stack_overflows()
     patch_cache_signatures()
     patch_AbstractContext_check_for_additional_knowledge()
-    patch_ValueNameMixin_get_defining_qualified_value()
     patch_DirectAccess_key_errors()
 
 
@@ -737,20 +736,6 @@ def patch_AbstractContext_check_for_additional_knowledge():
         return NO_VALUES
 
     AbstractContext._check_for_additional_knowledge = _check_for_additional_knowledge
-
-
-# Patches ``get_defining_qualified_value`` for cases where ``parent_context``
-# is None, which happens for module values.
-def patch_ValueNameMixin_get_defining_qualified_value():
-    from jedi.inference.names import ValueNameMixin
-
-    def get_defining_qualified_value(self: ValueNameMixin):
-        if context := self.parent_context:
-            if context.is_module() or context.is_class():
-                return self.parent_context.get_value()  # Might be None
-        return None
-
-    ValueNameMixin.get_defining_qualified_value = get_defining_qualified_value
 
 
 # Handles are cleared to stop memory leaks. Jedi reports KeyError on handles,

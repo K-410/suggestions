@@ -498,9 +498,10 @@ def optimize_CompiledName():
 
     CompiledName._inference_state = state
 
-    def __init__(self: CompiledName, inference_state, parent_value, name):
+    def __init__(self: CompiledName, inference_state, parent_value, name, is_descriptor):
         self._parent_value = parent_value
         self.string_name = name
+        self.is_descriptor = is_descriptor
 
     CompiledName.__init__ = __init__
 
