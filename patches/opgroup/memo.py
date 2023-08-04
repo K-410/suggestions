@@ -1,6 +1,6 @@
 # This adds optimizations to jedi's caching.
 
-from ..common import state_cache, state_cache_kw
+from ..common import state_cache, state_cache_kw, state_cache_default
 
 
 def apply():
@@ -25,7 +25,7 @@ def unwrap(func):
 
 
 def optimize_memos():
-    from jedi.inference.base_value import HelperValueMixin
+    from jedi.inference.base_value import HelperValueMixin, NO_VALUES
     @state_cache
     def as_context(self, *args):
         return self._as_context(*args)
@@ -64,4 +64,6 @@ def optimize_memos():
     from jedi.inference.imports import infer_import
     from textension.utils import _patch_function
 
-    _patch_function(infer_import, state_cache(infer_import.__closure__[1].cell_contents))
+    # Requires default value recursion mitigation.
+    func = infer_import.__closure__[1].cell_contents
+    _patch_function(infer_import, state_cache_default(NO_VALUES)(func))
