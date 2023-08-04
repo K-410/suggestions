@@ -26,7 +26,7 @@ class StateModuleCache(dict):
         # These checks are for when jedi is being a dummy
         # and caches something that should not be cached.
         _check_type(string_names, tuple)
-        _check_type(value_set, ValueSet)
+        _check_type(value_set, ValueSet, frozenset)
 
         assert string_names, "Empty tuple"
         if not value_set:
@@ -47,6 +47,9 @@ class StateModuleCache(dict):
 project     = api.Project(os.path.dirname(textension.__file__))
 environment = api.InterpreterEnvironment()
 state       = api.InferenceState(project, environment, None)
+
+# Do not allow jedi to thrash the disk.
+state.do_dynamic_params_search = False
 
 state.grammar = state.latest_grammar = load_grammar()
 state.module_cache = StateModuleCache()
