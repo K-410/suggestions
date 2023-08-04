@@ -89,9 +89,10 @@ def optimize_filter_names():
     from jedi.api.completion import filter_names
     from jedi.api.classes import Completion
     from textension.utils import noop_noargs, _patch_function, _named_index, Aggregation
+    from collections import defaultdict
     from itertools import compress, repeat
     from operator import itemgetter, attrgetter, eq
-    from builtins import map, list, dict, zip
+    from builtins import map, list, zip
 
     from ..tools import state
     from jedi import settings
@@ -121,16 +122,21 @@ def optimize_filter_names():
             _like_name_length = like_name_len   # Static
             _cached_name = cached_name          # Static
             _stack = stack                      # Static
-            _name = _named_index(0)
-            _string_name_lower = _named_index(1)
+
+            string_name            = _named_index(0)
+            _same_name_completions = _named_index(1)
+            _string_name_lower     = _named_index(2)
+
+            @property
+            def _name(self):
+                # The first name of identical names.
+                return self._same_name_completions[0]
 
         strings = map(get_string, completions)
+        names = defaultdict(list)
 
         # Trailer completion. Show all names.
-        if not like_name:
-            comp = list(dict(zip(strings, completions)).values())
-
-        else:
+        if like_name:
             if settings.case_insensitive_completion:
                 strings = map(lower, strings)
                 like_name = lower(like_name)
@@ -138,12 +144,9 @@ def optimize_filter_names():
             strings = map(itemgetter(slice(None, like_name_len)), strings)
             strings = map(eq, repeat(like_name), strings)
 
-            tmp = {}
-            for name in compress(completions, strings):
-                tmp[name.string_name] = name
+        for name in compress(completions, strings):
+            names[name.string_name] += name,
 
-            comp = list(tmp.values())
-
-        return map(completion, zip(comp, map(lower, map(get_string, comp))))
+        return map(completion, zip(names, names.values(), map(lower, names)))
 
     _patch_function(filter_names, filter_names_o)
