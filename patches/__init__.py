@@ -674,7 +674,9 @@ def patch_ExactValue():
 
 
 def patch_ValueWrapperBase():
+    from jedi.inference.gradual.typing import TypedDict
     from jedi.inference.base_value import _ValueWrapperBase
+    from jedi.plugins.stdlib import EnumInstance
     from .common import state
 
     _ValueWrapperBase.inference_state = state
@@ -683,6 +685,10 @@ def patch_ValueWrapperBase():
     _ValueWrapperBase.is_bound_method = _forwarder("_wrapped_value.is_bound_method")
     _ValueWrapperBase.is_instance     = _forwarder("_wrapped_value.is_instance")
     _ValueWrapperBase.tree_node       = _forwarder("_wrapped_value.tree_node")
+
+    # Forwarding makes attributes immutable, clear the descriptor on these.
+    TypedDict.tree_node = None
+    EnumInstance.tree_node = None
 
     _ValueWrapperBase.py__doc__       = _forwarder("_wrapped_value.py__doc__")
 
