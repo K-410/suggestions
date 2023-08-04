@@ -77,7 +77,7 @@ def apply():
     optimize_AccessHandle_get_access_path_tuples()
     optimize_safe_literal_eval()
     optimize_DirectObjectAccess_dir()
-    optimize_FileIO_read()
+    optimize_InferenceState_parse_and_get_code()
     optimize_AccessHandle_shit()
     optimize_ExactValue_py__class__()
     optimize_Sequence_get_wrapped_value()
@@ -1860,22 +1860,46 @@ def optimize_DirectObjectAccess_dir():
     DirectObjectAccess.dir = _dir
 
 
-def optimize_FileIO_read():
+def optimize_InferenceState_parse_and_get_code():
+    from jedi.inference import InferenceState
     from parso.file_io import FileIO
     from builtins import open
+    from parso import python_bytes_to_unicode
+    from jedi import settings
     from io import TextIOWrapper
 
     io_read = TextIOWrapper.read
+    is_file_io = FileIO.__instancecheck__
 
-    def read(self: FileIO):
+    def try_read_as_unicode(file_io: FileIO):
         try:
-            with open(self.path, "rt") as f:
+            with open(file_io.path, "rt") as f:
                 return io_read(f)
         except:
-            with open(self.path, "rb") as f:
+            with open(file_io.path, "rb") as f:
                 return io_read(f)
 
-    FileIO.read = read
+    def parse_and_get_code(self, code=None, path=None,
+                           use_latest_grammar=False, file_io=None, **kwargs):
+        if code is None:
+            if file_io is None:
+                file_io = FileIO(path)
+
+            # Don't read bytes unless we really, really have to.
+            if is_file_io(file_io):
+                code = try_read_as_unicode(file_io)
+            else:
+                code = file_io.read()
+
+        code = python_bytes_to_unicode(code, encoding='utf-8', errors='replace')
+
+        if len(code) > settings._cropped_file_size:
+            code = code[:settings._cropped_file_size]
+
+        grammar = self.latest_grammar if use_latest_grammar else self.grammar
+        return grammar.parse(code=code, path=path, file_io=file_io, **kwargs), code
+
+    InferenceState.parse_and_get_code = parse_and_get_code
 
 
 def optimize_AccessHandle_shit():
