@@ -1541,28 +1541,25 @@ def optimize_is_annotation_name():
 
 def optimize_apply_decorators():
     from jedi.inference.syntax_tree import _apply_decorators, FunctionValue, infer_trailer, Decoratee
-    from jedi.inference.value.klass import ClassMixin, FunctionAndClassBase, ClassValue
+    from jedi.inference.value.klass import ClassValue
     from jedi.inference.arguments import ValuesArguments
     from parso.python.tree import PythonNode, Class, ClassOrFunc
     from ..common import state, AggregateValues
     from textension.utils import _get_dict
 
-    class SimplerClassValue(ClassMixin, FunctionAndClassBase):
+    class SimplerClassValue(ClassValue):
         inference_state = state
 
-        def __init__(self, parent_context, tree_node):
+        def __init__(self, state, parent_context, tree_node):
             self.parent_context = parent_context
             self.tree_node = tree_node
 
         def __repr__(self):
             return f"<ClassValue: {self.tree_node!r}>"
 
-    _get_dict(SimplerClassValue).update(
-        {k: v for k, v in ClassValue.__dict__.items() if not k.startswith("_")})
-
     def apply_decorators(context, node: ClassOrFunc):
         if node.__class__ is Class:
-            decoratee_value = SimplerClassValue(context, node)
+            decoratee_value = SimplerClassValue(state, context, node)
         else:
             decoratee_value = FunctionValue.from_context(context, node)
 
