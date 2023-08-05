@@ -1478,10 +1478,9 @@ def optimize_get_metaclasses():
 def optimize_py__bases__():
     from jedi.inference.value.klass import ClassValue
     from itertools import repeat
-    from builtins import filter, zip, list, map
+    from builtins import zip, list, map
 
     from ..common import state_cache, AggregateLazyKnownValues, AggregateLazyTreeValue, cached_builtins, AggregateValues
-    from ..tools import is_namenode, is_pynode
 
     @state_cache
     def py__bases__(self: ClassValue):
@@ -1492,12 +1491,15 @@ def optimize_py__bases__():
             return (AggregateLazyTreeValue((self.parent_context, arglist)),)
 
         elif arglist.type == "arglist":
-            names = list(filter(is_namenode, arglist.children))
 
-            # Star unack.
-            for node in filter(is_pynode, arglist.children):
-                if node.children[0].value is "*":
-                    names += node.children[1],
+            names = []
+            for arg in arglist.children:
+                if arg.type == "atom_expr":
+                    if arg.children[0].value is "*":
+                        arg = arg.children[1]
+                elif arg.type != "name":
+                    continue
+                names += arg,
 
             data = zip(repeat(self.parent_context), names)
             return list(map(AggregateLazyTreeValue, data))
