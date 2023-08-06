@@ -2,6 +2,7 @@
 
 from jedi.inference.names import SubModuleName
 from jedi.inference.syntax_tree import tree_name_to_values
+
 import bpy
 import _bpy
 
@@ -12,6 +13,7 @@ from operator import getitem
 from ._mathutils import float_subtypes
 from ._bpy_types import MathutilsValue, PropArrayValue, IdPropCollectionValue, NO_VALUES, get_rna_value
 from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, AggregateValues, state
+from ..tools import make_compiled_value
 
 
 def apply():
@@ -63,31 +65,93 @@ def _add_collection_property():
               "bpy_prop_collection_idprop. This is a bug.")
 
 
-def _as_module(obj, name):
-    m = ModuleType(name)
-    try:
-        m.__dict__.update(obj.__dict__)
-    except AttributeError:
-        for name in dir(obj):
-            m.__dict__[name] = getattr(obj, name)
-    return m
+def _name_as_string(name_or_str):
+    if isinstance(name_or_str, str):
+        return name_or_str
+    return name_or_str.value
 
 
-# Needs to exist for import redirects.
 class BpyModule(VirtualModule):
-    _name = "bpy"
+    string_names = ("bpy",)
+    def infer_name(self, name):
+        # ``bpy.ops`` and ``bpy.props`` redirect to virtual modules.
+        if name.string_name in {"ops", "props"}:
+            value = Importer_redirects[f"bpy.{name.string_name}"]
+
+        else:
+            sentinel = object()
+            obj = getattr(self.obj, name.string_name, sentinel)
+            if obj is sentinel:
+                return NO_VALUES
+
+            context = None
+            if not isinstance(obj, ModuleType):
+                context = self.as_context()
+
+            value = make_compiled_value(obj, context)
+        return AggregateValues((value,))
+
+
+# Wish we didn't need this, but bpy.ops uses a custom ``__getattribute__``
+# to dynamically lookup submodules and operators. If jedi is in restricted
+# descriptor access mode, completing bpy.ops is otherwise impossible.
+class OpsSubModule(VirtualModule):
+    # Placeholder and override base class' string_names property.
+    # This is set by ``_create_ops_submodule``.
+    string_names = ()
+
+    def py__getattribute__(self, name_or_str, **kw):
+        if ret := getattr(self.obj, _name_as_string(name_or_str)):
+            if isinstance(ret, bpy.ops._BPyOpsSubModOp):
+                return AggregateValues((make_compiled_value(ret, self.as_context()),))
+        return NO_VALUES
+
+    def py__doc__(self):
+        submod_name = self.obj.__name__.split(".")[-1]
+        return f"bpy.ops sub-module '{submod_name}'"
+
+def _create_ops_submodule(module):
+    submod = OpsSubModule(module)
+    submod.string_names = tuple(module.__name__.split("."))  # ("bpy", "ops", "x")
+    return submod
+
+
+class OpsSubModuleName(SubModuleName):
+    def py__doc__(self):
+        return ""
 
 
 class OpsModule(VirtualModule):
-    _name = "bpy.ops"
+    api_type = "module"
+    string_names = ("bpy", "ops")
+
+    # Only for import completions.
     def get_submodule_names(self, only_modules=False):
         sub = map(getitem, map(str.partition, _bpy.ops.dir(), repeat("_OT_")), repeat(0))
         names = set(map(str.lower, set(sub)))
-        return list(map(SubModuleName, repeat(self.as_context()), names))
+        return list(map(OpsSubModuleName, repeat(self.as_context()), names))
+
+    def py__getattribute__(self, name_or_str, **kw):
+        name_or_str = _name_as_string(name_or_str)
+
+        if ret := getattr(self.obj, name_or_str):
+            if isinstance(ret, ModuleType) and ret.__name__ == "bpy.ops." + name_or_str:
+                return AggregateValues((_create_ops_submodule(ret),))
+        return super().py__getattribute__(name_or_str)
+
+    def get_members(self):
+        sub = map(getitem, map(str.partition, _bpy.ops.dir(), repeat("_OT_")), repeat(0))
+        return dict.fromkeys(map(str.lower, set(sub)))
+
+    def infer_name(self, name):
+        name_str = name.string_name
+        if ret := getattr(self.obj, name_str):
+            if isinstance(ret, ModuleType) and ret.__name__ == "bpy.ops." + name_str:
+                return AggregateValues((_create_ops_submodule(ret),))
+        return super().infer_name(name)
 
 
 class PropsModule(VirtualModule):
-    _name = "bpy.props"
     def py__getattribute__(self, name_or_str, **kw):
         if value := prop_func_map.get(name_or_str.value):
             return (value,)
