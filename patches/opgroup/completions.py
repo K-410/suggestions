@@ -88,49 +88,37 @@ def optimize_Completion_complete():
 def optimize_filter_names():
     from jedi.api.completion import filter_names
     from jedi.api.classes import Completion
-    from textension.utils import noop_noargs, _patch_function, _named_index, Aggregation
+    from textension.utils import _patch_function, _named_index, _forwarder, Aggregation
     from collections import defaultdict
     from itertools import compress, repeat
-    from operator import itemgetter, attrgetter, eq
+    from operator import itemgetter, attrgetter, methodcaller, eq
     from builtins import map, list, zip
 
     from ..tools import state
     from jedi import settings
 
-    class NewCompletion(Completion):
-        _is_fuzzy = False
+    class AggregateCompletionBase(Aggregation, Completion):
         _inference_state = state
 
-    class FuzzyCompletion(Completion):
-        _is_fuzzy = True
-        complete = property(noop_noargs)
-        _inference_state = state
+        string_name            = _named_index(0)
+        _same_name_completions = _named_index(1)
+        _string_name_lower     = _named_index(2)
+
+        __getitem__ = _forwarder("_same_name_completions.__getitem__")
+        _name = property(methodcaller("__getitem__", 0))
 
     lower  = str.lower
     strlen = str.__len__
     get_string = attrgetter("string_name")
 
-    def filter_names_o(inference_state, completions, stack, like_name, fuzzy, cached_name):
+    def filter_names_o(inference_state, completions, stack, like_name, is_fuzzy, cached_name):
         like_name_len = strlen(like_name)
 
-        if fuzzy:
-            completion_base = FuzzyCompletion
-        else:
-            completion_base = NewCompletion
-
-        class completion(Aggregation, completion_base):
-            _like_name_length = like_name_len   # Static
-            _cached_name = cached_name          # Static
-            _stack = stack                      # Static
-
-            string_name            = _named_index(0)
-            _same_name_completions = _named_index(1)
-            _string_name_lower     = _named_index(2)
-
-            @property
-            def _name(self):
-                # The first name of identical names.
-                return self._same_name_completions[0]
+        class AggregateCompletion(AggregateCompletionBase):
+            _is_fuzzy = is_fuzzy
+            _like_name_length = like_name_len
+            _cached_name = cached_name
+            _stack = stack
 
         strings = map(get_string, completions)
         names = defaultdict(list)
@@ -147,6 +135,6 @@ def optimize_filter_names():
         for name in compress(completions, strings):
             names[name.string_name] += name,
 
-        return map(completion, zip(names, names.values(), map(lower, names)))
+        return map(AggregateCompletion, zip(names, names.values(), map(lower, names)))
 
     _patch_function(filter_names, filter_names_o)
