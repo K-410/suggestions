@@ -591,7 +591,7 @@ def patch_complete_dict():
 # because they are non-modules with an actual dot "." in their module name.
 # Even the standard library does this, so I guess we're fixing this, too?
 def patch_get_importer_names():
-    from jedi.inference.imports import ImportName
+    from jedi.inference.imports import SubModuleName, Importer
     from jedi.api.completion import Completion, _gather_nodes
     from itertools import repeat, compress
     import sys
@@ -602,43 +602,53 @@ def patch_get_importer_names():
     modules = sys.modules.keys()
 
     def get_importer_names(self: Completion, names, level=0, only_modules=True):
-        # This fix applies only when there's at least 1 import name and 1 dot
-        # operator. In this context, dots, comma and parentheses may appear.
-        for op in names and filter(is_operator, _gather_nodes(self.stack)):
-            if op.value is ".":
-                # Compose the import statement and look for it in sys.modules.
-                comp = ".".join(n.value for n in names)
+        
+        string_names = [n.value for n in names]
+        i = Importer(self._inference_state, string_names, self._module_context, level)
 
-                if "." in comp:
-                    if module := sys.modules.get(comp):
-                        spec = getattr(module, "__spec__", None)
-                    else:
-                        spec = find_spec(comp)
+        for module in i.follow():
+            context = module.as_context()
+            # This fix applies only when there's at least 1 import name and 1 dot
+            # operator. In this context, dots, comma and parentheses may appear.
+            for op in names and filter(is_operator, _gather_nodes(self.stack)):
+                if op.value is ".":
+                    # Compose the import statement and look for it in sys.modules.
+                    comp = ".".join(string_names)
 
-                    # If a module or spec exists, run stock behavior.
-                    if spec:
-                        break
+                    if "." in comp:
+                        if module := sys.modules.get(comp):
+                            spec = getattr(module, "__spec__", None)
+                        else:
+                            spec = find_spec(comp)
 
-                # Jedi may omit the trailing part from names. Add it back.
-                leaf = self._module_node.get_leaf_for_position(self._original_position)
-                if leaf not in names:
-                    if is_namenode(leaf):
-                        comp += "."
-                    comp += leaf.value
+                        # If a module or spec exists, run stock behavior.
+                        if spec:
+                            break
 
-                ret = []
-                prefix = comp[:comp.rindex(".") + 1]
-                for name in compress(modules, map(startswith, modules, repeat(comp))):
-                    # Remove the prefix up to and including the leading dot.
-                    name = name.removeprefix(prefix)
+                    # Jedi may omit the trailing part from names. Add it back.
+                    leaf = self._module_node.get_leaf_for_position(self._original_position)
+                    if leaf not in names:
+                        if is_namenode(leaf):
+                            comp += "."
+                        comp += leaf.value
 
-                    # If we're completing ``bpy.a``, we only want ``app`` and not
-                    # ``app.handlers``.
-                    if "." not in name:
-                        ret += name,
-                if ret:
-                    return [ImportName(self._module_context, n) for n in ret]
+                    ret = []
+                    prefix = comp[:comp.rindex(".") + 1]
+                    for name in compress(modules, map(startswith, modules, repeat(comp))):
+                        # Remove the prefix up to and including the leading dot.
+                        name = name.removeprefix(prefix)
 
+                        # If we're completing ``bpy.a``, we only want ``app`` and not
+                        # ``app.handlers``.
+                        if "." not in name:
+                            ret += name,
+                    if ret:
+                        
+                        return [SubModuleName(context, n) for n in ret]
+                        # return [ImportName(self._module_context, n) for n in ret]
+
+        # TODO: Can we use this? (commented)
+        # return i.completion_names(self._inference_state, only_modules=only_modules)
         return get_importer_names(self, names, level=level, only_modules=only_modules)
 
     get_importer_names = _patch_function(Completion._get_importer_names, get_importer_names)
