@@ -1,12 +1,14 @@
 # This module implements classes extending Jedi's inference capability.
 
 from jedi.inference.compiled.value import (
-    CompiledValue, CompiledValueFilter, CompiledValueName, CompiledModule)
+    CompiledValue, CompiledValueFilter, CompiledName, CompiledModule)
+from jedi.inference.value.instance import SelfName
 from jedi.inference.syntax_tree import tree_name_to_values
-from jedi.inference.value.klass import ClassValue
+from jedi.inference.value.klass import ClassValue, ClassName
 from jedi.inference.lazy_value import LazyKnownValues, LazyTreeValue
 from jedi.inference.arguments import AbstractArguments, TreeArguments
 from jedi.inference.compiled import builtin_from_name
+
 from jedi.inference.context import CompiledContext, GlobalNameFilter
 from jedi.inference.param import ExecutedParamName
 from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
@@ -18,7 +20,7 @@ from parso.file_io import KnownContentFileIO
 from jedi.file_io import FileIOFolderMixin
 from jedi.api import Script, Completion
 from itertools import repeat
-from operator import attrgetter
+from operator import attrgetter, methodcaller
 from pathlib import Path
 import types
 import functools
@@ -26,7 +28,7 @@ import functools
 from textension.utils import (
     _forwarder, _named_index, _unbound_getter, consume, falsy_noargs, inline,
      set_name, truthy_noargs, instanced_default_cache, Aggregation, starchain,
-     lazy_overwrite, namespace)
+     lazy_overwrite, namespace, _get_dict, _unbound_attrcaller, filtertrue)
 
 from .tools import state, get_handle, factory, is_namenode, is_basenode, ensure_blank_eol
 
@@ -37,7 +39,7 @@ import bpy
 Importer_redirects = {}
 CompiledModule_redirects = {}
 
-state_values = state.memoize_cache.values()
+memoize_values = state.memoize_cache.values()
 get_start_pos = attrgetter("line", "column")
 get_cursor_focus = attrgetter("select_end_line_index", "select_end_character")
 
@@ -85,16 +87,21 @@ def sessions(self: dict, text_id):
 
 
 def reset_state():
-    # The memoize cache stores a dict of dicts keyed to functions.
-    # The first level is never cleared. This lowers the cache overhead.
+    """Reset the global inference state, releasing objects created during
+    completion, except from things like stub modules whose lifetime should
+    persist for the duration of Blender.
+    """
 
-    # Assign a new cache to registered closures. Faster than dict.clear().
+    # Assign a new cache to registered closures.
+    # This is for functions that use the optimized state cache.
     for cell in _closures:
         cell.cell_contents = {}
 
-    consume(map(dict.clear, filter(None, state_values)))
+    # Clear the cache for functions that use the stock memoize.
+    consume(map(dict.clear, filtertrue(memoize_values)))
 
-    # Prevent memory leak. Otherwise access handles are stored forever.
+    # Persistent state means we have to clear access handles or they'll cause
+    # circular references undetectable by the garbage collector and leak.
     state.compiled_subprocess._handles.clear()
     state.compiled_subprocess = state.environment.get_inference_state_subprocess(state)
 
@@ -127,6 +134,7 @@ def state_cache(func):
 
 
 def state_cache_default(default):
+    """Same as state_cache, but with recursion mitigation."""
     def decorator(func):
         try:
             func_name = func.__name__
@@ -150,6 +158,7 @@ def state_cache_default(default):
 
 
 def state_cache_kw(func):
+    """Same as state_cache, but for functions using keyword arguments."""
     from textension.utils import dict_items
     from builtins import tuple
 
@@ -165,6 +174,23 @@ def state_cache_kw(func):
     cache_closure = wrapper.__closure__[0]
     _closures.append(cache_closure)
     return wrapper
+
+
+# Does what ``Abstractfilter._filter()`` does, just a lot faster.
+@inline
+def filter_until(pos: int | None, names):
+    from itertools import compress
+    from operator import attrgetter
+    from builtins import map
+
+    start_pos = attrgetter("line", "column")
+
+    def filter_until(pos: int | None, names):
+        if pos:
+            return compress(names, map(pos.__gt__, map(start_pos, names)))
+        return names
+
+    return filter_until
 
 
 definition_types = {
@@ -588,14 +614,50 @@ class VirtualInstance(CompiledInstance):
         return VirtualName((value, value.name.string_name, True))
 
     def __repr__(self):
-        return f"{type(self).__name__}({self.class_value})"
+        return f"{type(self).__name__}({self.class_value._get_object_name()})"
 
     def py__doc__(self):
         return self.class_value.py__doc__()
 
 
-class VirtualModule(CompiledModule):
-    _name = None
+class VirtualMixin:
+    def get_filters(self: CompiledValue, is_instance=False, origin_scope=None):
+        yield VirtualFilter((self, is_instance))
+
+    def get_filter_get(self, name_str: str, is_instance):
+        if name_str in self.members:
+            return (VirtualName((self, name_str, is_instance)),)
+        return ()
+
+    def get_filter_values(self, is_instance=False):
+        return list(map(VirtualName, zip(repeat(self), self.members)))
+
+    @property
+    @state_cache
+    def members(self):
+        return self.get_members()
+
+    def get_members(self):
+        return dict.fromkeys(dir(self.obj))
+
+    @state_cache
+    def infer_name_cached(self, name: "VirtualName"):
+        return self.infer_name(name)
+
+    def infer_name(self, name: "VirtualName"):
+        from .tools import make_compiled_value
+        value = make_compiled_value(getattr(self.obj, name.string_name), self.as_context())
+        return AggregateValues((value,))
+
+    def _get_object_name(self):
+        try:
+            return self.obj.__name__
+        except:
+            return type(self.obj).__name__
+
+
+class VirtualModule(VirtualMixin, CompiledModule):
+    string_names = ()
     inference_state = state
     parent_context  = None
 
@@ -610,18 +672,30 @@ class VirtualModule(CompiledModule):
         return f"<{type(self).__name__} {self.obj}>"
 
     def py__name__(self):
-        return self._name
+        return ".".join(self.string_names)
+
+    def py__package__(self):
+        return []
+
+    def get_signatures(self):
+        return []
+
+    def get_members(self):
+        return dict(self.obj.__dict__)
 
 
 virtual_overrides = {}
 
 
-class VirtualName(Aggregation, CompiledValueName):
+class VirtualName(Aggregation, CompiledName):
     _inference_state = state
 
     parent_value: "VirtualValue" = _named_index(0)
     string_name:   str           = _named_index(1)
     is_instance:   bool          = _named_index(2)
+
+    def _get_qualified_names(self):
+        return None
 
     @property
     def parent_context(self):
@@ -645,10 +719,11 @@ class VirtualName(Aggregation, CompiledValueName):
         return "unknown"
 
     def __repr__(self):
-        return f"{self.parent_value}.{self.string_name}"
+        cls_name = type.__dict__["__name__"].__get__(self.__class__)
+        return f"{cls_name}({self.parent_value._get_object_name()}.{self.string_name})"
 
 
-class VirtualValue(Aggregation, CompiledValue):
+class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
     is_compiled  = truthy_noargs
     is_class     = truthy_noargs
 
@@ -662,8 +737,18 @@ class VirtualValue(Aggregation, CompiledValue):
     inference_state = state
     instance_cls = VirtualInstance
 
+
     obj                          = _named_index(0)
     parent_value: "VirtualValue" = _named_index(1)
+
+    # If inferred from a parent value, ``derived_name`` holds the member name.
+    _derived_name: str           = _named_index(2)
+
+    @property
+    def derived_name(self):
+        if len(self) > 2:
+            return self[2]
+        return ""
 
     @inline
     def __init__(self, elements):
@@ -671,8 +756,12 @@ class VirtualValue(Aggregation, CompiledValue):
         return Aggregation.__init__
 
     def infer_name(self, name: VirtualName):
-        obj = self.members[name.string_name]
-        data = (obj, self)
+        name_str = name.string_name
+        if name_str not in self.members:
+            return NO_VALUES
+
+        obj = self.members[name_str]
+        data = (obj, self, name_str)
 
         if obj in virtual_overrides:
             value = virtual_overrides[obj](data)
@@ -682,10 +771,6 @@ class VirtualValue(Aggregation, CompiledValue):
         if name.is_instance:
             value = value.as_instance()
         return AggregateValues((value,))
-
-    @state_cache
-    def infer_name_cached(self, name: VirtualName):
-        return self.infer_name(name)
 
     @property
     def access_handle(self):
@@ -709,13 +794,14 @@ class VirtualValue(Aggregation, CompiledValue):
         return "VirtualValue py__doc__ (override me)"
 
     def py__name__(self):
-        return "VirtualValue.py__name__ (override me)"
+        try:
+            return self.obj.__name__
+        except:
+            return None
+        # return "VirtualValue.py__name__ (override me)"
 
     def py__call__(self, arguments=NoArguments):
         return AggregateValues((self.as_instance(arguments),))
-
-    def get_filters(self, is_instance=False, origin_scope=None):
-        return (VirtualFilter((self, is_instance)),)
 
     def get_qualified_names(self):
         return ()
@@ -727,32 +813,19 @@ class VirtualValue(Aggregation, CompiledValue):
     def _as_context(self):
         return CompiledContext(self)
 
-    @property
-    @state_cache
-    def members(self):
-        return self.get_members()
-
     # Subclasses override this.
     def get_members(self):
         return get_mro_dict(self.obj)
 
-    def get_filter_get(self, name_str: str, is_instance):
-        if name_str in self.members:
-            return (VirtualName((self, name_str, is_instance)),)
-        return ()
-
-    def get_filter_values(self, is_instance=False):
-        return list(map(VirtualName, zip(repeat(self), self.members)))
-
     def __repr__(self):
-        return f"{_repr(self)}({repr(self.obj)})"
+        return f"{_repr(self)}({self._get_object_name()})"
 
 
 class VirtualFilter(Aggregation, CompiledValueFilter):
     _inference_state = state
 
-    compiled_value: VirtualValue | VirtualInstance = _named_index(0)
-    is_instance:     bool                          = _named_index(1)
+    compiled_value: CompiledValue = _named_index(0)
+    is_instance:     bool         = _named_index(1)
 
     def get(self, name_str: str):
         return self.compiled_value.get_filter_get(name_str, self.is_instance)
@@ -826,7 +899,7 @@ class BpyTextModuleContext(MixedModuleContext):
             tree_filter   = MixedParserTreeFilter(self, None, until_position, origin_scope)
             global_filter = GlobalNameFilter(self)
             self.filters  = [tree_filter, global_filter]
-        return self.filters
+        yield from self.filters
 
     def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
         if namedef := find_definition(name_or_str):
@@ -913,17 +986,9 @@ def get_builtin_value(name_str: str) -> ClassValue:
 class AggregateTreeNameDefinition(Aggregation, TreeNameDefinition):
     __slots__ = ()
 
-    parent_value = _named_index(0)
-    tree_name    = _named_index(1)
+    parent_context = _named_index(0)
+    tree_name      = _named_index(1)
 
-    @lazy_overwrite
-    def parent_context(self):
-        return self.parent_value.as_context()
-
-    def __repr__(self):
-        if self.start_pos is None:
-            return f"<{super().__repr__()}: string_name={self.string_name}>"
-        return f"<{super().__repr__()}: string_name={self.string_name} start_pos={self.start_pos}>"
 
 
 class AggregateTreeArguments(Aggregation, TreeArguments):
@@ -942,14 +1007,14 @@ class AggregateTreeArguments(Aggregation, TreeArguments):
 class AggregateLazyTreeValue(Aggregation, LazyTreeValue):
     __slots__ = ()
 
+    context = _named_index(0)
+    data    = _named_index(1)
+
     min = 1
     max = 1
 
     # Needed because of LazyTreeValue.infer.
     _predefined_names = types.MappingProxyType({})
-
-    context = _named_index(0)
-    data    = _named_index(1)
 
 
 class AggregateLazyKnownValues(Aggregation, LazyKnownValues):
@@ -964,6 +1029,10 @@ class AggregateLazyKnownValues(Aggregation, LazyKnownValues):
 class AggregateValues(frozenset, ValueSet):
     __slots__ = ()
 
+    # We need to override ValueSet's __bool__. It's essentially shit.
+    # And we can't just "delete" an inherited method.
+    _length = property(methodcaller("__len__"))
+    __bool__ = _forwarder("_length.__bool__")
     __init__  = frozenset.__init__
     __repr__  = ValueSet.__repr__
     _from_frozen_set = object.__new__
@@ -974,7 +1043,12 @@ class AggregateValues(frozenset, ValueSet):
 
     @classmethod
     def from_sets(cls, sets):
-        return AggregateValues(starchain(sets))
+        return cls(starchain(sets))
+
+    def __or__(self, x):
+        if isinstance(x, ValueSet):
+            x = x._set
+        return frozenset.__or__(self, x)
 
 
 class AggregateExecutedParamName(Aggregation, ExecutedParamName):
@@ -992,6 +1066,8 @@ class AggregateExecutedParamName(Aggregation, ExecutedParamName):
     def parent_context(self):
         return self.function_value.get_default_param_context()
 
+    # __repr__ = _aggregate_name_repr
+
 
 class AggregateCompiledValueFilter(Aggregation, CompiledValueFilter):
     __slots__ = ()
@@ -1001,43 +1077,32 @@ class AggregateCompiledValueFilter(Aggregation, CompiledValueFilter):
     is_instance      = _named_index(1)
 
 
-# Does what ``Abstractfilter._filter()`` does, just a lot faster.
-@inline
-def filter_until(pos: int | None, names):
-    from itertools import compress
-    from operator import attrgetter
-    from builtins import map
-
-    start_pos = attrgetter("line", "column")
-
-    def filter_until(pos: int | None, names):
-        if pos:
-            return compress(names, map(pos.__gt__, map(start_pos, names)))
-        return names
-
-    return filter_until
-
-
 class AggregateStubName(Aggregation, StubName):
-    parent_value = _named_index(0)
-    tree_name    = _named_index(1)
-
-    @lazy_overwrite
-    def parent_context(self):
-        return self.parent_value.as_context()
+    parent_context = _named_index(0)
+    tree_name      = _named_index(1)
 
     def __repr__(self):
         if self.start_pos is None:
-            return '<%s: string_name=%s>' % (self.__class__.__name__, self.string_name)
-        return '<%s: string_name=%s start_pos=%s>' % (self.__class__.__name__,
+            return '<%s: string_name=%s>' % ("StubName", self.string_name)
+        return '<%s: string_name=%s start_pos=%s>' % ("StubName",
                                                       self.string_name, self.start_pos)
 
 
-# This exists as fallback when jedi returns None on get_value(), which is
-# the case for comprehension contexts.
-class AggregateComprehensionValue(Aggregation):
-    __slots__ = ()
-    _context  = _named_index(0)
+class AggregateClassName(Aggregation, ClassName):
+    _class_value      = _named_index(0)
+    tree_name         = _named_index(1)
+    parent_context    = _named_index(2)
+    _apply_decorators = _named_index(3)
 
-    def as_context(self):
-        return self._context
+    def __repr__(self):
+        if self.start_pos is None:
+            return '<%s: string_name=%s>' % ("ClassName", self.string_name)
+        return '<%s: string_name=%s start_pos=%s>' % ("ClassName",
+                                                      self.string_name, self.start_pos)
+
+
+
+class AggregateSelfName(Aggregation, SelfName):
+    _instance     = _named_index(0)
+    class_context = _named_index(1)
+    tree_name     = _named_index(2)
