@@ -35,26 +35,38 @@ class TEXT_OT_autocomplete(OpOverride):
 
 
 class Description(ui.widgets.TextView):
+    font_size: int  = 14
     parent: "Suggestions"
+    previous_entry = None
 
-    def draw(self):
+    @property
+    def active_entry(self):
         parent = self.parent
         active = parent.active
         if active.index != -1:
-            entry = parent.lines[active.index]
-            string = entry.docstring(fast=False)
+            return parent.lines[active.index]
+        return None
+
+
+    def draw(self):
+        active_entry = self.active_entry
+
+        if active_entry is not self.previous_entry:
+            if active_entry:
+                string = active_entry._get_docstring()
+            else:
+                string = ()
             self.set_from_string(string)
-        else:
-            self.set_from_string()
+            self.previous_entry = active_entry
+
         return super().draw()
 
 
 class Suggestions(ui.widgets.ListBox):
     st:  bpy.types.SpaceTextEditor
-    _temp_lines             = []
 
-    font_id: int            = 1
-    is_visible: bool        = False
+    font_id                 = 1
+    _temp_lines             = []
     last_position           = (0, 0)
     sync_key                = ()
     last_nlines             = 0
@@ -63,7 +75,7 @@ class Suggestions(ui.widgets.ListBox):
     border_color            = 0.30, 0.30, 0.30, 1.0
 
     active_background_color = 0.16, 0.22, 0.33, 1.0
-    active_border_color     = 0.16, 0.29, 0.5, 1.0
+    active_border_color     = 0.16, 0.29, 0.50, 1.0
     active_border_width     = 1
 
     hover_background_color  = 1.0, 1.0, 1.0, 0.1
@@ -72,20 +84,18 @@ class Suggestions(ui.widgets.ListBox):
 
     preferences: "TEXTENSION_PG_suggestions"
 
-    line_padding           = 1.25
-    text_padding           = 5
-    scrollbar_width        = 16
     fixed_font_size        = 16
+    foreground_color       = 0.4,  0.7,  1.0,  1.0
+    match_foreground_color = 0.87, 0.60, 0.25, 1.0
+
+    is_visible             = False
     use_auto_font_size     = True
     use_bold_matches       = False
-    foreground_color       = (0.4, 0.7, 1.0, 1.0)
-    match_foreground_color = (0.87, 0.60, 0.25, 1.0)
-
-    show_description: bool = False
+    show_description       = False
+    show_horizontal_scrollbar = False
 
     def __init__(self, st: bpy.types.SpaceTextEditor):
         super().__init__(parent=None)
-
         self.update_uniforms(shadow=(0, 0, 0, 0.5))
         self.description = Description(self)
         self.st = st
@@ -155,6 +165,7 @@ class Suggestions(ui.widgets.ListBox):
             utils.safe_redraw()
             ui.idle_update()
 
+    @utils.set_name("hit_test (Suggestions)")
     def hit_test(self, x, y):
         return self.description.hit_test(x, y) or super().hit_test(x, y)
 
@@ -170,7 +181,7 @@ def get_instance() -> Suggestions:
     return utils.make_space_data_instancer(Suggestions)
 
 
-def test_suggestions_box(x, y):
+def hit_test_suggestions(x, y):
     instance = get_instance()
     if instance.poll():
         return instance.hit_test(x, y)
@@ -769,7 +780,7 @@ def enable():
     Suggestions.preferences = prefs.add_settings(TEXTENSION_PG_suggestions)
     apply_custom_settings()
     utils.add_draw_hook(draw_suggestions)
-    ui.add_hit_test(test_suggestions_box)
+    ui.add_hit_test(hit_test_suggestions)
 
     # Override the default auto complete operator.
     TEXT_OT_autocomplete.apply_override()
@@ -787,7 +798,7 @@ def disable():
     TEXT_OT_autocomplete.remove_override()
 
     prefs.remove_settings(TEXTENSION_PG_suggestions)
-    ui.remove_hit_test(test_suggestions_box)
+    ui.remove_hit_test(hit_test_suggestions)
     utils.remove_draw_hook(draw_suggestions)
     utils.unregister_classes(classes)
     get_instance.__kwdefaults__["cache"].clear()
