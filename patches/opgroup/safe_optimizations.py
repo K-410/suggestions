@@ -577,6 +577,7 @@ def optimize_getattr_static():
 
     from builtins import isinstance, type
     from types import MemberDescriptorType, ModuleType
+    from bpy import types as bpy_types
 
     common_dicts = {
         type: type.__dict__["__dict__"].__get__,
@@ -593,10 +594,11 @@ def optimize_getattr_static():
             if cls in common_dicts:
                 mro = cls.__mro__
                 try:
-                    # Some modules like bpy.types use custom __getattr__.
                     instance_result = common_dicts[cls](obj)[attr]
                 except:  # KeyError
-                    pass
+                    # Types are not actually stored in bpy.types.__dict__.
+                    if obj is bpy_types:
+                        instance_result = getattr(obj, attr, _sentinel)
             else:
                 mro = _static_getmro(cls)
                 dict_attr = _shadowed_dict(cls)
