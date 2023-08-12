@@ -65,6 +65,7 @@ class Description(ui.widgets.TextView):
 class Suggestions(ui.widgets.ListBox):
     st:  bpy.types.SpaceTextEditor
 
+    height_hint: int
     font_id                 = 1
     _temp_lines             = []
     last_position           = (0, 0)
@@ -99,6 +100,11 @@ class Suggestions(ui.widgets.ListBox):
         self.update_uniforms(shadow=(0, 0, 0, 0.5))
         self.description = Description(self)
         self.st = st
+        self.height_hint = self.height
+
+    def resize(self, size):
+        super().resize(size)
+        self.height_hint = size[1]
 
     @property
     def font_size(self):
@@ -392,6 +398,12 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
             # have been rendered.
             instance._temp_lines += instance.lines,
             instance.lines = ret
+
+            height = instance.content_height
+            if instance.lines and height <= instance.rect.height_inner:
+                instance.rect.height_inner = height
+            else:
+                instance.rect.height = instance.height_hint
 
             # TODO: Weak.
             instance.is_visible = bool(instance.lines)
