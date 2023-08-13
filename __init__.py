@@ -134,10 +134,9 @@ class Suggestions(ui.widgets.ListBox):
         assert not x is -1 is y, f"last_position: {self.last_position}"
 
         w, h = self.rect.size
+        y_offset = h - st.offsets[1] - round(4 * _system.wu * 0.05)
 
-        y -= h - st.offsets[1] - round(4 * _system.wu * 0.05)
-
-        self.rect.draw(x, y, w, h)
+        self.rect.draw(x, y - y_offset, w, h)
         super().draw()  # ListBox.draw
 
         if self.show_description:
@@ -419,12 +418,6 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
 _instances: tuple[Suggestions] = get_instance.__kwdefaults__["cache"].values()
 
 
-def reset_entries(self, context):
-    for instance in _instances:
-        instance.reset_cache()
-    utils.redraw_editors()
-
-
 @utils.factory
 def _set_runtime_uniforms():
     def retself(obj): return obj
@@ -482,8 +475,7 @@ def update_resizer_colors(self: "TEXTENSION_PG_suggestions", context):
 def update_value(name: str):
     def update_setting(self: "TEXTENSION_PG_suggestions", context) -> None:
         setattr(Suggestions, name, getattr(self, name))
-        for instance in _instances:
-            instance.reset_cache()
+        utils.consume(map(methodcaller("reset_cache"), _instances))
         utils.redraw_editors('TEXT_EDITOR', 'WINDOW')
     return update_setting
 
