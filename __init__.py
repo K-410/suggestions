@@ -291,6 +291,7 @@ class TEXTENSION_OT_suggestions_navigate(utils.TextOperator):
         # Visible lines minus 1 is easier to track when we move by pages.
         visible_lines = int(instance.visible_lines) - 1
         dist = 1 if "DOWN" in self.action else -1
+        top = instance.top
 
         if "PAGE" in self.action:
             dist *= visible_lines
@@ -298,17 +299,18 @@ class TEXTENSION_OT_suggestions_navigate(utils.TextOperator):
         else:
             dist = (index + dist) % len(instance.lines)
 
+        instance.active.set_index(dist)
         # Adjust the view if the new index is outside of it.
-        if dist < instance.top:
+        if dist < top:
             instance.top = dist
 
-        elif dist > instance.top + visible_lines:
+        elif dist > top + visible_lines:
             # Make the bottom flush with the index.
             remainder = instance.visible_lines % 1.0
             instance.top = dist - visible_lines - remainder
 
-        instance.active.set_index(dist)
-        instance.reset_cache()
+        if top != instance.top:
+            instance.reset_cache()
         return {'FINISHED'}
 
 
