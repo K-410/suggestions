@@ -293,9 +293,9 @@ def optimize_tokenize_lines() -> None:
     from textension.utils import inline, Aggregation, _named_index
     from .interpreter import PythonTokenTypes
     from itertools import chain, count, repeat
+    from functools import partial
     from operator import attrgetter
     import re
-
 
     STRING         = PythonTokenTypes.STRING
     NAME           = PythonTokenTypes.NAME
@@ -330,44 +330,36 @@ def optimize_tokenize_lines() -> None:
     @inline
     def get_end(*args) -> int: return re.Match.end
     @inline
-    def get_group(*args) -> str: return re.Match.group
-    @inline
     def get_span(*args) -> tuple[int, int]: return re.Match.span
     @inline
     def isidentifier(string: str) -> bool: return str.isidentifier
-    @inline
-    def startswith(string: str) -> bool: return str.startswith
     @inline
     def strlen(string: str) -> int: return str.__len__
     @inline
     def is_multiline(quote: str) -> bool: return {'"""', "'''"}.__contains__
     @inline
-    def lstrip(string: str) -> str: return str.lstrip
+    def make_tokens(sequence): return partial(map, PythonToken2)
 
-    from keyword import kwlist, softkwlist
+    import keyword
 
-    known_base = set(kwlist + softkwlist) | __builtins__.keys()
+    known_base = {*keyword.kwlist, *keyword.softkwlist, *__builtins__}
 
-    operators = {"**", "**=", ">>", ">>=", "<<", "<<=", "//", "//=", "->",
-                 "+", "+=", "-", "-=", "*", "*=", "/", "/=", "%", "%=", "&",
-                 "&=", "@", "@=", "|", "|=", "^", "^=", "!", "!=", "=", "==",
-                 "<", "<=", ">", ">=", "~", ":", ".", ",", ":=", "(", ")", "[", "]", "{", "}"}
+    operators = {*"** **= >> >>= << <<= // //= -> + += - -= * *= / /= % %= "
+                  "& &= @ @= | |= ^ ^= ! != = == < <= > >= ~ : . , := ( ) "
+                  "[ ] { }".split(" ")}
 
-    non_letters = {"(", ")", "[", "]", "{", "}", "\n", "\r", "#", "0", "1",
-                   "2", "3", "4", "5", "6", "7", "8", "9", "\"", "\'", "*",
-                   ">", "<", "=", "/", "-", "+", "%", "&", "~", ":", ".", ",",
-                   "!", "|", "^", "\\", "@", " "}
+    non_letters = {*"( ) [ ] { } \n \r # 0 1 2 3 4 5 6 7 8 9 \" \' * > < = "
+                    "/ - + % & ~ : . , ! | ^ \ @".split(" "), " "}
 
-    # Triple quoted fstrings.
-    triples = {
-        "f\'\'\'", "F\'\'\'", "f\"\"\"", "F\"\"\"", "fr\'\'\'",
-        "fR\'\'\'", "Fr\'\'\'", "FR\'\'\'", "fr\"\"\"", "fR\"\"\"",
-        "Fr\"\"\"", "FR\"\"\"", "rf\'\'\'", "rF\'\'\'", "Rf\'\'\'",
-        "RF\'\'\'", "rf\"\"\"", "rF\"\"\"", "Rf\"\"\"", "RF\"\"\"",
-    }
-
+    triples = {*"f''' F''' fr''' fR''' Fr''' FR''' rf''' rF''' Rf''' RF''' "
+                'f""" F""" fr""" fR""" Fr""" FR""" rf""" rF""" Rf""" RF"""'
+                "".split(" ")}
     rep_zeros = repeat(0)
     get_quotes = attrgetter("quote")
+
+    @inline
+    def maplen(lines):
+        return partial(map, strlen)
 
     def tokenize_lines(lines, *, version_info, indents=None, start_pos=(1, 0), is_first_token=True):
 
@@ -376,7 +368,7 @@ def optimize_tokenize_lines() -> None:
 
         def dedent_if_necessary(start):
             nonlocal result, indents
-            yield from map(PythonToken2, result)
+            yield from make_tokens(result)
             result = []
 
             while start < indents[-1]:
@@ -390,27 +382,35 @@ def optimize_tokenize_lines() -> None:
         known = known_base.copy()
         add_known = known.add
 
-        pseudo_token, single_quoted, triple_quoted, endpats, whitespace, fstring_pattern_map, always_break_tokens = _get_token_collection(version_info)
+        pseudo_token, single_quoted, triple_quoted, endpats, whitespace, \
+            fstring_pattern_map, always_break_tokens = _get_token_collection(version_info)
+
+        match_main = partial(get_match, pseudo_token)
+        match_whitespace = partial(get_match, whitespace)
 
         all_triples = triples | triple_quoted
 
         paren_level = 0  # count parentheses
 
+        line     = ""
+        token    = ""
+        prefix   = ""
         contstr  = ""
         contline = ""
-        prefix   = ""
-        line     = ""
         additional_prefix = ""
 
-        contstr_start = 0
-        endprog = None
-        token = ""
+        endprog  = None
         endmatch = None
+
         new_line = True
+        contstr_start = 0
         lnum = start_pos[0] - 1
 
         result = []
         fstack = []
+        pos  = 0
+        end  = 0
+        lnum = 0
 
         positions = rep_zeros
         if is_first_token:
@@ -422,14 +422,10 @@ def optimize_tokenize_lines() -> None:
                 positions = chain((start_pos[1],), rep_zeros)
                 lines[0] = "^" * start_pos[1] + lines[0]
 
-        lnum = 0
-        pos  = 0
-        end  = 0
-
-        for lnum, pos, end, line in zip(count(start_pos[0]), positions, map(strlen, lines), lines):
+        for lnum, pos, end, line in zip(count(start_pos[0]), positions, maplen(lines), lines):
             if contstr:
                 if endmatch := get_match(endprog, line):
-                    pos = get_end(endmatch, 0)
+                    pos = get_end(endmatch)
                     result += (STRING, contstr + line[:pos], contstr_start, prefix),
                     contstr  = ""
                     contline = ""
@@ -461,15 +457,13 @@ def optimize_tokenize_lines() -> None:
                     for fstring_stack_node in fstack:
                         quote = fstring_stack_node.quote
                         if end_match := get_match(endpats[quote], line, pos):
-                            end_match_string = get_group(end_match, 0)
+                            end_match_string = end_match[0]
                             if strlen(end_match_string) - strlen(quote) + pos < strlen(string_line):
                                 string_line = line[:pos] + end_match_string[:-strlen(quote)]
-                    pseudomatch = get_match(pseudo_token, string_line, pos)
+                    pseudomatch = match_main(string_line, pos)
                 else:
                     c = line[pos]
-                    if c not in non_letters:  # Short circuit comparison.
-                        pass
-                    else:
+                    if c in non_letters:  # Short circuit comparison.
                         if c is "\n":
                             if fstack and False in map(is_multiline, map(get_quotes, fstack)):
                                 fstack = []
@@ -492,7 +486,7 @@ def optimize_tokenize_lines() -> None:
                                 pos += 1
                                 continue
 
-                    pseudomatch = get_match(pseudo_token, line, pos)
+                    pseudomatch = match_main(line, pos)
 
                 if pseudomatch:
                     last_pos = pos
@@ -511,7 +505,7 @@ def optimize_tokenize_lines() -> None:
 
                     initial = token[0]
                 else:
-                    match = get_match(whitespace, line, pos)
+                    match = match_whitespace(line, pos)
                     start = pos = get_end(match)
                     initial = line[start]
 
@@ -524,7 +518,7 @@ def optimize_tokenize_lines() -> None:
                             # Only yield DEDENT straight away. The diff
                             # parser doesn't care about indent sync.
                             result += (INDENT, "", spos, ""),
-                            indents += (start,)
+                            indents += start,
                         elif start < indents[-1]:
                             yield from dedent_if_necessary(start)
 
@@ -532,7 +526,7 @@ def optimize_tokenize_lines() -> None:
                     if start != indents[-1] and paren_level is 0 and not fstack and start < indents[-1]:
                         yield from dedent_if_necessary(start)
                     new_line = False
-                    result += (ERRORTOKEN, line[pos], spos, additional_prefix + get_group(match, 0)),
+                    result += (ERRORTOKEN, line[pos], spos, additional_prefix + match[0]),
                     additional_prefix = ""
                     pos += 1
                     continue
@@ -542,7 +536,9 @@ def optimize_tokenize_lines() -> None:
                         fstack = []
                         paren_level = 0
                         if m := re.match(r'[ \f\t]*$', line[:start]):
-                            yield from dedent_if_necessary(get_end(m))
+                            start = get_end(m)
+                            if start < indents[-1]:
+                                yield from dedent_if_necessary(start)
                     result += (NAME, token, spos, prefix),
 
                 elif initial in {"\n", "\r"}:
@@ -581,15 +577,15 @@ def optimize_tokenize_lines() -> None:
                         additional_prefix = prefix + token
 
                 elif token in fstring_pattern_map:  # The start of an fstring.
-                    fstack += (FStringNode(fstring_pattern_map[token]),)
+                    fstack += FStringNode(fstring_pattern_map[token]),
                     result += (FSTRING_START, token, spos, prefix),
 
+                # Unprefixed strings are most common and checked first.
                 elif initial in {"\"", "\'"}:
                     if token in triple_quoted:
                         endprog = endpats[token]
-                        endmatch = get_match(endprog, line, pos)
-                        if endmatch:                                # all on one line
-                            pos = get_end(endmatch, 0)
+                        if endmatch := get_match(endprog, line, pos):  # all on one line
+                            pos = get_end(endmatch)
                             token = line[start:pos]
                             result += (STRING, token, spos, prefix),
                         else:
@@ -618,28 +614,37 @@ def optimize_tokenize_lines() -> None:
                     if token in triple_quoted:
                         endprog = endpats[token]
                         if endmatch := get_match(endprog, line, pos):
-                            pos = get_end(endmatch, 0)
+                            pos = get_end(endmatch)
                             token = line[start:pos]
                             result += (STRING, token, spos, prefix),
-                        else:
-                            contstr_start = spos                    # multiple lines
-                            contstr = line[start:]
-                            contline = line
-                            break
-                    else:
-                        fstack += (FStringNode(fstring_pattern_map[token]),)
-                        result += (FSTRING_START, token, spos, prefix),
-
+                            continue
+                        contstr_start = spos                    # multiple lines
+                        contstr = line[start:]
+                        contline = line
+                        break
+                    fstack += FStringNode(fstring_pattern_map[token]),
+                    result += (FSTRING_START, token, spos, prefix),
 
                 else:
                     if token not in  {"...", ";"}:
-                        # TODO: Handle raw strings.
-                        print("unhandled OP token:", repr(token), spos, prefix)
+                        if   initial in single_quoted or \
+                           token[:2] in single_quoted or \
+                           token[:3] in single_quoted:
+                            if token[-1] in {"\r", "\n"}:                       # continued string
+                                # This means that a single quoted string ends with a
+                                # backslash and is continued.
+                                contstr_start = lnum, start
+                                endprog = (endpats.get(initial) or endpats.get(token[1])
+                                        or endpats.get(token[2]))
+                                contstr = line[start:]
+                                contline = line
+                                break
+                            else:                                       # ordinary string
+                                result += (STRING, token, spos, prefix),
+                                continue
+                        else:
+                            print("unhandled OP token:", repr(token), spos, prefix)
                     result += (OP, token, spos, prefix),
-
-            if result:
-                yield from map(PythonToken2, result)
-                result = []
 
         if contstr:
             result += (ERRORTOKEN, contstr, contstr_start, prefix),
@@ -649,7 +654,7 @@ def optimize_tokenize_lines() -> None:
             if tos.previous_lines:
                 result += (FSTRING_STRING, tos.previous_lines, tos.last_string_start_pos, ""),
 
-        yield from map(PythonToken2, result)
+        yield from make_tokens(result)
 
         end_pos = lnum, end
 
