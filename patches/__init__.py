@@ -206,26 +206,31 @@ def patch_various_redirects():
 
 
 # Fixes jedi erroneously yielding wrong inherited methods.
+# Also fixes no ancestor found because of end marker
 def patch_Completion_complete_inherited():
     from jedi.api.completion import Completion
     from parso.python.tree import search_ancestor
     from itertools import islice
 
     def _complete_inherited(self: Completion, is_function=True):
-        leaf = self._module_node.get_leaf_for_position(self._position, include_prefixes=True)
-        cls = search_ancestor(leaf, 'classdef')
 
         ret = []
-        if cls and cls.start_pos[1] < leaf.start_pos[1]:
-            # Complete the methods that are defined in the super classes.
-            value = self._module_context.create_value(cls)
+        leaf = self._module_node.get_leaf_for_position(self._position, include_prefixes=True)
 
-            filters = value.get_filters(is_instance=True)
-            # The first dict is the dictionary of class itself.
-            for filter in islice(filters, 1, None):
-                for name in filter.values():
-                    if name.api_type == "function" and is_function:
-                        ret += name,
+        # Getting previous leaf could return None.
+        if leaf.type != "endmarker" or (leaf := leaf.get_previous_leaf()):
+            cls = search_ancestor(leaf, 'classdef')
+
+            if cls and cls.start_pos[1] < leaf.start_pos[1]:
+                # Complete the methods that are defined in the super classes.
+                value = self._module_context.create_value(cls)
+
+                filters = value.get_filters(is_instance=True)
+                # The first dict is the dictionary of class itself.
+                for filter in islice(filters, 1, None):
+                    for name in filter.values():
+                        if (name.api_type == "function") is is_function:
+                            ret += name,
         return ret
 
     Completion._complete_inherited = _complete_inherited
