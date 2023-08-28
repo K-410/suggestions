@@ -31,11 +31,12 @@ def optimize_parser():
     from parso.python import parser, token, tree
     from parso import grammar
 
-    from parso.parser import InternalParseError, StackNode
     from parso.python.tree import Keyword, PythonNode
+    from parso.parser import StackNode
 
     from collections import defaultdict
     from itertools import repeat
+    from functools import partial
 
     from ..tools import state
 
@@ -46,12 +47,17 @@ def optimize_parser():
     NAME = token.PythonTokenTypes.NAME
     reserved = state.grammar._pgen_grammar.reserved_syntax_strings
 
+    new = object.__new__
+
     # Same as the parser's own ``_leaf_map``, but defaults to Operator.
-    leaf_map = defaultdict(repeat(tree.Operator).__next__, parser.Parser._leaf_map)
+    leaf_map = defaultdict(repeat(partial(new, tree.Operator)).__next__, parser.Parser._leaf_map)
     leaf_map[NAME] = tree.Name
+    for key, cls in tuple(leaf_map.items()):
+        leaf_map[key] = partial(new, cls)
+    leaf_map[Keyword] = partial(new, Keyword)
 
     node_map = parser.Parser.node_map
-    new = object.__new__
+    new_pynode = partial(new, PythonNode)
 
     # Delete recovery tokenize. We inline it in ``_add_token`` instead.
     from parso.python.parser import DEDENT, INDENT, Parser
@@ -71,10 +77,10 @@ def optimize_parser():
             else:
                 self._indent_counter += 1
 
-        cls = leaf_map[type]
+        new_cls = leaf_map[type]
         if value in reserved:
             if type is NAME:
-                cls = Keyword
+                new_cls = leaf_map[Keyword]
             type = reserved[value]
 
         stack = self.stack
@@ -96,7 +102,7 @@ def optimize_parser():
                             nodes = [nodes[0]] + nodes[2:-1]
 
                         # Bypass __init__ and assign directly.
-                        new_node = new(PythonNode)
+                        new_node = new_pynode()
                         new_node.type = nonterminal
                         new_node.children = nodes
                         for child in nodes:
@@ -119,7 +125,7 @@ def optimize_parser():
             node.nodes = []
             stack += node,
 
-        leaf = new(cls)
+        leaf = new_cls()
         leaf.value = value
         leaf.line, leaf.column = start_pos
         leaf.prefix = prefix
