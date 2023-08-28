@@ -11,12 +11,13 @@ from inspect import Parameter
 from textension.utils import _context, _forwarder, inline, starchain
 
 from ._mathutils import float_subtypes
-from ..common import VirtualInstance, VirtualName, VirtualFilter, VirtualValue, get_mro_dict, get_builtin_value, state_cache, cached_builtins, virtual_overrides, NoArguments, AggregateValues
+from ..common import AggregateValues, NoArguments, get_mro_dict
 from ..tools import runtime, state, make_compiled_value, make_instance
 
 import bpy
 import _bpy
 import types
+from .. import common
 
 from bpy_types import RNAMeta, StructRNA
 from functools import partial
@@ -47,11 +48,6 @@ def is_bpy_struct_identity(obj) -> bool:
 
 
 @inline
-def is_builtin_callable(obj) -> bool:
-    return types.BuiltinFunctionType.__instancecheck__
-
-
-@inline
 def is_id(obj) -> bool:
     return bpy.types.ID.__instancecheck__
 
@@ -60,14 +56,6 @@ def is_id(obj) -> bool:
 def is_bpy_struct_subclass(obj) -> bool:
     return bpy.types.bpy_struct.__subclasscheck__
 
-
-callable_types = (
-    types.GetSetDescriptorType,
-    types.MemberDescriptorType,
-    types.BuiltinFunctionType,
-    types.FunctionType,
-    types.MethodDescriptorType
-)
 
 context_rna_pointer = _context.as_pointer()
 _void = object()
@@ -198,7 +186,7 @@ def get_context_instance():
 
 def get_rna_value(obj, parent_value, name=""):
     if isinstance(obj, bpy.props._PropertyDeferred):
-        return PropertyValue((getattr(bpy.types, obj.function.__name__), parent_value, name))
+        return common.VirtualValue((getattr(bpy.types, obj.function.__name__), parent_value, name))
 
     if not isinstance(obj, type) and obj.as_pointer() == context_rna_pointer:
         return get_context_instance()
@@ -228,17 +216,6 @@ property_instance_map = {
 }
 
 
-
-# TODO: Is this needed?
-class PropertyInstance(VirtualInstance):
-    pass
-
-
-# TODO: Is this needed?
-class PropertyValue(VirtualValue):
-    instance_cls = PropertyInstance
-
-
 def rnadef_to_value(rnadef, parent, name=""):
     if is_bpy_func(rnadef):
         return RnaFunction((rnadef, parent))
@@ -263,7 +240,7 @@ def rnadef_to_value(rnadef, parent, name=""):
 
         return PropArrayValue((rna_py_types[type], parent))
 
-    return get_builtin_value(rna_py_types[type].__name__)
+    return common.get_builtin_value(rna_py_types[type].__name__)
 
 
 rna_fallbacks = {}
@@ -308,7 +285,7 @@ for cls in reversed(StructRNA.__mro__):
 
 # An RnaName doesn't have to infer to an RnaValue. It just means the name
 # is an RnaValue member name.
-class RnaName(VirtualName):
+class RnaName(common.VirtualName):
     # TODO: This is duplicate code of RnaValue.infer_name.
     def infer(self):
         parent = self.parent_value
@@ -343,10 +320,7 @@ class RnaName(VirtualName):
             return AggregateValues((get_rna_value(obj, parent),))
 
         else:
-            if is_builtin_callable(obj):
-                return AggregateValues((make_compiled_value(obj, parent.as_context()),))
-            print(f"RnaName.infer(): '{name_str}' of {parent} could not be inferred.")
-            return NO_VALUES
+            return AggregateValues((make_compiled_value(obj, parent.as_context()),))
         return value.py__call__(NoArguments)
 
     def py__doc__(self):
@@ -388,7 +362,7 @@ class RnaName(VirtualName):
 
 
 # Represents an instance of an RnaValue or RnaFunction.
-class RnaInstance(VirtualInstance):
+class RnaInstance(common.VirtualInstance):
     obj = _forwarder("class_value.obj")
 
     @property
@@ -437,10 +411,10 @@ get_rnadefs = attrgetter("functions", "properties")
 
 
 # RNA value created from struct RNA definition.
-class RnaValue(VirtualValue):
+class RnaValue(common.VirtualValue):
     instance_cls = RnaInstance
 
-    def infer_name(self, name: VirtualName):
+    def infer_name(self, name: common.VirtualName):
         name_str  = name.string_name
         members = self.members
 
@@ -506,7 +480,7 @@ class RnaValue(VirtualValue):
         name = type.__dict__["__name__"].__get__(self.__class__)
         return f"{name}({self.obj.identifier})"
 
-    @state_cache
+    @common.state_cache
     def py__mro__(self):
         context = self.as_context()
         ret = [self]
@@ -521,7 +495,7 @@ class RnaValue(VirtualValue):
     def py__doc__(self):
         return self.obj.description
 
-    @state_cache
+    @common.state_cache
     def get_filter_values(self, is_instance):
         bl_rna = self.obj
 
@@ -580,7 +554,7 @@ class RnaFunctionParamName(SignatureParamName):
         paramdef = self._param
         param_value = rnadef_to_value(paramdef, self._value)
 
-        if isinstance(param_value, VirtualValue):
+        if isinstance(param_value, common.VirtualValue):
             restype = param_value.obj
 
             if isinstance(restype, StructRNA):
@@ -653,7 +627,7 @@ class RnaFunctionSignature(AbstractSignature):
             tmp = []
             for param in outputs:
                 param_value = rnadef_to_value(param, self.value)
-                if isinstance(param_value, VirtualValue):
+                if isinstance(param_value, common.VirtualValue):
                     restype = param_value.obj
                     if isinstance(restype, StructRNA):
                         restype = type(restype)
@@ -676,7 +650,7 @@ class RnaFunctionSignature(AbstractSignature):
         return "None"
 
 
-class MathutilsInstance(VirtualInstance):
+class MathutilsInstance(common.VirtualInstance):
     def py__call__(self, arguments):
         print("MathutilsInstance.py__call__ returned nothing for", self, "arguments:", arguments)
         return NO_VALUES
@@ -684,11 +658,11 @@ class MathutilsInstance(VirtualInstance):
     def py__simple_getitem__(self, index):
         import mathutils
         if self.class_value.obj == mathutils.Vector:
-            return AggregateValues((cached_builtins.float,))
+            return AggregateValues((common.cached_builtins.float,))
         return NO_VALUES
 
 
-class MathutilsValue(VirtualValue):
+class MathutilsValue(common.VirtualValue):
     instance_cls = MathutilsInstance
 
     def get_members(self):
@@ -715,11 +689,11 @@ class MathutilsValue(VirtualValue):
 
 
 from mathutils import Vector
-virtual_overrides[Vector] = MathutilsValue
+common.virtual_overrides[Vector] = MathutilsValue
 
 
 # bpy.types.Object.[bound_box | rotation_axis_angle | etc.]
-class PropArrayValue(VirtualValue):
+class PropArrayValue(common.VirtualValue):
     # Implements subscript for bpy_prop_array types.
     def py__simple_getitem__(self, index):
         return AggregateValues((make_instance(self.obj, self.parent_context),))
@@ -741,10 +715,10 @@ class PropCollectionValue(RnaValue):
 
 
 # For user-defined property collections, i.e CollectionProperty.
-class IdPropCollectionValue(VirtualValue):
+class IdPropCollectionValue(common.VirtualValue):
     values = NO_VALUES
     
-    def infer_name(self, name: VirtualName):
+    def infer_name(self, name: common.VirtualName):
         name_str = name.string_name
 
         # Currently only add/get are inferred from assigned values.
@@ -794,7 +768,7 @@ class ContextInstance(RnaInstance):
         yield from self.get_filters()
 
     def get_filters(self, **kw):
-        yield VirtualFilter((self, True))
+        yield common.VirtualFilter((self, True))
 
     def get_filter_values(self, is_instance):
         data = zip(repeat(self.class_value), _bpy.context_members()["screen"])
