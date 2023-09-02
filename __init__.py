@@ -1,13 +1,13 @@
 # This module implements auto-completions.
 
-from textension.utils import _context, _system
-from textension import utils, ui
 
-from operator import attrgetter, methodcaller
-from textension.overrides import OpOverride
 from textension.btypes.defs import OPERATOR_CANCELLED
+from textension.overrides import OpOverride
+from textension.utils import _context, _system
+from textension import utils, ui, prefs
 
-import os
+import operator
+
 import sys
 import bpy
 import gc
@@ -16,13 +16,12 @@ import gc
 # Backup.
 _gc_enable = gc.enable
 
-_get_sync_key = attrgetter("select_end_line", "select_end_character")
+_get_sync_key = operator.attrgetter("select_end_line", "select_end_character")
 
 # Token separators excluding dot/period
 separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
 
-runtime = utils._get_dict(bpy.types.WindowManager).setdefault(
-    "_suggestions", utils.namespace(loaded=False))
+runtime = utils.namespace(loaded=False)
 
 
 BLF_BOLD = 1 << 11  # ``blf.enable(0, BLF_BOLD)`` adds bold effect.
@@ -35,40 +34,35 @@ class TEXT_OT_autocomplete(OpOverride):
 
 
 class Description(ui.widgets.TextView):
-    font_size: int  = 14
     parent: "Suggestions"
-    previous_entry = None
+
+    font_size: int   = 14
+    last_entry       = None
+    foreground_color = 0.7, 0.7, 0.7, 1.0
 
     @property
     def active_entry(self):
-        parent = self.parent
-        active = parent.active
-        if active.index != -1:
-            return parent.lines[active.index]
+        if self.parent.active.index != -1:
+            return self.parent.lines[self.parent.active.index]
         return None
 
-
     def draw(self):
-        active_entry = self.active_entry
-
-        if active_entry is not self.previous_entry:
-            if active_entry:
-                string = active_entry._get_docstring()
+        if self.active_entry is not self.last_entry:
+            if self.active_entry:
+                string = f"type: {self.active_entry._name.api_type}\n\n"
+                string += self.active_entry.docstring()
             else:
                 string = ()
             self.set_from_string(string)
-            self.previous_entry = active_entry
-
+            self.last_entry = self.active_entry
         return super().draw()
 
 
 class Suggestions(ui.widgets.ListBox):
-    st:  bpy.types.SpaceTextEditor
-
     height_hint: int
     font_id                 = 1
     _temp_lines             = []
-    last_position           = (0, 0)
+    last_position           = 0, 0
     sync_key                = ()
     last_nlines             = 0
 
@@ -95,12 +89,13 @@ class Suggestions(ui.widgets.ListBox):
     show_description       = False
     show_horizontal_scrollbar = False
 
-    def __init__(self, st: bpy.types.SpaceTextEditor):
+    def __init__(self, st):
         super().__init__(parent=None)
-        self.update_uniforms(shadow=(0, 0, 0, 0.5))
+        self.space_data = st
         self.description = Description(self)
-        self.st = st
         self.height_hint = self.height
+        self.update_uniforms(shadow=(0.0, 0.0, 0.0, 0.5))
+        self.description.update_uniforms(shadow=(0.0, 0.0, 0.0, 0.5))
 
     def resize(self, size):
         super().resize(size)
@@ -109,7 +104,7 @@ class Suggestions(ui.widgets.ListBox):
     @property
     def font_size(self):
         if self.use_auto_font_size:
-            return self.st.font_size
+            return getattr(self.space_data, "font_size", self.fixed_font_size)
         return self.fixed_font_size
 
     def poll(self) -> bool:
@@ -205,6 +200,65 @@ def instance_poll(cls, context):
     if isinstance(context.space_data, bpy.types.SpaceTextEditor):
         return get_instance().poll()
     return False
+
+
+class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
+    toggle_description: bpy.props.BoolProperty(default=True)
+
+    poll = utils.text_poll
+
+    def invoke(self, context, event):
+        instance = get_instance()
+
+        if instance.is_visible and self.toggle_description:
+            instance.toggle_description()
+            return {'FINISHED'}
+    
+        bpy.error = False
+        if not runtime.loaded:
+            _setup(force=True)
+
+        text = context.edit_text
+        nlines = context.space_data.drawcache.total_lines
+
+        # Line index is O(N) so avoid syncing cursor as much as possible.
+        if instance.sync_key != _get_sync_key(text) or instance.last_nlines != nlines:
+            instance.sync_cursor(text.select_end_line_index)
+            instance.last_nlines = nlines
+
+        from .patches.common import complete
+
+        _disable_gc()
+
+        try:
+            ret = complete(text)
+        except BaseException as e:
+            bpy.error = True
+            import traceback
+            traceback.print_exc()
+            print("Error at:", tuple(text.cursor_focus))
+            raise e from None
+        else:
+            bpy.ret = ret  # For introspection
+
+            # We don't want garbage collection to spuriously run until things
+            # have been rendered.
+            instance._temp_lines += instance.lines,
+            instance.lines = ret
+
+            height = instance.content_height
+            if instance.lines and height <= instance.rect.height_inner:
+                instance.rect.height_inner = height
+            else:
+                instance.rect.height = instance.height_hint
+
+            # TODO: Weak.
+            instance.is_visible = bool(instance.lines)
+            utils.safe_redraw()
+            # XXX: Causes inconsistent repeated typing. Disable for now.
+            # ui.idle_update()
+        finally:
+            return {'FINISHED'}
 
 
 class TEXTENSION_OT_suggestions_commit(utils.TextOperator):
@@ -359,62 +413,6 @@ def _enable_gc():
     gc.enable()
 
 
-class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
-    toggle_description: bpy.props.BoolProperty(default=True)
-
-    poll = utils.text_poll
-
-    def invoke(self, context, event):
-        instance = get_instance()
-
-        if instance.is_visible and self.toggle_description:
-            instance.toggle_description()
-            return {'FINISHED'}
-    
-        if not runtime.loaded:
-            _setup(force=True)
-
-        text = context.edit_text
-        nlines = context.space_data.drawcache.total_lines
-
-        # Line index is O(N) so avoid syncing cursor as much as possible.
-        if instance.sync_key != _get_sync_key(text) or instance.last_nlines != nlines:
-            instance.sync_cursor(text.select_end_line_index)
-            instance.last_nlines = nlines
-
-        from .patches.common import complete
-
-        _disable_gc()
-
-        try:
-            ret = complete(text)
-        except BaseException as e:
-            import traceback
-            traceback.print_exc()
-            raise e from None
-        else:
-            bpy.ret = ret  # For introspection
-
-            # We don't want garbage collection to spuriously run until things
-            # have been rendered.
-            instance._temp_lines += instance.lines,
-            instance.lines = ret
-
-            height = instance.content_height
-            if instance.lines and height <= instance.rect.height_inner:
-                instance.rect.height_inner = height
-            else:
-                instance.rect.height = instance.height_hint
-
-            # TODO: Weak.
-            instance.is_visible = bool(instance.lines)
-            utils.safe_redraw()
-            # XXX: Causes inconsistent repeated typing. Disable for now.
-            # ui.idle_update()
-        finally:
-            return {'FINISHED'}
-
-
 _instances: tuple[Suggestions] = get_instance.__kwdefaults__["cache"].values()
 
 
@@ -423,30 +421,15 @@ def _set_runtime_uniforms():
     def retself(obj): return obj
 
     def wrapper(path, attr, value):
-        getter = attrgetter(path) if path else retself
+        getter = operator.attrgetter(path) if path else retself
         for obj in map(getter, _instances):
             obj.update_uniforms(**{attr: value})
         utils.redraw_editors()
     return wrapper
 
 
-def update_uniform(path):
-    if "." in path:
-        path, attr = path.rsplit(".", 1)
-        prop_name = f'{path.rsplit(".", 1)[-1]}_{attr}'
-    else:
-        attr = prop_name = path
-        path = None
-
-    def on_update(self, context, *, path=path, attr=attr, prop_name=prop_name):
-        value = getattr(self, prop_name)
-        _set_runtime_uniforms(path, attr, value)
-
-    return on_update
-
-
 def update_corner_radius(self, context):
-    get = attrgetter("active", "hover", "scrollbar", "scrollbar.thumb")
+    get = operator.attrgetter("active", "hover", "scrollbar", "scrollbar.thumb")
 
     value = self.corner_radius
     Suggestions.corner_radius = value
@@ -457,25 +440,20 @@ def update_corner_radius(self, context):
             widget.update_uniforms(corner_radius=value)
 
 
-def update_resize_highlights(self, context):
-    ui.EdgeResizer.show_resize_handles = getattr(self, "show_resize_handles")
-    get_sizers = attrgetter("resizer.sizers")
-    zero_alpha = methodcaller("set_alpha", 0.0)
-    utils.consume(map(zero_alpha, utils.starchain(map(get_sizers, _instances))))
+def update_sizers(self, context):
+    get_sizers = operator.attrgetter("resizer.sizers")
+    ui.widgets.EdgeResizer.show_resize_handles = getattr(self, "show_resize_handles")
 
-
-def update_resizer_colors(self: "TEXTENSION_PG_suggestions", context):
-    get_sizer_rects = attrgetter("resizer.horz.rect", "resizer.vert.rect")
     color = tuple(self.resizer_color) + (0.0,)
-    for rect in utils.starchain(map(get_sizer_rects, _instances)):
-        rect.background_color = color
-        rect.border_color = color
+    for sizer in utils.starchain(map(get_sizers, _instances)):
+        sizer.update_uniforms(background_color=color, border_color=color)
+        sizer.set_alpha(0.0)
 
 
 def update_value(name: str):
     def update_setting(self: "TEXTENSION_PG_suggestions", context) -> None:
         setattr(Suggestions, name, getattr(self, name))
-        utils.consume(map(methodcaller("reset_cache"), _instances))
+        utils.consume(map(operator.methodcaller("reset_cache"), _instances))
         utils.redraw_editors('TEXT_EDITOR', 'WINDOW')
     return update_setting
 
@@ -497,7 +475,7 @@ def uniform_color_property(path):
 
 def update_uniform_child(path: str, uniform: str):
     name = f"{path}_{uniform}".replace(".", "_")
-    def update(self, context, *, get_child=attrgetter(path), name=name):
+    def update(self, context, *, get_child=operator.attrgetter(path), name=name):
         value = getattr(self, name)
         setattr(Suggestions, name, value)
         for instance in _instances:
@@ -515,7 +493,26 @@ def update_uniform(self, context):
         setattr(Suggestions, name, values[name])
 
 
+def update_description(self, context):
+    Description.use_word_wrap = self.description_use_word_wrap
+    Description.font_size = self.description_font_size
+    Description.line_padding = self.description_line_padding
+    Description.font_id = int(self.description_use_monospace) 
+
+    for instance in _instances:
+        instance.description._update_lines()
+
+
 class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
+    runtime = utils.namespace(
+        show_general_settings=True,
+        show_theme_settings=False,
+        show_description_settings=False,
+
+        show_theme_listbox=False,
+        show_theme_entry=False,
+        show_theme_scrollbar=False,
+    )
     color_default_kw = {"min": 0, "max": 1, "size": 4, "subtype": 'COLOR_GAMMA'}
 
     fixed_font_size: bpy.props.IntProperty(
@@ -577,13 +574,13 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
     )
 
     show_resize_handles: bpy.props.BoolProperty(
-        update=update_resize_highlights,
+        update=update_sizers,
         name="Show Resize Highlights",
         default=True
     )
     resizer_color: bpy.props.FloatVectorProperty(
         default=(0.38, 0.38, 0.38), **(color_default_kw | {"size": 3}),
-        update=update_resizer_colors,
+        update=update_sizers,
         name="Resize Handle Color"        
     )
 
@@ -597,11 +594,11 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         update=update_uniform,
         **color_default_kw
     )
-    border_width: bpy.props.FloatProperty(
-        default=Suggestions.border_width,
+    border_width: bpy.props.IntProperty(
+        default=int(Suggestions.border_width),
         update=update_uniform,
-        min=0.0,
-        max=20.0
+        min=0,
+        max=20
     )
 
     active_background_color: bpy.props.FloatVectorProperty(
@@ -672,6 +669,26 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         min=0.0
     )
 
+    description_use_word_wrap: bpy.props.BoolProperty(
+        update=update_description,
+        default=True
+    )
+    description_font_size: bpy.props.IntProperty(default=14, min=7, max=144, update=update_description)
+    description_line_padding: bpy.props.FloatProperty(
+        update=update_description,
+        default=Description.line_padding,
+        name="Line Height",
+        min=0.5,
+        max=4.0,
+    )
+    description_foreground_color: bpy.props.FloatVectorProperty(
+        update=update_description,
+        default=Description.foreground_color,
+        name="Foreground Color",
+        **color_default_kw,
+    )
+    description_use_monospace: bpy.props.BoolProperty(update=update_description)
+
 
 classes = (
     TEXTENSION_PG_suggestions,
@@ -683,49 +700,106 @@ classes = (
 )
 
 
+def add_runtime_toggle(layout, path, text, emboss=True):
+    path = "suggestions.runtime." + path
+    c = layout.column(align=True)
+    c.emboss = 'NORMAL'
+    r = c.row()
+    value = prefs.resolve_prefs_path(path)
+    if not emboss:
+        r2 = r.row()
+        r2.alignment = 'LEFT'
+        op = r2.operator("textension.ui_show",
+                        text="",
+                        depress=value,
+                        emboss=emboss,
+                        icon='TRIA_DOWN' if value else 'TRIA_RIGHT')
+        op.path = path
+    op = r.operator("textension.ui_show",
+                    text=text,
+                    depress=value,
+                    emboss=emboss,
+                    icon=('TRIA_DOWN' if value else 'TRIA_RIGHT') if emboss else 'NONE')
+    
+    op.path = path
+    r.alignment = 'EXPAND'# if emboss else 'LEFT'
+    if value:
+        c.separator()
+    return value and c
+
+
 def draw_settings(prefs, context, layout):
+
+    def centered_label(layout, text):
+        r = layout.row()
+        r.alignment = 'CENTER'
+        r.label(text=text)
+
     suggestions = prefs.suggestions
-    layout.prop(suggestions, "use_auto_font_size")
-    row = layout.row()
-    row.prop(suggestions, "fixed_font_size")
-    row.enabled = not suggestions.use_auto_font_size
 
-    layout.prop(suggestions, "use_bold_matches")
-    layout.prop(suggestions, "show_resize_handles")
-    layout.prop(suggestions, "line_padding")
-    layout.prop(suggestions, "text_padding")
-    layout.separator(factor=3)
-    layout.prop(suggestions, "corner_radius", slider=True)
-    layout.prop(suggestions, "scrollbar_width")
-    layout.separator(factor=3)
-    layout.prop(suggestions, "foreground_color")
-    layout.prop(suggestions, "match_foreground_color")
-    layout.prop(suggestions, "background_color")
-    layout.prop(suggestions, "border_color")
-    layout.prop(suggestions, "border_width")
-    layout.separator(factor=3)
+    layout = layout.column(align=True)
+    # layout.emboss = 'NONE_OR_STATUS'
+    layout.use_property_split = True
+    layout.use_property_decorate = False
 
-    layout.prop(suggestions, "active_background_color")
-    layout.prop(suggestions, "active_border_color")
-    layout.prop(suggestions, "active_border_width")
-    layout.separator(factor=3)
-    layout.prop(suggestions, "hover_background_color")
-    layout.prop(suggestions, "hover_border_color")
-    layout.prop(suggestions, "hover_border_width")
-    layout.separator(factor=3)
-    layout.prop(suggestions, "scrollbar_thumb_background_color")
-    layout.prop(suggestions, "scrollbar_thumb_border_color")
-    layout.prop(suggestions, "scrollbar_thumb_border_width")
-    layout.separator(factor=3)
-    layout.prop(suggestions, "resizer_color")
-    layout.separator(factor=3)
-    layout.prop(suggestions, "scrollbar_background_color")
-    layout.prop(suggestions, "scrollbar_border_color")
-    layout.prop(suggestions, "scrollbar_border_width")
+    if c := add_runtime_toggle(layout, "show_general_settings", "General"):
+        c.prop(suggestions, "use_bold_matches")
+        c.prop(suggestions, "show_resize_handles")
+        c.separator()
+        c.prop(suggestions, "use_auto_font_size")
+        r = c.row()
+        r.prop(suggestions, "fixed_font_size")
+        r.enabled = not suggestions.use_auto_font_size
+
+        c.prop(suggestions, "line_padding")
+        c.prop(suggestions, "text_padding")
+        c.separator(factor=3)
+        c.prop(suggestions, "corner_radius", slider=True)
+        c.prop(suggestions, "scrollbar_width")
+        c.separator(factor=3)
+
+    if c := add_runtime_toggle(layout, "show_theme_settings", "Theme"):
+
+        if p := add_runtime_toggle(c, "show_theme_listbox", "List Box", emboss=False):
+            p.prop(suggestions, "foreground_color", text="Foreground")
+            p.prop(suggestions, "background_color", text="Background")
+            p.prop(suggestions, "match_foreground_color", text="Match Color")
+            p.prop(suggestions, "border_color", text="Border")
+            p.prop(suggestions, "border_width", text="Border Width")
+            p.prop(suggestions, "resizer_color", text="Resize Handle")
+            p.separator(factor=1)
+
+        if p := add_runtime_toggle(c, "show_theme_entry", "Entry", emboss=False):
+            c.prop(suggestions, "active_background_color", text="Active Background")
+            c.prop(suggestions, "active_border_color", text="Active Border Color")
+            c.prop(suggestions, "active_border_width", text="Active Border Width")
+            c.separator(factor=1)
+            c.prop(suggestions, "hover_background_color", text="Hover Background")
+            c.prop(suggestions, "hover_border_color", text="Hover Border Color")
+            c.prop(suggestions, "hover_border_width", text="Hover Border Width")
+            c.separator(factor=1)
+
+        if p := add_runtime_toggle(c, "show_theme_scrollbar", "Scrollbar", emboss=False):
+            c.prop(suggestions, "scrollbar_background_color", text="Background")
+            c.prop(suggestions, "scrollbar_border_color", text="Border Color")
+            c.prop(suggestions, "scrollbar_border_width", text="Border Width")
+            c.separator(factor=1)
+            c.prop(suggestions, "scrollbar_thumb_background_color", text="Thumb Background")
+            c.prop(suggestions, "scrollbar_thumb_border_color", text="Thumb Border Color")
+            c.prop(suggestions, "scrollbar_thumb_border_width", text="Thumb Border Width")
+
+        c.separator()
+    if c := add_runtime_toggle(layout, "show_description_settings", "Description"):
+        c.prop(suggestions, "description_use_word_wrap", text="Use Word Wrap")
+        c.prop(suggestions, "description_use_monospace", text="Use Monospace")
+        c.prop(suggestions, "description_font_size", text="Font Size")
+        c.prop(suggestions, "description_line_padding", text="Line Height")
+        c.prop(suggestions, "description_foreground_color", text="Foreground")
 
 
-def apply_custom_settings():
-    p = Suggestions.preferences
+def apply_preferences():
+    preferences = Suggestions.preferences
+
     for name in (
         "background_color",
         "border_color",
@@ -748,7 +822,14 @@ def apply_custom_settings():
         "scrollbar_thumb_border_color",
         "scrollbar_thumb_border_width"
     ):
-        setattr(Suggestions, name, getattr(p, name))
+        setattr(Suggestions, name, getattr(preferences, name))
+
+    Description.use_word_wrap = preferences.description_use_word_wrap
+    Description.font_size = preferences.description_font_size
+    Description.line_padding = preferences.description_line_padding
+    Description.foreground_color = preferences.description_foreground_color
+
+    Description.font_id = int(preferences.description_use_monospace) 
 
 
 def _setup(force=False):
@@ -757,6 +838,21 @@ def _setup(force=False):
 
     if force and bpy.app.timers.is_registered(_setup):
         bpy.app.timers.unregister(_setup)
+
+    # Support Reload Scripts.
+    for name in ("jedi", "parso"):
+        if name in sys.modules:
+            del sys.modules[name]
+            dotted = name + "."
+            for name in tuple(sys.modules):
+                if name.startswith(dotted):
+                    del sys.modules[name]
+
+    # We don't want jedi/parso on sys.path.
+    from importlib.util import spec_from_file_location, module_from_spec
+    for name in ("parso", "jedi"):
+        spec = spec_from_file_location(name, f"{__path__[0]}/{name}/__init__.py")
+        spec.loader.exec_module(sys.modules.setdefault(name, module_from_spec(spec)))
 
     import jedi
     from . import patches
@@ -770,22 +866,15 @@ def _setup(force=False):
 
 
 def enable():
-    # Unless Jedi already exists, it's placed into the directory 'download'.
-    # In this case we add it to sys.path to make it globally importable.
-    plugin_path = os.path.dirname(__file__)
-    if plugin_path not in sys.path:  # TODO: Should be 'download', not root directory.
-        sys.path += plugin_path,
-
     utils.register_classes(classes)
 
-    from textension import ui, prefs
     from textension.overrides import default
     default.insert_hooks += on_insert,
     default.delete_hooks += on_delete,
 
     Suggestions.preferences = prefs.add_settings(TEXTENSION_PG_suggestions)
-    apply_custom_settings()
-    utils.add_draw_hook(draw_suggestions)
+    apply_preferences()
+    utils.add_draw_hook(draw_suggestions, draw_index=9)
     ui.add_hit_test(hit_test_suggestions)
 
     # Override the default auto complete operator.
@@ -796,11 +885,10 @@ def enable():
 
 
 def disable():
-    from textension import ui, prefs
-
     from textension.overrides import default
     default.insert_hooks.remove(on_insert)
     default.delete_hooks.remove(on_delete)
+
     TEXT_OT_autocomplete.remove_override()
 
     prefs.remove_settings(TEXTENSION_PG_suggestions)
