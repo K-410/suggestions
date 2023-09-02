@@ -12,8 +12,9 @@ from operator import getitem
 
 from ._mathutils import float_subtypes
 from ._bpy_types import MathutilsValue, PropArrayValue, IdPropCollectionValue, NO_VALUES, get_rna_value
-from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, AggregateValues, state
+from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, AggregateValues, state, add_module_redirect
 from ..tools import make_compiled_value
+from textension.utils import inline_class
 
 
 def apply():
@@ -71,7 +72,8 @@ def _name_as_string(name_or_str):
     return name_or_str.value
 
 
-class BpyModule(VirtualModule):
+@inline_class(bpy)
+class bpy_module(VirtualModule):
     string_names = ("bpy",)
     def infer_name(self, name):
         # ``bpy.ops`` and ``bpy.props`` redirect to virtual modules.
@@ -92,6 +94,12 @@ class BpyModule(VirtualModule):
         return AggregateValues((value,))
 
 
+class OperatorWrapper(VirtualFunction):
+    def py__doc__(self):
+        # We want an empty line between the signature and description.
+        return self.obj.__doc__.replace("\n", "\n\n", 1)
+
+
 # Wish we didn't need this, but bpy.ops uses a custom ``__getattribute__``
 # to dynamically lookup submodules and operators. If jedi is in restricted
 # descriptor access mode, completing bpy.ops is otherwise impossible.
@@ -110,6 +118,14 @@ class OpsSubModule(VirtualModule):
         submod_name = self.obj.__name__.split(".")[-1]
         return f"bpy.ops sub-module '{submod_name}'"
 
+    def get_members(self):
+        return dict.fromkeys(self.obj.__dir__())
+
+    def infer_name(self, name):
+        operator = OperatorWrapper((getattr(self.obj, name.string_name), self))
+        return AggregateValues((operator,))
+
+
 def _create_ops_submodule(module):
     submod = OpsSubModule(module)
     submod.string_names = tuple(module.__name__.split("."))  # ("bpy", "ops", "x")
@@ -121,7 +137,8 @@ class OpsSubModuleName(SubModuleName):
         return ""
 
 
-class OpsModule(VirtualModule):
+@inline_class(bpy.ops)
+class ops_module(VirtualModule):
     api_type = "module"
     string_names = ("bpy", "ops")
 
@@ -151,7 +168,9 @@ class OpsModule(VirtualModule):
         return super().infer_name(name)
 
 
-class PropsModule(VirtualModule):
+@inline_class(bpy.props)
+class bpy_props_module(VirtualModule):
+    string_names = ("bpy", "props")
     def py__getattribute__(self, name_or_str, **kw):
         if value := prop_func_map.get(name_or_str.value):
             return (value,)
@@ -217,17 +236,16 @@ class PropertyFunction(VirtualFunction):
 
 
 def fix_bpy_imports():
-    Importer_redirects["bpy"]     = BpyModule(bpy)
-    Importer_redirects["bpy.ops"] = OpsModule(bpy.ops)
+    add_module_redirect(bpy_module)
+    add_module_redirect(ops_module)
 
     # Add bpy.props redirect.
-    Importer_redirects["bpy.props"] = PropsModule(bpy.props)
-    Importer_redirects["_bpy.props"] = Importer_redirects["bpy.props"]
+    add_module_redirect(bpy_props_module)
+    add_module_redirect(bpy_props_module, "_bpy.props")
 
     # Add property function redirects.
-    parent_value = Importer_redirects["bpy.props"]
     for name in prop_names:
-        prop_func_map[name] = PropertyFunction((getattr(bpy.props, name), parent_value))
+        prop_func_map[name] = PropertyFunction((getattr(bpy.props, name), bpy_props_module))
 
     # Add redirects for compiled value interceptions.
     for module in Importer_redirects.values():
