@@ -28,16 +28,14 @@ def apply():
 # This makes some heavy optimizations to parso's Parser and token types:
 # Node constructors are removed, its members are assigned directly.
 def optimize_parser():
-    from parso.python import parser, token, tree
-    from parso import grammar
-
     from parso.python.tree import Keyword, PythonNode
+    from parso.python import parser, token, tree
     from parso.parser import StackNode
+    from parso import grammar
 
     from collections import defaultdict
     from itertools import repeat
     from functools import partial
-
     from ..tools import state
 
     # Reload grammar since they depend on token hash.
@@ -48,22 +46,32 @@ def optimize_parser():
     reserved = state.grammar._pgen_grammar.reserved_syntax_strings
 
     new = object.__new__
-
-    # Same as the parser's own ``_leaf_map``, but defaults to Operator.
-    leaf_map = defaultdict(repeat(partial(new, tree.Operator)).__next__, parser.Parser._leaf_map)
-    leaf_map[NAME] = tree.Name
-    for key, cls in tuple(leaf_map.items()):
-        leaf_map[key] = partial(new, cls)
-    leaf_map[Keyword] = partial(new, Keyword)
+    new_keyword  = partial(new, Keyword)
+    new_pynode   = partial(new, PythonNode)
+    new_operator = partial(new, tree.Operator)
 
     node_map = parser.Parser.node_map
-    new_pynode = partial(new, PythonNode)
 
-    # Delete recovery tokenize. We inline it in ``_add_token`` instead.
+    # Same as the parser's own ``_leaf_map``, but defaults to Operator.
+    default_leaf = repeat(new_operator).__next__
+
+    leaf_map = defaultdict(default_leaf)
+    leaf_map.update(parser.Parser._leaf_map)
+    leaf_map[NAME] = tree.Name
+
+    for key, cls in tuple(leaf_map.items()):
+        new_cls = partial(new, cls)
+        leaf_map[key] = new_cls
+    leaf_map[Keyword] = new_keyword
+
+    # Remove recovery tokenize and instead inline it below.
     from parso.python.parser import DEDENT, INDENT, Parser
     del Parser.parse
 
+    # Just an infinite stream of new StackNode objects.
     stack_nodes = map(new, repeat(StackNode))
+
+    lstlen = list.__len__
 
     def _add_token(self: Parser, token):
         type, value, start_pos, prefix = token
@@ -86,17 +94,14 @@ def optimize_parser():
         stack = self.stack
         tos = stack[-1]
         nodes = tos.nodes
+        dfa = tos.dfa
 
-        while True:
-            dfa = tos.dfa
-            if type in dfa.transitions:
-                plan = dfa.transitions[type]
-                break
-            elif dfa.is_final:
-                nonterminal = dfa.from_rule
-                try:
-                    new_node, = nodes
-                except:
+        while type not in dfa.transitions:
+            if dfa.is_final:
+                if lstlen(nodes) is 1:
+                    new_node = nodes[0]
+                else:
+                    nonterminal = dfa.from_rule
                     if nonterminal not in node_map:
                         if nonterminal == 'suite':
                             nodes = [nodes[0]] + nodes[2:-1]
@@ -114,10 +119,12 @@ def optimize_parser():
                 tos = stack[-1]
                 nodes = tos.nodes
                 nodes += new_node,
+                dfa = tos.dfa
             else:
                 self.error_recovery(token)
                 return None
 
+        plan = tos.dfa.transitions[type]
         tos.dfa = plan.next_dfa
 
         for dfa, node in zip(plan.dfa_pushes, stack_nodes):
@@ -532,7 +539,7 @@ def optimize_tokenize_lines() -> None:
                     if start != indents[-1] and paren_level is 0 and not fstack and start < indents[-1]:
                         yield from dedent_if_necessary(start)
                     new_line = False
-                    result += (ERRORTOKEN, line[pos], spos, additional_prefix + match[0]),
+                    result += (ERRORTOKEN, line[pos], spos, additional_prefix + match[0]),  # type: ignore
                     additional_prefix = ""
                     pos += 1
                     continue
@@ -651,6 +658,10 @@ def optimize_tokenize_lines() -> None:
                         else:
                             print("unhandled OP token:", repr(token), spos, prefix)
                     result += (OP, token, spos, prefix),
+
+            if result:
+                yield from make_tokens(result)
+                result = []
 
         if contstr:
             result += (ERRORTOKEN, contstr, contstr_start, prefix),
