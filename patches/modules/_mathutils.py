@@ -6,7 +6,7 @@ from jedi.inference.gradual.base import GenericClass
 from textension.utils import starchain
 from .. import tools
 from .. import common
-from ..common import NO_VALUES, AggregateValues, get_mro_dict
+from ..common import NO_VALUES, Values, get_mro_dict
 import itertools
 
 
@@ -80,9 +80,9 @@ class MathutilsValue(common.VirtualValue):
 
     def py__simple_getitem__(self, index):
         if self.obj == Vector:
-            return AggregateValues((common.cached_builtins.float,))
+            return Values((common.cached_builtins.float,))
         elif self.obj == Matrix:
-            return AggregateValues((MathutilsValue((Vector, self)),))
+            return Values((MathutilsValue((Vector, self)),))
         return NO_VALUES
 
     def py__getattribute__(self, name, name_context=None, position=None, analysis_errors=True):
@@ -91,7 +91,7 @@ class MathutilsValue(common.VirtualValue):
 
         obj = getattr(self.obj, name, ...)
         if obj is not ...:
-            return AggregateValues((tools.make_compiled_value(obj, self.as_context()),))
+            return Values((tools.make_compiled_value(obj, self.as_context()),))
 
         return super().py__getattribute__(name, name_context, position, analysis_errors)
 
@@ -104,7 +104,7 @@ class MathutilsValue(common.VirtualValue):
 # Support Matrix.row and Matrix.col subscript and iteration.
 class MatrixAccessValue(common.VirtualValue):
     def py__simple_getitem__(self, index_unused):
-        return AggregateValues((MathutilsValue((Vector, self)),))
+        return Values((MathutilsValue((Vector, self)),))
 
 
 rtype_data = (

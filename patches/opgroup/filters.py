@@ -6,7 +6,7 @@ from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext
 from jedi.inference.value.klass import ClassFilter
 
 from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder
-from ..common import _check_flows, state_cache, AggregateValues, AggregateStubName
+from ..common import _check_flows, state_cache, Values, AggregateStubName
 from ..tools import is_basenode, is_namenode, state
 from itertools import repeat
 
@@ -87,7 +87,7 @@ class DeferredCompiledName(tuple, CompiledName):
 
     def infer(self):
         has_attribute, is_descriptor = is_allowed_getattr(self._parent_value, self.string_name)
-        return AggregateValues((self.infer_compiled_value(),))
+        return Values((self.infer_compiled_value(),))
 
     infer_compiled_value = state_cache(CompiledName.infer_compiled_value.__closure__[0].cell_contents)
 

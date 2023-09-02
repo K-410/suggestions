@@ -6,7 +6,7 @@ from jedi.inference.value.klass import ClassValue
 from itertools import repeat
 from operator import attrgetter
 
-from ..common import get_cached_scope_definitions, state, AggregateValues, starchain
+from ..common import get_cached_scope_definitions, state, Values, starchain
 
 
 rep_state = repeat(state)
@@ -21,7 +21,7 @@ def py__getattribute__(self: ClassValue, name_or_str, name_context=None, positio
         name_or_str = name_or_str.value
     names = get_cached_scope_definitions(self.tree_node.children[-1])[name_or_str]
     results = map(tree_name_to_values, rep_state, repeat(self.as_context()), names)
-    return AggregateValues(starchain(results))
+    return Values(starchain(results))
 
 
 def optimize_ClassValue_py__getattribute__():

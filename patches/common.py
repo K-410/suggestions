@@ -599,7 +599,7 @@ class VirtualInstance(CompiledInstance):
 
     def py__iter__(self, *args, **unused):
         if instance := self.py__simple_getitem__(0):
-            return AggregateValues((LazyKnownValues(instance),))
+            return Values((LazyKnownValues(instance),))
         return NO_VALUES
 
     @property
@@ -640,7 +640,7 @@ class VirtualMixin:
     def infer_name(self, name: "VirtualName"):
         from .tools import make_compiled_value
         value = make_compiled_value(getattr(self.obj, name.string_name), self.as_context())
-        return AggregateValues((value,))
+        return Values((value,))
 
     def _get_object_name(self):
         try:
@@ -782,7 +782,7 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
         # return "VirtualValue.py__name__ (override me)"
 
     def py__call__(self, arguments=NoArguments):
-        return AggregateValues((self.as_instance(arguments),))
+        return Values((self.as_instance(arguments),))
 
     def get_qualified_names(self):
         return ()
@@ -1018,7 +1018,7 @@ class AggregateLazyKnownValues(Aggregation, LazyKnownValues):
     data = _named_index(0)
 
 
-class AggregateValues(frozenset, ValueSet):
+class Values(frozenset, ValueSet):
     __slots__ = ()
 
     # We need to override ValueSet's __bool__. It's essentially shit.

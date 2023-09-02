@@ -12,7 +12,7 @@ from operator import getitem
 
 from ._mathutils import float_subtypes
 from ._bpy_types import MathutilsValue, PropArrayValue, IdPropCollectionValue, NO_VALUES, get_rna_value
-from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, AggregateValues, state, add_module_redirect
+from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, Values, state, add_module_redirect
 from ..tools import make_compiled_value
 from textension.utils import inline_class
 
@@ -91,7 +91,7 @@ class bpy_module(VirtualModule):
                 context = self.as_context()
 
             value = make_compiled_value(obj, context)
-        return AggregateValues((value,))
+        return Values((value,))
 
 
 class OperatorWrapper(VirtualFunction):
@@ -111,7 +111,7 @@ class OpsSubModule(VirtualModule):
     def py__getattribute__(self, name_or_str, **kw):
         if ret := getattr(self.obj, _name_as_string(name_or_str)):
             if isinstance(ret, bpy.ops._BPyOpsSubModOp):
-                return AggregateValues((make_compiled_value(ret, self.as_context()),))
+                return Values((make_compiled_value(ret, self.as_context()),))
         return NO_VALUES
 
     def py__doc__(self):
@@ -123,7 +123,7 @@ class OpsSubModule(VirtualModule):
 
     def infer_name(self, name):
         operator = OperatorWrapper((getattr(self.obj, name.string_name), self))
-        return AggregateValues((operator,))
+        return Values((operator,))
 
 
 def _create_ops_submodule(module):
@@ -153,7 +153,7 @@ class ops_module(VirtualModule):
 
         if ret := getattr(self.obj, name_or_str):
             if isinstance(ret, ModuleType) and ret.__name__ == "bpy.ops." + name_or_str:
-                return AggregateValues((_create_ops_submodule(ret),))
+                return Values((_create_ops_submodule(ret),))
         return super().py__getattribute__(name_or_str)
 
     def get_members(self):
@@ -164,7 +164,7 @@ class ops_module(VirtualModule):
         name_str = name.string_name
         if ret := getattr(self.obj, name_str):
             if isinstance(ret, ModuleType) and ret.__name__ == "bpy.ops." + name_str:
-                return AggregateValues((_create_ops_submodule(ret),))
+                return Values((_create_ops_submodule(ret),))
         return super().infer_name(name)
 
 
@@ -213,7 +213,7 @@ class PropertyFunction(VirtualFunction):
         # TODO: This isn't ideal.
         instance = VirtualValue((bpy.props._PropertyDeferred, self)).as_instance(arguments)
         instance.py__call__ = lambda *_, **__: self.py_instance__call__(arguments)
-        return AggregateValues((instance,))
+        return Values((instance,))
 
     def py_instance__call__(self, arguments):
         func_name = self.obj.__name__

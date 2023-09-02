@@ -12,7 +12,7 @@ from inspect import Parameter
 from textension.utils import _context, _forwarder, inline, starchain, get_dict
 
 from ._mathutils import float_subtypes, MathutilsValue
-from ..common import AggregateValues, NoArguments, get_mro_dict
+from ..common import Values, NoArguments, get_mro_dict
 from ..tools import runtime, state, make_compiled_value, make_instance
 
 import bpy
@@ -309,7 +309,7 @@ def rna_fallback_value(parent, name):
         if rtype := overrides.get(name):
             # TODO: Still needs implementation.
             v = LazyKnownValue(get_rna_value(bpy.types.Object, parent, name))
-            return AggregateValues((FakeTuple(state, [v]),))
+            return Values((FakeTuple(state, [v]),))
 
 
 # An RnaName doesn't have to infer to an RnaValue. It just means the name
@@ -329,7 +329,7 @@ class RnaName(common.VirtualName):
         if is_rna_context_instance(parent) and isinstance(obj, type):
             if isinstance(obj, types.GenericAlias):
                 v, = get_rna_value(obj.__args__[0].bl_rna, parent).py__call__(NoArguments)
-                return AggregateValues((FakeList(state, [LazyKnownValue(v)]),))
+                return Values((FakeList(state, [LazyKnownValue(v)]),))
 
             value = get_rna_value(obj.bl_rna, parent, name_str)
 
@@ -343,10 +343,10 @@ class RnaName(common.VirtualName):
             value = tmp
 
         elif name_str == "bl_rna":
-            return AggregateValues((get_rna_value(obj, parent),))
+            return Values((get_rna_value(obj, parent),))
 
         else:
-            return AggregateValues((make_compiled_value(obj, parent.as_context()),))
+            return Values((make_compiled_value(obj, parent.as_context()),))
         return value.py__call__(NoArguments)
 
     def py__doc__(self):
@@ -421,7 +421,7 @@ class RnaInstance(common.VirtualInstance):
                 value = RnaPropertyComposite((srna, self.class_value))
             else:
                 value = get_rna_value(srna, self.class_value)
-            return AggregateValues((value.as_instance(),))
+            return Values((value.as_instance(),))
         return NO_VALUES
 
     def py__getitem__(self, index_value_set, contextualized_node):
@@ -457,7 +457,7 @@ class RnaValue(common.VirtualValue):
         if is_rna_context_instance(self) and isinstance(obj, type):
             if isinstance(obj, types.GenericAlias):
                 v, = get_rna_value(obj.__args__[0].bl_rna, self, name_str).py__call__(NoArguments)
-                return AggregateValues((FakeList(state, [LazyKnownValue(v)]),))
+                return Values((FakeList(state, [LazyKnownValue(v)]),))
 
             value = get_rna_value(obj.bl_rna, self, name_str)
 
@@ -471,11 +471,11 @@ class RnaValue(common.VirtualValue):
             value = tmp
 
         elif name_str == "bl_rna":
-            return AggregateValues((get_rna_value(obj, self, name_str),))
+            return Values((get_rna_value(obj, self, name_str),))
 
         else:
             if callable(obj):
-                return AggregateValues((make_compiled_value(obj, self.as_context()),))
+                return Values((make_compiled_value(obj, self.as_context()),))
             print(f"RnaValue.infer_name(): '{name}' of {self} could not be inferred.")
             return NO_VALUES
         return value.py__call__(NoArguments)
@@ -639,7 +639,7 @@ class RnaFunctionParamName(SignatureParamName):
 
     def infer(self):
         if (annotated := self.annotated) is not _void:
-            return AggregateValues((make_compiled_value(annotated, self.get_root_context()),))
+            return Values((make_compiled_value(annotated, self.get_root_context()),))
         print(f"RnaFunctionParamName.infer(): {self.string_name} could not be inferred on {self._value}.")
         return NO_VALUES
 
@@ -710,11 +710,11 @@ class RnaFunctionSignature(AbstractSignature):
 class PropArrayValue(common.VirtualValue):
     # Implements subscript for bpy_prop_array types.
     def py__simple_getitem__(self, index):
-        return AggregateValues((make_instance(self.obj, self.parent_context),))
+        return Values((make_instance(self.obj, self.parent_context),))
 
     # Implements for loop variable inference.
     def py__iter__(self, contextualized_node=None):
-        return AggregateValues((LazyKnownValues(self.py__simple_getitem__(None)),))
+        return Values((LazyKnownValues(self.py__simple_getitem__(None)),))
 
     def get_members(self):
         return get_mro_dict(bpy.types.bpy_prop_array)
@@ -740,11 +740,11 @@ class IdPropCollectionValue(common.VirtualValue):
             return self.values.infer()
 
         obj = self.members[name_str]
-        return AggregateValues((make_compiled_value(obj, self.as_context()),))
+        return Values((make_compiled_value(obj, self.as_context()),))
 
     def py__call__(self, arguments):
         self.values = arguments
-        return AggregateValues((self.instance_cls(self, arguments),))
+        return Values((self.instance_cls(self, arguments),))
 
     def py__simple_getitem__(self, index):
         for value in self.values.infer():
@@ -794,7 +794,7 @@ class ContextInstance(RnaInstance):
         
         # These aren't part of the screen context.
         if name_str in context_type_map:
-            return AggregateValues((NonScreenContextName((self.class_value, name_str, True)),))
+            return Values((NonScreenContextName((self.class_value, name_str, True)),))
         return ()
 
 
@@ -811,7 +811,7 @@ class NonScreenContextName(RnaName):
         value, = get_rna_value(cls.bl_rna, self.parent_value).py__call__(NoArguments)
         if is_collection:
             value = FakeList(state, (LazyKnownValue(value),))
-        return AggregateValues((value,))
+        return Values((value,))
 
 
 # Patch jedi's anonymous parameter inference so that bpy.types.Operator
@@ -819,7 +819,7 @@ class NonScreenContextName(RnaName):
 def patch_AnonymousParamName_infer():
     from jedi.inference.value.instance import BoundMethod
     from jedi.inference.names import AnonymousParamName, NO_VALUES
-    from ..common import AggregateValues
+    from ..common import Values
 
     infer_orig = AnonymousParamName.infer
 
@@ -881,7 +881,7 @@ def patch_AnonymousParamName_infer():
                     instance = runtime.context_rna
                 else:
                     instance, = rnadef_to_value(param, parent).py__call__(NoArguments)
-                return AggregateValues((instance,))
+                return Values((instance,))
 
         return NO_VALUES
     AnonymousParamName.infer = infer

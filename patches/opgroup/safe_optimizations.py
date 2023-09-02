@@ -212,7 +212,7 @@ def optimize_BaseNode_get_leaf_for_position():
 
 def optimize_ValueSet_methods():
     from jedi.inference.base_value import ValueSet
-    from ..common import AggregateValues, state
+    from ..common import Values, state
 
     # We don't need a user-defined __bool__ method that ends up calling
     # ``bool(self._set)``. Python falls back to ``__len__`` for truth tets.
@@ -232,7 +232,7 @@ def optimize_ValueSet_methods():
 
         for value in self._set:
             result += state_execute(value, arguments)._set
-        return AggregateValues(result)
+        return Values(result)
 
     ValueSet.execute = execute
 
@@ -240,7 +240,7 @@ def optimize_ValueSet_methods():
     call_py__class__ = methodcaller("py__class__")
 
     def py__class__(self: ValueSet):
-        return AggregateValues(map(call_py__class__, self._set))
+        return Values(map(call_py__class__, self._set))
 
     ValueSet.py__class__ = py__class__
 
@@ -1005,7 +1005,7 @@ def optimize_get_module_info():
 
 def optimize_tree_name_to_values():
     from jedi.inference.syntax_tree import tree_name_to_values
-    from ..common import state_cache_default, AggregateValues
+    from ..common import state_cache_default, Values
 
     from jedi.inference.syntax_tree import infer_atom, ContextualizedNode, TreeNameDefinition, check_tuple_assignments, infer_expr_stmt, _apply_decorators, infer_node
     from jedi.inference.gradual import annotation
@@ -1038,7 +1038,7 @@ def optimize_tree_name_to_values():
                 for_values += values.infer()
 
         n = TreeNameDefinition(context, tree_name)
-        return check_tuple_assignments(n, AggregateValues(for_values))
+        return check_tuple_assignments(n, Values(for_values))
 
     def infer_param(context, name):
         context = context.parent_context
@@ -1069,7 +1069,7 @@ def optimize_tree_name_to_values():
                 result = []
                 for name in next(c.get_filters()).get(tree_name.value):
                     result += name.infer()
-                return AggregateValues(result)
+                return Values(result)
             elif node.type not in ('import_from', 'import_name'):
                 return infer_atom(context.create_context(tree_name), tree_name)
 
@@ -1411,14 +1411,14 @@ def optimize_builtin_from_name():
     from jedi.inference.compiled.value import CompiledModule
     from jedi.inference import InferenceState
     from ..tools import get_handle, state
-    from ..common import AggregateValues
+    from ..common import Values
     from textension.utils import lazy_overwrite
     import builtins
 
     @lazy_overwrite
     def builtins_module(self: InferenceState):
         value = CompiledModule(state, get_handle(builtins), None)
-        return _load_from_typeshed(state, AggregateValues((value,)), None, ("builtins",))
+        return _load_from_typeshed(state, Values((value,)), None, ("builtins",))
 
     InferenceState.builtins_module = builtins_module
 
@@ -1444,7 +1444,7 @@ def optimize_builtin_from_name():
 
 def optimize_get_metaclasses():
     from jedi.inference.value.klass import ClassValue
-    from ..common import AggregateValues, state_cache
+    from ..common import Values, state_cache
     from ..tools import is_pynode
 
     def _get_metaclass(value: ClassValue):
@@ -1466,7 +1466,7 @@ def optimize_get_metaclasses():
             for a in filter(is_pynode, arglist.children):
                 if a.type == "argument" and a.children[0].value == "metaclass":
                     for metacls in self.parent_context.infer_node(a.children[2])._set:
-                        return AggregateValues((metacls,))
+                        return Values((metacls,))
 
         for lazy_base in self.py__bases__():
             for value in lazy_base.infer()._set:
@@ -1474,7 +1474,7 @@ def optimize_get_metaclasses():
                 # Tree class values, as in, not compiled class values.
                 if value.__class__ is ClassValue:
                     if metacls := get_cached_metaclass(value):
-                        return AggregateValues((metacls,))
+                        return Values((metacls,))
         return NO_VALUES
 
     ClassValue.get_metaclasses = get_metaclasses
@@ -1485,7 +1485,7 @@ def optimize_py__bases__():
     from itertools import repeat
     from builtins import zip, list, map
 
-    from ..common import state_cache, AggregateLazyKnownValues, AggregateLazyTreeValue, cached_builtins, AggregateValues
+    from ..common import state_cache, AggregateLazyKnownValues, AggregateLazyTreeValue, cached_builtins, Values
 
     @state_cache
     def py__bases__(self: ClassValue):
@@ -1513,7 +1513,7 @@ def optimize_py__bases__():
         elif children[1].value == "object" and self.parent_context.is_builtins_module():
             return ()
 
-        return (AggregateLazyKnownValues((AggregateValues((cached_builtins.object,)),)),)
+        return (AggregateLazyKnownValues((Values((cached_builtins.object,)),)),)
 
     ClassValue.py__bases__ = py__bases__
 
@@ -1549,7 +1549,7 @@ def optimize_apply_decorators():
     from jedi.inference.value.klass import ClassValue
     from jedi.inference.arguments import ValuesArguments
     from parso.python.tree import PythonNode, Class, ClassOrFunc
-    from ..common import state, AggregateValues
+    from ..common import state, Values
     from textension.utils import _get_dict
 
     class SimplerClassValue(ClassValue):
@@ -1568,7 +1568,7 @@ def optimize_apply_decorators():
         else:
             decoratee_value = FunctionValue.from_context(context, node)
 
-        values = AggregateValues((decoratee_value,))
+        values = Values((decoratee_value,))
         if node.parent.type in {"async_funcdef", "decorated"}:
 
             initial = values
@@ -1586,7 +1586,7 @@ def optimize_apply_decorators():
                 return initial
 
             if values != initial:
-                return AggregateValues(Decoratee(c, decoratee_value) for c in values)
+                return Values(Decoratee(c, decoratee_value) for c in values)
 
         return values
 
@@ -1752,7 +1752,7 @@ def optimize_get_executed_param_names_and_issues():
 def optimize_SequenceLiteralValue():
     from jedi.inference.value.dynamic_arrays import _internal_check_array_additions
     from jedi.inference.value.iterable import SequenceLiteralValue, Slice, LazyKnownValue
-    from ..common import AggregateLazyTreeValue, AggregateValues
+    from ..common import AggregateLazyTreeValue, Values
 
     real_check_array_additions = _internal_check_array_additions.__closure__[1].cell_contents.__closure__[0].cell_contents
 
@@ -1773,9 +1773,9 @@ def optimize_SequenceLiteralValue():
     from jedi.inference import imports
     from jedi.inference import base_value
 
-    conversion.ValueSet = AggregateValues
-    base_value.ValueSet = AggregateValues
-    imports.ValueSet = AggregateValues
+    conversion.ValueSet = Values
+    base_value.ValueSet = Values
+    imports.ValueSet = Values
 
 
 # AccessHandle doesn't have ``get_access_path_tuples``, but jedi treats it as

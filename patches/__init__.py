@@ -127,7 +127,7 @@ def patch_SequenceLiteralValue():
     from jedi.inference.gradual.base import GenericClass, _LazyGenericBaseClass
     from jedi.inference.gradual.typing import TypedDict
     from jedi.inference.value import TreeInstance
-    from .common import state, state_cache, state_cache_kw, AggregateValues
+    from .common import state, state_cache, state_cache_kw, Values
 
     @state_cache
     def py__bases__(self: GenericClass):
@@ -142,8 +142,8 @@ def patch_SequenceLiteralValue():
     @state_cache_kw
     def py__call__(self: GenericClass, arguments):
         if self.is_typeddict():
-            return AggregateValues((TypedDict(self),))
-        return AggregateValues((TreeInstance(state, self.parent_context, self, arguments),))
+            return Values((TypedDict(self),))
+        return Values((TreeInstance(state, self.parent_context, self, arguments),))
 
     GenericClass.py__call__ = py__call__
 
@@ -270,7 +270,7 @@ def patch_import_resolutions():
     from jedi.inference.imports import import_module
 
     from .tools import get_handle, state
-    from .common import AggregateValues
+    from .common import Values
     import importlib
 
     module_cache = state.module_cache
@@ -281,7 +281,7 @@ def patch_import_resolutions():
         if not ret:
             try:
                 access_handle = get_handle(importlib.import_module(".".join(name)))
-                ret = AggregateValues((CompiledModule(state, access_handle),))
+                ret = Values((CompiledModule(state, access_handle),))
                 module_cache.add(name, ret)
             except ImportError:
                 pass
@@ -306,7 +306,7 @@ def patch_import_resolutions():
 # So instead of addressing each problem differently, we use virtual modules.
 def patch_Importer():
     from jedi.inference.imports import Importer
-    from .common import Importer_redirects, state, is_namenode, AggregateValues
+    from .common import Importer_redirects, state, is_namenode, Values
 
     Importer._inference_state = state
     Importer._fixed_sys_path = None
@@ -318,7 +318,7 @@ def patch_Importer():
     # Import redirection for actual modules.
     def follow(self: Importer):
         if module := Importer_redirects.get(".".join(self._str_import_path)):
-            return AggregateValues((module,))
+            return Values((module,))
         return follow(self)
 
     follow = _patch_function(Importer.follow, follow)
