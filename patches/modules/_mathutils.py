@@ -2,15 +2,15 @@
 
 from mathutils import Vector, Quaternion, Euler, Matrix, Color
 from jedi.inference.gradual.base import GenericClass
-
 from textension.utils import starchain
-from .. import tools
-from .. import common
-from ..common import NO_VALUES, Values, get_mro_dict
 import itertools
 
+from ..common import NO_VALUES, VirtualValue, VirtualInstance, Values
+from .. import common
+from .. import tools
 
-virtuals = (common.VirtualInstance, common.VirtualValue)
+
+virtuals = (VirtualInstance, VirtualValue)
 
 # Blender FloatProperty subtype-to-mathutils type mapping.
 float_subtypes = {
@@ -30,14 +30,14 @@ float_subtypes = {
 }
 
 
-def infer_matmul(self: common.VirtualValue, arguments):
+def infer_matmul(self: VirtualValue, arguments):
     this = self.obj
     for value in dict(arguments.unpack()).values():
         for value in value.infer():
             rtype = None
-            if isinstance(value, common.VirtualInstance):
+            if isinstance(value, VirtualInstance):
                 value = value.class_value
-            if not isinstance(value, common.VirtualValue):
+            if not isinstance(value, VirtualValue):
                 continue
             other = value.obj
 
@@ -55,14 +55,7 @@ def infer_matmul(self: common.VirtualValue, arguments):
     return NO_VALUES
 
 
-class MathutilsValue(common.VirtualValue):
-
-    def get_members(self):
-        mro_dict = get_mro_dict(self.obj)
-        # from ..tools import _descriptor_overrides
-        # if self.obj in _descriptor_overrides:
-        #     mro_dict |= _descriptor_overrides[self.obj]
-        return mro_dict
+class MathutilsValue(VirtualValue):
 
     # Needed so tuple(Vector()) is inferrable.
     def is_sub_class_of(self, class_value):
@@ -102,7 +95,7 @@ class MathutilsValue(common.VirtualValue):
 
 
 # Support Matrix.row and Matrix.col subscript and iteration.
-class MatrixAccessValue(common.VirtualValue):
+class MatrixAccessValue(VirtualValue):
     def py__simple_getitem__(self, index_unused):
         return Values((MathutilsValue((Vector, self)),))
 
