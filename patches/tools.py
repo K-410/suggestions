@@ -23,8 +23,7 @@ class StateModuleCache(dict):
     __getitem__ = None  # Don't allow subscript. Jedi doesn't use it.
 
     def add(self, string_names: tuple[str], value_set):
-        # These checks are for when jedi is being a dummy
-        # and caches something that should not be cached.
+        # If jedi is being a dummy, I want to know it here.
         _check_type(string_names, tuple)
         _check_type(value_set, ValueSet, frozenset)
 
@@ -69,14 +68,14 @@ state.analysis = collections.deque(maxlen=25)
 state.allow_descriptor_getattr = True
 state.memoize_cache = {}
 
-runtime = namespace(context_rna=None)
+runtime = namespace(context_rna=None, data_rna=None)
 
 
 # Compiled value overrides used for aiding type inference.
-_descriptor_overrides = collections.defaultdict(dict)
+_descriptor_overrides = {}
 _rtype_overrides = {}
 _value_overrides = {}
-
+_virtual_overrides = {}
 
 @inline
 def is_pynode(node) -> bool:
@@ -210,14 +209,14 @@ class AccessOverride(DirectObjectAccess):
 
         obj_dict = type.__dict__["__dict__"].__get__(obj)
         if isinstance(obj_dict.get(name), GetSetDescriptorType):
-            return False, True  # Not an attribute, is a descriptor.
+            return False, True, None  # Not an attribute, is a descriptor.
         try:
             value = object.__getattribute__(self._obj, name)
         except:
             pass
         else:
             if isinstance(value, GetSetDescriptorType):
-                return False, True
+                return False, True, None
         return super().is_allowed_getattr(name, safe=safe)
 
 
@@ -228,21 +227,22 @@ def set_rtype(func, rtype):
 
 
 def override_prologue(override_func):
-    def wrapper(obj, value: CompiledValue):
+    def wrapper(obj, value):
         access = value.access_handle.access
         if not isinstance(access, AccessOverride):
             value.access_handle.access = AccessOverride(access)
-        return override_func(obj, value)
+        override_func(obj, value)
+        return value
     return wrapper
 
 
 @override_prologue
-def _rtype_override(obj, value: CompiledValue):
+def _rtype_override(obj, value):
     value.access_handle.access._rtype = _rtype_overrides[obj]
 
 
 @override_prologue
-def _descriptor_override(obj, value: CompiledValue):
+def _descriptor_override(obj, value):
     pass
     # Does nothing for now. The object just needs to exist in _descriptor_overrides.
 
@@ -256,11 +256,13 @@ def _add_rtype_overrides(data):
 
 def _add_descriptor_overrides(data):
     for descriptor, rtype in data:
-        obj = descriptor.__objclass__
+        _descriptor_overrides[descriptor] = rtype
+        # obj = descriptor.__objclass__
         # assert obj not in _value_overrides, (obj, _value_overrides)
         # assert not (obj in _value_overrides or descriptor.__name__ in _descriptor_overrides.get(obj, ()))
-        _value_overrides[obj] = _descriptor_override
-        _descriptor_overrides[obj][descriptor.__name__] = rtype
+        # _value_overrides[obj] = _descriptor_override
+        # print(obj)
+        # _descriptor_overrides[obj][descriptor.__name__] = rtype
 
 
 def make_compiled_value(obj, context):
@@ -283,9 +285,8 @@ def make_instance_name(obj, context, name):
     return CompiledValueName(instance, name)
 
 
-def add_value_override(obj, hook):
-    assert obj not in _value_overrides
-    _value_overrides[obj] = hook
+def add_value_override(obj, virtual_value_class):
+    _virtual_overrides[obj] = virtual_value_class
 
 
 def ensure_blank_eol(lines: list[str]):
