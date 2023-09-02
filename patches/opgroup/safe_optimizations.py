@@ -892,9 +892,9 @@ def optimize_BaseNode_end_pos():
 def optimize_CompiledValue_api_type():
     from jedi.inference.compiled.value import CompiledValue
     from types import ModuleType, BuiltinFunctionType, MethodType, \
-         FunctionType, MethodDescriptorType
+         FunctionType, MethodDescriptorType, ClassMethodDescriptorType, WrapperDescriptorType, GetSetDescriptorType
 
-    function_types = MethodDescriptorType, BuiltinFunctionType, MethodType, FunctionType
+    function_types = MethodDescriptorType, BuiltinFunctionType, MethodType, FunctionType, ClassMethodDescriptorType, WrapperDescriptorType
 
     is_module = ModuleType.__instancecheck__
 
@@ -908,6 +908,9 @@ def optimize_CompiledValue_api_type():
             return "class"
         elif is_module(obj):
             return "module"
+        elif isinstance(obj, GetSetDescriptorType):
+            if getattr(obj, "__name__", None) == "__class__":
+                return "class"
         return "instance"
 
     CompiledValue.api_type = api_type
@@ -953,7 +956,7 @@ def optimize_LazyInstanceClassName():
         string_name   = _forwarder("_wrapped_name.tree_name.value")
 
         def __repr__(self):
-            return f"LazyName({object.__repr__(self._wrapped_name)})"
+            return f"LazyName({self._wrapped_name})"
 
     def _convert(self: InstanceClassFilter, names):
         return list(map(LazyName, zip(repeat(self._instance), names)))
