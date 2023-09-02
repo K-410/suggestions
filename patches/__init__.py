@@ -1,7 +1,7 @@
 # This adds fixes for jedi to outright work.
 
 from textension.utils import _patch_function, _forwarder
-from .tools import _descriptor_overrides, _value_overrides
+from .tools import _descriptor_overrides, _value_overrides, _virtual_overrides
 
 import bpy
 
@@ -16,10 +16,10 @@ def apply():
 
 def _apply_patches():
     from . import modules
-    modules._bpy_types.apply()
-    modules._mathutils.apply()
     modules._gpu.apply()
     modules._bpy.apply()
+    modules._bpy_types.apply()
+    modules._mathutils.apply()
 
     # Remove the bulk of ``__getattr__`` calls.
     patch_NameWrapper_getattr()
@@ -27,7 +27,6 @@ def _apply_patches():
     patch_ValueWrapperBase()
 
     patch_Completion_complete_inherited()
-    patch_Value_py__getattribute__alternatives()
     patch_fakelist_array_type()
     patch_import_resolutions()
     patch_get_builtin_module_names()
@@ -234,40 +233,6 @@ def patch_Completion_complete_inherited():
         return ret
 
     Completion._complete_inherited = _complete_inherited
-
-
-# Fallback for py__getattribute__.
-def patch_Value_py__getattribute__alternatives():
-    from jedi.inference.compiled.value import CompiledValue, Value, NO_VALUES
-    from jedi.inference.value.instance import CompiledInstance
-
-    from .tools import make_compiled_value
-    from .common import AggregateValues
-
-    # TODO: Make py__getattribute__alternatives for each (CompiledValue, CompiledInstance)
-    #       if this patch is still applicable.
-    def py__getattribute__alternatives(self: Value, name_or_str):
-        if isinstance(self, CompiledInstance):
-            value = self.class_value
-            if desc_map := _descriptor_overrides.get(self.class_value.access_handle.access._obj):
-                if ret := desc_map.get(name_or_str):
-                    return make_compiled_value(ret, value.as_context()).py__call__(None)
-                else:
-                    print("missing descriptor", self, name_or_str)
-
-        elif isinstance(self, CompiledValue):
-            obj = self.access_handle.access._obj
-            try:
-                if obj in _descriptor_overrides:
-                    descriptor = getattr(obj, name_or_str)
-                    return AggregateValues((make_compiled_value(descriptor, self.as_context()),))
-            except TypeError:
-                pass
-
-        # print("no fallbacks found for", repr(name_or_str))
-        return NO_VALUES
-    
-    Value.py__getattribute__alternatives = py__getattribute__alternatives
 
 
 # Jedi breaks if there's ill-formed code related to sys path modifications.
@@ -515,19 +480,18 @@ def patch_create_cached_compiled_value():
 
     # StructMetaPropGroup is used by bpy_types.Operator, as non-RNA base.
     from bpy_types import RNAMeta, StructRNA, StructMetaPropGroup
-    from .modules._bpy_types import get_rna_value
-
-    is_compiled_value = CompiledValue.__instancecheck__
-    bpy_types = (RNAMeta, StructRNA, StructMetaPropGroup, bpy.props._PropertyDeferred)
+    from .modules._bpy_types import get_rna_value, is_bpy_struct
     from .common import CompiledModule_redirects, state, state_cache
+    from .tools import get_handle
+
+    bpy_types = (RNAMeta, StructRNA, StructMetaPropGroup, bpy.props._PropertyDeferred)
 
     @state_cache
     def create_cached_compiled_value_p(state, handle, context):
         obj = handle.access._obj
 
         if context:
-            assert not is_compiled_value(context)
-            if isinstance(obj, bpy_types):
+            if isinstance(obj, bpy_types) or (isinstance(obj, type) and issubclass(obj, bpy_types) and is_bpy_struct(getattr(obj, "bl_rna", None))):
                 return get_rna_value(obj, context._value)
             value = CompiledValue(state, handle, context)
 
@@ -542,11 +506,24 @@ def patch_create_cached_compiled_value():
             if value is None:
                 value = CompiledModule(state, handle, context)
 
+        try:
+            if obj in _virtual_overrides:
+                return _virtual_overrides[obj]((obj, context._value))
+        except TypeError:
+            pass
+
+        try:
+            if obj in _descriptor_overrides:
+                handle = get_handle(_descriptor_overrides[obj])
+                return create_cached_compiled_value(state, handle, context)
+        except TypeError:
+            pass
+
         # Some objects are unhashable, but they are too rare and not
         # worth the extra overhead of using isinstance for.
         try:
             if obj in _value_overrides:
-                _value_overrides[obj](obj, value)
+                return _value_overrides[obj](obj, value)
         except TypeError:
             pass
 
