@@ -1,13 +1,14 @@
 """Implements support for mathutils type inference."""
 
 from mathutils import Vector, Quaternion, Euler, Matrix, Color
-from itertools import product, repeat
+from jedi.inference.gradual.base import GenericClass
 
 from textension.utils import starchain
 from .. import tools
 from .. import common
 from ..common import NO_VALUES, AggregateValues, get_mro_dict
-from jedi.inference.gradual.base import GenericClass
+import itertools
+
 
 virtuals = (common.VirtualInstance, common.VirtualValue)
 
@@ -29,7 +30,7 @@ float_subtypes = {
 }
 
 
-def infer_matmul(self, arguments):
+def infer_matmul(self: common.VirtualValue, arguments):
     this = self.obj
     for value in dict(arguments.unpack()).values():
         for value in value.infer():
@@ -81,18 +82,18 @@ class MathutilsValue(common.VirtualValue):
         if self.obj == Vector:
             return AggregateValues((common.cached_builtins.float,))
         elif self.obj == Matrix:
-            return common.AggregateValues((MathutilsValue((Vector, self)),))
+            return AggregateValues((MathutilsValue((Vector, self)),))
         return NO_VALUES
 
-    def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
-        if not isinstance(name_or_str, str):
-            name_or_str = name_or_str.value
-        sentinel = object()
-        obj = getattr(self.access_handle.access._obj, name_or_str, sentinel)
-        if obj is not sentinel:
+    def py__getattribute__(self, name, name_context=None, position=None, analysis_errors=True):
+        if not isinstance(name, str):
+            name = name.value
+
+        obj = getattr(self.obj, name, ...)
+        if obj is not ...:
             return AggregateValues((tools.make_compiled_value(obj, self.as_context()),))
 
-        return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
+        return super().py__getattribute__(name, name_context, position, analysis_errors)
 
     def virtual_call(self, instance, arguments):
         if instance.class_value.obj.__name__ == "__matmul__":
@@ -100,10 +101,10 @@ class MathutilsValue(common.VirtualValue):
         return NO_VALUES
 
 
+# Support Matrix.row and Matrix.col subscript and iteration.
 class MatrixAccessValue(common.VirtualValue):
-    # Support Matrix.row and Matrix.col subscript and iteration.
-    def py__simple_getitem__(self, index):
-        return common.AggregateValues((MathutilsValue((Vector, self)),))
+    def py__simple_getitem__(self, index_unused):
+        return AggregateValues((MathutilsValue((Vector, self)),))
 
 
 rtype_data = (
@@ -190,8 +191,8 @@ rtype_data = (
 # Add Vector swizzle descriptor overrides.
 vector_swizzles = starchain(
     zip(map(Vector.__dict__.__getitem__,
-            map("".join, product("xyzw", repeat=i))),
-        repeat(Vector))
+            map("".join, itertools.product("xyzw", repeat=i))),
+        itertools.repeat(Vector))
     for i in (2, 3, 4)
 )
 
