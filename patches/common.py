@@ -24,16 +24,19 @@ from operator import attrgetter, methodcaller
 from pathlib import Path
 import types
 import functools
+from functools import partial
 
 from textension.utils import (
     _forwarder, _named_index, _unbound_getter, consume, falsy_noargs, inline,
      set_name, truthy_noargs, instanced_default_cache, Aggregation, starchain,
      lazy_overwrite, namespace, _get_dict, _unbound_attrcaller, filtertrue)
 
-from .tools import state, get_handle, factory, is_namenode, is_basenode, ensure_blank_eol
+from .tools import state, get_handle, factory, is_namenode, is_basenode, ensure_blank_eol, _virtual_overrides
 
 import bpy
 
+
+_closures = []
 
 # For VirtualModule overrides. Assumes patch_Importer_follow was called.
 Importer_redirects = {}
@@ -52,6 +55,14 @@ runtime = namespace(is_reset=True)
 for cls in iter(node_types := [BaseNode]):
     node_types += cls.__subclasses__()
 node_types: frozenset[BaseNode] = frozenset(node_types)
+
+
+def add_module_redirect(virtual_module, name=None):
+    if name is None:
+        string_names = getattr(virtual_module, "string_names", None)
+        assert isinstance(string_names, tuple), (string_names, virtual_module)
+        name = ".".join(string_names)
+    Importer_redirects[name] = virtual_module
 
 
 # Used by VirtualValue.py__call__ and other inference functions where we
@@ -74,16 +85,22 @@ def yield_once(func):
 
 @instanced_default_cache
 def sessions(self: dict, text_id):
-    sess = TextSession()
-    sess.text_id = text_id
+    module = BpyTextModule(Path(f"Text({text_id})"))
+    return self.setdefault(text_id, TextSession((text_id, module)))
 
-    sess.module = BpyTextModule()
-    sess.module.context = BpyTextModuleContext(sess.module)
-    sess.module.file_io = BpyTextBlockIO()
-    sess.file_io.path = Path(f"Text({text_id})")
 
-    self[text_id] = sess
-    return sess
+@inline
+def _rebuild_closure_caches():
+    return partial(map, partial.__call__, _closures, map(dict.__new__, repeat(dict)))
+
+
+def register_cache(func):
+    def inner(wrap):
+        func_name = getattr(func, "__name__", None) or str(func)
+        assert isinstance(wrap.__closure__[0].cell_contents, dict)
+        _closures.append(partial(setattr, wrap.__closure__[0], "cell_contents"))
+        return set_name(func_name + " (cached)")(wrap)
+    return inner
 
 
 def reset_state():
@@ -94,8 +111,7 @@ def reset_state():
 
     # Assign a new cache to registered closures.
     # This is for functions that use the optimized state cache.
-    for cell in _closures:
-        cell.cell_contents = {}
+    consume(_rebuild_closure_caches())
 
     # Clear the cache for functions that use the stock memoize.
     consume(map(dict.clear, filtertrue(memoize_values)))
@@ -110,49 +126,32 @@ def reset_state():
     runtime.is_reset = True
 
 
-_closures = []
+@inline
+def add_pending_state_reset():
+    return partial(bpy.app.timers.register, reset_state)
 
 
 def state_cache(func):
-    try:
-        func_name = func.__name__
-    except AttributeError:
-        func_name = str(func)
-
     cache = {}
-
-    # The name is mostly for introspection.
-    @set_name(func_name + " (cached)")
+    @register_cache(func)
     def wrapper(*args):
         if args not in cache:
             cache[args] = func(*args)
         return cache[args]
-
-    cache_closure = wrapper.__closure__[0]
-    _closures.append(cache_closure)
     return wrapper
 
 
 def state_cache_default(default):
-    """Same as state_cache, but with recursion mitigation."""
+    """Inference state cache with recursion mitigation."""
+
     def decorator(func):
-        try:
-            func_name = func.__name__
-        except AttributeError:
-            func_name = str(func)
-
         cache = {}
-
-        # The name is mostly for introspection.
-        @set_name(func_name + " (cached)")
+        @register_cache(func)
         def wrapper(*args):
             if args not in cache:
                 cache[args] = default
                 cache[args] = func(*args)
             return cache[args]
-
-        cache_closure = wrapper.__closure__[0]
-        _closures.append(cache_closure)
         return wrapper
     return decorator
 
@@ -163,16 +162,12 @@ def state_cache_kw(func):
     from builtins import tuple
 
     cache = {}
-
-    @set_name(func.__name__ + " (cached)")
+    @register_cache(func)
     def wrapper(*args, **kw):
         key = (args, tuple(dict_items(kw)))
         if key not in cache:
             cache[key] = func(*args, **kw)
         return cache[key]
-
-    cache_closure = wrapper.__closure__[0]
-    _closures.append(cache_closure)
     return wrapper
 
 
@@ -594,8 +589,7 @@ class VirtualInstance(CompiledInstance):
         yield from self.class_value.get_filters(origin_scope=origin_scope, is_instance=True)
 
     def py__call__(self, arguments):
-        print("VirtualInstance.py__call__ (no values) for", self.class_value)
-        return NO_VALUES
+        return self.class_value.parent_value.virtual_call(self, arguments)
 
     # Don't try to support indexing.
     def py__simple_getitem__(self, *args, **unused):
@@ -632,8 +626,7 @@ class VirtualMixin:
     def get_filter_values(self, is_instance=False):
         return list(map(VirtualName, zip(repeat(self), self.members)))
 
-    @property
-    @state_cache
+    @lazy_overwrite
     def members(self):
         return self.get_members()
 
@@ -660,6 +653,7 @@ class VirtualModule(VirtualMixin, CompiledModule):
     string_names = ()
     inference_state = state
     parent_context  = None
+    api_type = "module"
 
     def __init__(self, module_obj):
         self.obj = module_obj
@@ -716,7 +710,7 @@ class VirtualName(Aggregation, CompiledName):
     def api_type(self):
         for value in self.infer():
             return value.api_type
-        return "unknown"
+        return "instance"
 
     def __repr__(self):
         cls_name = type.__dict__["__name__"].__get__(self.__class__)
@@ -744,6 +738,10 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
     # If inferred from a parent value, ``derived_name`` holds the member name.
     _derived_name: str           = _named_index(2)
 
+    def virtual_call(self, instance, arguments):
+        print("VirtualValue.virtual_call", instance, arguments)
+        return NO_VALUES
+
     @property
     def derived_name(self):
         if len(self) > 2:
@@ -754,23 +752,6 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
     def __init__(self, elements):
         """elements: A tuple of object and parent value."""
         return Aggregation.__init__
-
-    def infer_name(self, name: VirtualName):
-        name_str = name.string_name
-        if name_str not in self.members:
-            return NO_VALUES
-
-        obj = self.members[name_str]
-        data = (obj, self, name_str)
-
-        if obj in virtual_overrides:
-            value = virtual_overrides[obj](data)
-        else:
-            value = VirtualValue(data)
-
-        if name.is_instance:
-            value = value.as_instance()
-        return AggregateValues((value,))
 
     @property
     def access_handle(self):
@@ -838,16 +819,22 @@ class VirtualFilter(Aggregation, CompiledValueFilter):
 
 
 class VirtualFunction(VirtualValue):
-    def __init__(self, reference):
-        self.ref = reference
+    api_type = "function"
+
+    def py__doc__(self):
+        try:
+            return self.obj.__doc__
+        except:
+            return ""
 
 
 # Implements FileIO for bpy.types.Text so jedi can use diff-parsing on them.
 # This is used by several optimization modules.
-class BpyTextBlockIO(KnownContentFileIO, FileIOFolderMixin):
+class BpyTextBlockIO(Aggregation, KnownContentFileIO, FileIOFolderMixin):
     get_last_modified = None.__init__  # Dummy
     read = _unbound_getter("_content")
-    __init__ = object.__init__
+
+    path = _named_index(0)
 
 
 class BpyTextModule(ModuleValue):
@@ -872,7 +859,9 @@ class BpyTextModule(ModuleValue):
     # '/MyText' -> 'C:/MyText'.
     py__file__ = _unbound_getter("_path")
 
-    __init__ = object.__init__
+    def __init__(self, path):
+        self.context = BpyTextModuleContext(self)        
+        self.file_io = BpyTextBlockIO((path,))
 
     def as_context(self):
         return self.context
@@ -908,12 +897,14 @@ class BpyTextModuleContext(MixedModuleContext):
         return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
 
 
-class TextSession:
-    text_id: int
-    code:    str = None
-
-    module:  BpyTextModule
+class TextSession(Aggregation):
+    text_id: int            = _named_index(0)
+    module:  BpyTextModule  = _named_index(1)
     file_io: BpyTextBlockIO = _forwarder("module.file_io")
+
+    @lazy_overwrite
+    def code(self) -> str | None:
+        return None
 
     def update_from_text(self, text):
         last_code = self.code
@@ -933,6 +924,7 @@ class interpreter(Script):
     __init__ = object.__init__
     __repr__ = object.__repr__
 
+    session: TextSession
     context      = _forwarder("session.module.context")
     _code_lines  = _forwarder("_file_io._content")
     _file_io     = _forwarder("session.file_io")
@@ -945,12 +937,12 @@ class interpreter(Script):
         if not runtime.is_reset:
             reset_state()
 
-        bpy.app.timers.register(reset_state)
+        add_pending_state_reset()
 
         self.session = sessions[text.id]
         self.session.update_from_text(text)
 
-        line, column = get_cursor_focus(text)
+        line, column = text.cursor_focus
         return Completion(
             state, self.context, self._code_lines, (line + 1, column),
             self.get_signatures, fuzzy=False).complete()
@@ -980,7 +972,7 @@ class cached_builtins:
 
 @inline
 def get_builtin_value(name_str: str) -> ClassValue:
-    return functools.partial(getattr, cached_builtins)
+    return partial(getattr, cached_builtins)
 
 
 class AggregateTreeNameDefinition(Aggregation, TreeNameDefinition):
