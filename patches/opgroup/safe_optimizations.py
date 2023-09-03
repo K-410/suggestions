@@ -1781,11 +1781,11 @@ def optimize_SequenceLiteralValue():
 # AccessHandle doesn't have ``get_access_path_tuples``, but jedi treats it as
 # such via ``__getattr__``. Exception based attribute forwarding is slow.
 def optimize_AccessHandle_get_access_path_tuples():
+    from types import ModuleType, MethodDescriptorType, WrapperDescriptorType
     from jedi.inference.compiled.subprocess import AccessHandle
     from textension.utils import lazy_overwrite
     from builtins import type, isinstance
     from ..common import get_handle, state_cache
-    from types import ModuleType
     from sys import modules as sys_modules
     import builtins
 
@@ -1820,9 +1820,15 @@ def optimize_AccessHandle_get_access_path_tuples():
 
     def py__name__(self: AccessHandle):
         obj = self.access._obj
-        if not isinstance(obj, type):
-            return type(obj).__name__
-        return obj.__name__
+
+        # Is a class.
+        if isinstance(obj, type):
+            return type.__dict__["__name__"].__get__(obj)
+
+        if isinstance(obj, (MethodDescriptorType, WrapperDescriptorType)):
+            return obj.__name__
+
+        return type(obj).__name__
 
     AccessHandle.py__name__ = py__name__
 
