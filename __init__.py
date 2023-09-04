@@ -13,6 +13,16 @@ import bpy
 import gc
 
 
+settings = utils.namespace(
+    # Plugin dependencies are loaded externally via a timer.
+    loaded=False,
+
+    use_fuzzy_search          = True,
+    use_ordered_fuzzy_search  = True,
+    use_case_sensitive_search = False
+)
+
+
 # Backup.
 _gc_enable = gc.enable
 
@@ -20,8 +30,6 @@ _get_sync_key = operator.attrgetter("select_end_line", "select_end_character")
 
 # Token separators excluding dot/period
 separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
-
-runtime = utils.namespace(loaded=False)
 
 
 BLF_BOLD = 1 << 11  # ``blf.enable(0, BLF_BOLD)`` adds bold effect.
@@ -59,7 +67,12 @@ class Description(ui.widgets.TextView):
 
 
 class Suggestions(ui.widgets.ListBox):
+    default_width  = 260
+    default_height = 158
+
+    preferences: "TEXTENSION_PG_suggestions"
     height_hint: int
+
     font_id                 = 1
     _temp_lines             = []
     last_position           = 0, 0
@@ -77,17 +90,18 @@ class Suggestions(ui.widgets.ListBox):
     hover_border_color      = 1.0, 1.0, 1.0, 0.4
     hover_border_width      = 1
 
-    preferences: "TEXTENSION_PG_suggestions"
-
     fixed_font_size        = 16
     foreground_color       = 0.4,  0.7,  1.0,  1.0
     match_foreground_color = 0.87, 0.60, 0.25, 1.0
 
     is_visible             = False
-    use_auto_font_size     = True
-    use_bold_matches       = False
-    show_description       = False
-    show_horizontal_scrollbar = False
+
+    show_description         = False
+    show_bold_matches        = False
+    use_auto_font_size        = True
+    use_fuzzy_search          = True
+    use_ordered_fuzzy_search  = True
+    use_case_sensitive_search = False
 
     def __init__(self, st):
         super().__init__(parent=None)
@@ -145,19 +159,65 @@ class Suggestions(ui.widgets.ListBox):
             self.draw_string(string, x, y)
 
         else:
+            # TODO: This could benefit from cleanup.
             import blf
-            prefix = string[:length]
+            like_name = entry.test_like_name
 
-            if self.use_bold_matches:
-                blf.enable(self.font_id, BLF_BOLD)
+            if settings.use_case_sensitive_search:
+                like_name = entry._like_name
+                test_string = string
 
-            blf.position(self.font_id, x, y, 0)
-            blf.color(self.font_id, *self.match_foreground_color)
-            blf.draw(self.font_id, prefix)
-            blf.disable(self.font_id, BLF_BOLD)
+            else:
+                test_string = string.lower()
 
-            x += blf.dimensions(self.font_id, prefix)[0]
-            self.draw_string(string[length:], x, y)
+            draw_list = []
+
+            # If the full like name is in the string, use that.
+            if like_name in test_string:
+                span = len(like_name)
+                start = test_string.index(like_name)
+
+                if start is not 0:
+                    draw_list += (string[:start], False),
+
+                end = start + span
+                draw_list += (string[start:end], True),
+
+                if end != len(string):
+                    draw_list += (string[end:], False),
+
+            else:
+
+                from itertools import repeat
+                draw_list = list(zip(string, repeat(False)))
+
+                if settings.use_ordered_fuzzy_search:
+                    index = -1
+                    for c in like_name:
+                        index = test_string.index(c, index + 1)
+                        draw_list[index] = (draw_list[index][0], True)
+
+                else:
+                    for c in like_name:
+                        index = test_string.index(c)
+                        draw_list[index] = (draw_list[index][0], True)
+                        test_string = test_string.replace(c, "\x00", 1)
+
+            for char, is_match in draw_list:
+                if is_match:
+                    if self.show_bold_matches:
+                        blf.enable(self.font_id, BLF_BOLD)
+                    color = self.match_foreground_color
+                else:
+                    color = self.foreground_color
+
+                blf.color(self.font_id, *color)
+
+                blf.position(self.font_id, x, y, 0)
+                blf.draw(self.font_id, char)
+                blf.disable(self.font_id, BLF_BOLD)
+
+                x += blf.dimensions(self.font_id, char)[0]
 
     def dismiss(self):
         if self.is_visible:
@@ -207,7 +267,7 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
 
     poll = utils.text_poll
 
-    def invoke(self, context, event):
+    def execute(self, context):
         instance = get_instance()
 
         if instance.is_visible and self.toggle_description:
@@ -215,13 +275,13 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
             return {'FINISHED'}
     
         bpy.error = False
-        if not runtime.loaded:
+        if not settings.loaded:
             _setup(force=True)
 
         text = context.edit_text
         nlines = context.space_data.drawcache.total_lines
 
-        # Line index is O(N) so avoid syncing cursor as much as possible.
+        # Text line index is O(N) so avoid syncing cursor as much as possible.
         if instance.sync_key != _get_sync_key(text) or instance.last_nlines != nlines:
             instance.sync_cursor(text.select_end_line_index)
             instance.last_nlines = nlines
@@ -270,31 +330,37 @@ class TEXTENSION_OT_suggestions_commit(utils.TextOperator):
     def execute(self, context):
         instance = get_instance()
 
-        index = instance.active.index
-
         text = context.edit_text
-        line, col = text.cursor_focus
+        line, column = text.cursor_focus
 
-        # The selected completion.
-        completion = instance.lines[index]
+        entry = instance.active_entry
+
+        word_start = column - entry._like_name_length
 
         # The name which jedi is being asked to complete.
-        word_start = col - completion.get_completion_prefix_length()
-        projected = text.lines[line].body[word_start:col] + completion.complete
+        query = text.lines[line].body[word_start:column]
 
-        # The query + completion, including parameter/function suffixes.
-        completion_string = completion.name_with_symbols
+        if settings.use_fuzzy_search:
+            word = entry.string_name
+
+        else:
+            word = query + entry.complete
+
+        # Whether completing would change the query or not.
+        completable = word != query
+
+        # Same as ``word`` except it may append ``=`` for parameters.
+        completion_string = entry.name_with_symbols
 
         # Generate a mousemove.
         ui.idle_update()
 
         # Complete only if it either adds to, or modifies the query.
-        if completion.complete or projected != completion_string:
-            if text.cursor_anchor != (line, col):
-                text.cursor_anchor = line, col
+        if completable or word != completion_string:
+            text.cursor_anchor = line, column
             text.curc = word_start
             text.write(completion_string)
-            text.cursor = line, col + len(completion.complete)
+            text.cursor = line, column + len(completion_string) - len(query)
             # TODO: Aren't we supposed to use dismiss?
             instance.is_visible = False
             return {'FINISHED'}
@@ -396,7 +462,7 @@ def on_delete(line, column, fmt) -> None:
 def deferred_complete(toggle_description=True):
     def wrapper(ctx=_context.copy()):
         with _context.temp_override(**ctx):
-            bpy.ops.textension.suggestions_complete('INVOKE_DEFAULT', toggle_description=toggle_description)
+            bpy.ops.textension.suggestions_complete(toggle_description=toggle_description)
     utils.defer(wrapper)
 
 
@@ -503,6 +569,26 @@ def update_description(self, context):
         instance.description._update_lines()
 
 
+def update_runtime_from_prefs(self: "TEXTENSION_PG_suggestions", context):
+    settings.use_fuzzy_search = self.use_fuzzy_search
+    settings.use_ordered_fuzzy_search = self.use_ordered_fuzzy_search
+    settings.use_case_sensitive_search = self.use_case_sensitive_search
+
+    instance_cache = get_instance.__kwdefaults__["cache"]
+
+    # If an instance is already open, complete with new settings.
+    for window in _context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type != 'TEXT_EDITOR':
+                continue
+            st = area.spaces.active
+            instance = instance_cache.get(st)
+            if not instance or not instance.is_visible:
+                continue
+            with bpy.context.temp_override(space_data=st, window=window, area=area):
+                bpy.ops.textension.suggestions_complete(toggle_description=False)
+
+
 class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
     runtime = utils.namespace(
         show_general_settings=True,
@@ -522,15 +608,40 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         max=144,
         min=1,
     )
-    use_bold_matches: bpy.props.BoolProperty(
-        update=update_value("use_bold_matches"),
-        default=Suggestions.use_bold_matches,
-        name="Bold Partial Matches",
+    use_case_sensitive_search: bpy.props.BoolProperty(
+        update=update_runtime_from_prefs,
+        default=Suggestions.use_case_sensitive_search,
+        name="Match Case",
+        description="Suggestions are case-sensitive to the typed text"
+    )
+    use_fuzzy_search: bpy.props.BoolProperty(
+        update=update_runtime_from_prefs,
+        default=Suggestions.use_fuzzy_search,
+        name="Fuzzy Search",
+        description="Show completions with partial (fuzzy) matches"
+    )
+    use_ordered_fuzzy_search: bpy.props.BoolProperty(
+        update=update_runtime_from_prefs,
+        default=Suggestions.use_ordered_fuzzy_search,
+        name="Ordered Search",
+        description="Use strict fuzzy search order. \nWhen enabled, `PAIN` won't match `PINeApple`"
+    )
+    show_bold_matches: bpy.props.BoolProperty(
+        update=update_value("show_bold_matches"),
+        default=Suggestions.show_bold_matches,
+        name="Bold Matches",
+        description="Show the matching part of a completion in bold"
     )
     use_auto_font_size: bpy.props.BoolProperty(
         update=update_value("use_auto_font_size"),
         default=Suggestions.use_auto_font_size,
         name="Automatic Font Size",
+        description="Completion font size follows the editor's font size"
+    )
+    show_resize_handles: bpy.props.BoolProperty(
+        update=update_sizers,
+        name="Highlight Resizers",
+        default=True
     )
     line_padding: bpy.props.FloatProperty(
         update=update_value("line_padding"),
@@ -573,11 +684,6 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         min=0.0,
     )
 
-    show_resize_handles: bpy.props.BoolProperty(
-        update=update_sizers,
-        name="Show Resize Highlights",
-        default=True
-    )
     resizer_color: bpy.props.FloatVectorProperty(
         default=(0.38, 0.38, 0.38), **(color_default_kw | {"size": 3}),
         update=update_sizers,
@@ -743,10 +849,18 @@ def draw_settings(prefs, context, layout):
     layout.use_property_decorate = False
 
     if c := add_runtime_toggle(layout, "show_general_settings", "General"):
-        c.prop(suggestions, "use_bold_matches")
+        c.prop(suggestions, "use_case_sensitive_search")
+        c.prop(suggestions, "use_fuzzy_search")
+
+        r = c.row()
+        r.prop(suggestions, "use_ordered_fuzzy_search")
+        r.enabled = suggestions.use_fuzzy_search
+
+        c.prop(suggestions, "show_bold_matches")
         c.prop(suggestions, "show_resize_handles")
         c.separator()
         c.prop(suggestions, "use_auto_font_size")
+
         r = c.row()
         r.prop(suggestions, "fixed_font_size")
         r.enabled = not suggestions.use_auto_font_size
@@ -798,42 +912,24 @@ def draw_settings(prefs, context, layout):
 
 
 def apply_preferences():
-    preferences = Suggestions.preferences
+    p = Suggestions.preferences
+    has_prop = Suggestions.__dict__.__contains__
+    keys = list(filter(has_prop, p.bl_rna.properties.keys()))
 
-    for name in (
-        "background_color",
-        "border_color",
-        "border_width",
-        "corner_radius",
+    for name, value in zip(keys, map(p.path_resolve, keys)):
+        setattr(Suggestions, name, value)
 
-        "active_background_color",
-        "active_border_color",
-        "active_border_width",
+    Description.font_id = int(p.description_use_monospace) 
+    Description.font_size = p.description_font_size
+    Description.line_padding = p.description_line_padding
+    Description.foreground_color = p.description_foreground_color
+    Description.use_word_wrap = p.description_use_word_wrap
 
-        "hover_background_color",
-        "hover_border_color",
-        "hover_border_width",
-        
-        "scrollbar_background_color",
-        "scrollbar_border_color",
-        "scrollbar_border_width",
-
-        "scrollbar_thumb_background_color",
-        "scrollbar_thumb_border_color",
-        "scrollbar_thumb_border_width"
-    ):
-        setattr(Suggestions, name, getattr(preferences, name))
-
-    Description.use_word_wrap = preferences.description_use_word_wrap
-    Description.font_size = preferences.description_font_size
-    Description.line_padding = preferences.description_line_padding
-    Description.foreground_color = preferences.description_foreground_color
-
-    Description.font_id = int(preferences.description_use_monospace) 
+    update_runtime_from_prefs(p, _context)
 
 
 def _setup(force=False):
-    if runtime.loaded:
+    if settings.loaded:
         return
 
     if force and bpy.app.timers.is_registered(_setup):
@@ -857,12 +953,12 @@ def _setup(force=False):
     import jedi
     from . import patches
 
-    # Do not let jedi infer anonymous parameters. It's slow and useless.
+    # Do not let jedi infer anonymous parameters.
     jedi.settings.dynamic_params = False
     jedi.settings.auto_import_modules = set()
 
     patches.apply()
-    runtime.loaded = True
+    settings.loaded = True
 
 
 def enable():
