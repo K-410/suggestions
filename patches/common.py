@@ -23,15 +23,16 @@ from itertools import repeat
 from operator import attrgetter, methodcaller
 from pathlib import Path
 import types
-import functools
+
 from functools import partial
 
 from textension.utils import (
     _forwarder, _named_index, _unbound_getter, consume, falsy_noargs, inline,
      set_name, truthy_noargs, instanced_default_cache, Aggregation, starchain,
-     lazy_overwrite, namespace, _get_dict, _unbound_attrcaller, filtertrue)
+     lazy_overwrite, namespace, filtertrue, get_mro_dict)
 
-from .tools import state, get_handle, factory, is_namenode, is_basenode, ensure_blank_eol, _virtual_overrides
+from .tools import state, get_handle, factory, is_namenode, is_basenode, ensure_blank_eol
+from .. import settings
 
 import bpy
 
@@ -63,6 +64,11 @@ def add_module_redirect(virtual_module, name=None):
         assert isinstance(string_names, tuple), (string_names, virtual_module)
         name = ".".join(string_names)
     Importer_redirects[name] = virtual_module
+
+
+@inline
+def get_type_name(cls: type) -> str:
+    return type.__dict__["__name__"].__get__
 
 
 # Used by VirtualValue.py__call__ and other inference functions where we
@@ -395,20 +401,6 @@ def get_parent_scope_fast(node):
 
 
 @factory
-def get_mro_dict(obj) -> dict:
-    from textension.utils import get_dict, get_mro
-    from functools import reduce
-    from builtins import type, map, reversed, isinstance
-    from operator import or_
-
-    def get_mro_dict(obj) -> dict:
-        if not isinstance(obj, type):
-            obj = type(obj)
-        return reduce(or_, map(get_dict, reversed(get_mro(obj))))
-    return get_mro_dict
-
-
-@factory
 def get_submodule_names():
     from os import listdir
     from sys import modules
@@ -589,7 +581,7 @@ class VirtualInstance(CompiledInstance):
         yield from self.class_value.get_filters(origin_scope=origin_scope, is_instance=True)
 
     def py__call__(self, arguments):
-        return self.class_value.parent_value.virtual_call(self, arguments)
+        return self.class_value.parent_value.virtual_call(arguments, self)
 
     # Don't try to support indexing.
     def py__simple_getitem__(self, *args, **unused):
@@ -713,7 +705,7 @@ class VirtualName(Aggregation, CompiledName):
         return "instance"
 
     def __repr__(self):
-        cls_name = type.__dict__["__name__"].__get__(self.__class__)
+        cls_name = get_type_name(self.__class__)
         return f"{cls_name}({self.parent_value._get_object_name()}.{self.string_name})"
 
 
@@ -731,27 +723,22 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
     inference_state = state
     instance_cls = VirtualInstance
 
-
     obj                          = _named_index(0)
     parent_value: "VirtualValue" = _named_index(1)
 
-    # If inferred from a parent value, ``derived_name`` holds the member name.
-    _derived_name: str           = _named_index(2)
-
-    def virtual_call(self, instance, arguments):
-        print("VirtualValue.virtual_call", instance, arguments)
-        return NO_VALUES
-
-    @property
-    def derived_name(self):
-        if len(self) > 2:
-            return self[2]
-        return ""
+    def virtual_call(self, arguments, instance=None):
+        if instance:
+            return NO_VALUES
+        return Values((self.as_instance(arguments),))
 
     @inline
     def __init__(self, elements):
         """elements: A tuple of object and parent value."""
         return Aggregation.__init__
+
+    @inline
+    def py__call__(self, arguments=NoArguments):
+        return _forwarder("virtual_call")
 
     @property
     def access_handle(self):
@@ -779,10 +766,6 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
             return self.obj.__name__
         except:
             return None
-        # return "VirtualValue.py__name__ (override me)"
-
-    def py__call__(self, arguments=NoArguments):
-        return Values((self.as_instance(arguments),))
 
     def get_qualified_names(self):
         return ()
@@ -945,7 +928,7 @@ class interpreter(Script):
         line, column = text.cursor_focus
         return Completion(
             state, self.context, self._code_lines, (line + 1, column),
-            self.get_signatures, fuzzy=False).complete()
+            self.get_signatures, fuzzy=settings.use_fuzzy_search).complete()
 
 
 def complete(text):
