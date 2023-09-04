@@ -5,14 +5,14 @@ from jedi.inference.value.iterable import FakeList, FakeTuple, LazyKnownValue
 from jedi.inference.lazy_value import LazyKnownValues, NO_VALUES
 from jedi.inference.signature import AbstractSignature
 
-from itertools import chain, repeat
+from itertools import repeat
 from operator import attrgetter
 from inspect import Parameter
 
-from textension.utils import _context, _forwarder, inline, starchain, get_dict
+from textension.utils import _context, _forwarder, inline, starchain, get_dict, get_mro_dict
 
 from ._mathutils import float_subtypes, MathutilsValue
-from ..common import Values, NoArguments, get_mro_dict
+from ..common import Values, NoArguments, get_type_name
 from ..tools import runtime, state, make_compiled_value, make_instance
 
 import bpy
@@ -21,8 +21,6 @@ import types
 from .. import common
 
 from bpy_types import RNAMeta, StructRNA
-from functools import partial
-from operator import is_
 
 
 rnadef_types = bpy.types.Property, bpy.types.Function
@@ -71,11 +69,6 @@ def is_bpy_struct(obj) -> bool:
 
 
 @inline
-def is_bpy_struct_identity(obj) -> bool:
-    return partial(is_, StructRNA)
-
-
-@inline
 def is_id(obj) -> bool:
     return bpy.types.ID.__instancecheck__
 
@@ -88,11 +81,6 @@ def is_bpy_struct_subclass(obj) -> bool:
 @inline
 def is_property_deferred(obj) -> bool:
     return bpy.props._PropertyDeferred.__instancecheck__
-
-
-@inline
-def get_type_name(obj) -> str:
-    return type.__dict__["__name__"].__get__
 
 
 @inline
@@ -251,9 +239,9 @@ property_instance_map = {
 }
 
 
-def get_rna_value(obj, parent_value, name=""):
+def get_rna_value(obj, parent_value):
     if is_property_deferred(obj):
-        return common.VirtualValue((get_bpy_type(obj.function.__name__), parent_value, name))
+        return common.VirtualValue((get_bpy_type(obj.function.__name__), parent_value))
 
     # ``bpy.context`` interception.
     if not isinstance(obj, type) and obj.as_pointer() == context_rna_pointer:
@@ -263,28 +251,26 @@ def get_rna_value(obj, parent_value, name=""):
     if is_blend_data(obj) and obj != obj.bl_rna:
         return runtime.data_rna
 
-    if name == "bl_rna":
-        obj = bpy.types.Struct.bl_rna
-    return RnaValue((obj.bl_rna, parent_value, name))
+    return RnaValue((obj.bl_rna, parent_value))
 
 
-def rnadef_to_value(rnadef, parent, name=""):
+def rnadef_to_value(rnadef, parent):
     if is_bpy_func(rnadef):
         return RnaFunction((rnadef, parent))
     
     type = rnadef.type
 
     if type == 'POINTER':
-        return get_rna_value(rnadef.fixed_type, parent, name)
+        return get_rna_value(rnadef.fixed_type, parent)
 
     elif type == 'COLLECTION':
-        return PropCollectionValue((rnadef, parent, name))
+        return PropCollectionValue((rnadef, parent))
     
     # Possible vector type strings: INT, FLOAT, BOOLEAN
     if type not in {'STRING', 'ENUM'} and (rnadef.is_array or rnadef.array_length):
 
         if rnadef.subtype in float_subtypes:
-            return MathutilsValue((float_subtypes[rnadef.subtype], parent, name))
+            return MathutilsValue((float_subtypes[rnadef.subtype], parent))
 
         return PropArrayValue((rna_py_types[type], parent))
 
@@ -308,82 +294,44 @@ def rna_fallback_value(parent, name):
     if overrides := rna_fallbacks.get(parent.name.string_name):
         if rtype := overrides.get(name):
             # TODO: Still needs implementation.
-            v = LazyKnownValue(get_rna_value(bpy.types.Object, parent, name))
+            v = LazyKnownValue(get_rna_value(bpy.types.Object, parent))
             return Values((FakeTuple(state, [v]),))
 
 
 # An RnaName doesn't have to infer to an RnaValue. It just means the name
 # is an RnaValue member name.
 class RnaName(common.VirtualName):
-    # TODO: This is duplicate code of RnaValue.infer_name.
-    def infer(self):
-        parent = self.parent_value
-        members = parent.members
-        name_str  = self.string_name
-        if name_str not in members:
-            # print(f"RnaName.infer(): '{name_str}' not in members of {parent}.")
-            return NO_VALUES
-
-        obj = members[name_str]
-
-        if is_rna_context_instance(parent) and isinstance(obj, type):
-            if isinstance(obj, types.GenericAlias):
-                v, = get_rna_value(obj.__args__[0].bl_rna, parent).py__call__(NoArguments)
-                return Values((FakeList(state, [LazyKnownValue(v)]),))
-
-            value = get_rna_value(obj.bl_rna, parent, name_str)
-
-        elif isinstance(obj, rnadef_types):
-            value = rnadef_to_value(obj, parent, name_str) or make_compiled_value(obj, parent.as_context())
-
-        elif name_str == "id_data":
-            value = get_rna_id_data(parent)
-
-        elif tmp := rna_fallback_value(parent, name_str):
-            value = tmp
-
-        elif name_str == "bl_rna":
-            return Values((get_rna_value(obj, parent),))
-
-        else:
-            return Values((make_compiled_value(obj, parent.as_context()),))
-        return value.py__call__(NoArguments)
-
     def py__doc__(self):
-        identifier = self.string_name
+        name = self.string_name
 
         # ``bl_rna`` as a rnadef is defined on bpy.types.Struct.
-        if identifier == "bl_rna":
+        if name == "bl_rna":
             return bpy.types.Struct.bl_rna.description
 
-        for base in self.parent_value.py__mro__():
-            if is_rna_value(base):
-                obj = base.obj
-                if isinstance(base, PropCollectionValue) and obj.srna:
+        for value in self.parent_value.py__mro__():
+            if is_rna_value(value):
+                obj = value.obj
+                if isinstance(value, PropCollectionValue) and obj.srna:
                     obj = obj.srna
                 for rnadef_dict in get_rnadefs(obj.bl_rna):
-                    if identifier in rnadef_dict:
-                        return rnadef_dict[identifier].description
+                    if name in rnadef_dict:
+                        return rnadef_dict[name].description
                 
                 # The member might be defined on the class and not in rna.
-                rna_cls = type(base.obj)
-                if identifier in rna_cls.__dict__:
-                    member_obj = rna_cls.__dict__[identifier]
-                    if doc := getattr(member_obj, "__doc__", None):
+                if member := type(obj).__dict__.get(name):
+                    if doc := getattr(member, "__doc__", None):
                         if isinstance(doc, str):
                             return doc
 
-            elif isinstance(base, CompiledValue):
-                obj = base.access_handle.access._obj
-                if is_bpy_struct_identity(obj):
-                    if identifier in bpy_struct_magic:
-                        member = bpy_struct_magic[identifier]
+            elif isinstance(value, CompiledValue) and name in bpy_struct_magic:
+                if value.access_handle.access._obj is StructRNA:
+                    member = bpy_struct_magic[name]
 
-                        if is_string(member):
-                            return member
-                        if doc := getattr(member, "__doc__", None):
-                            if is_string(doc):
-                                return doc
+                    if is_string(member):
+                        return member
+                    if doc := getattr(member, "__doc__", None):
+                        if is_string(doc):
+                            return doc
         return ""
 
 
@@ -409,7 +357,7 @@ class RnaInstance(common.VirtualInstance):
 
             for rnadef in self.class_value.obj.parameters:
                 if rnadef.is_output:
-                    return rnadef_to_value(rnadef, self.class_value, self.class_value.derived_name).py__call__(arguments)
+                    return rnadef_to_value(rnadef, self.class_value).py__call__(arguments)
         print("RnaInstance.py__call__ returned nothing for", self)
         return NO_VALUES
 
@@ -445,7 +393,7 @@ class RnaValue(common.VirtualValue):
     instance_cls = RnaInstance
 
     def infer_name(self, name: common.VirtualName):
-        name_str  = name.string_name
+        name_str = name.string_name
         members = self.members
 
         if name_str not in members:
@@ -456,13 +404,13 @@ class RnaValue(common.VirtualValue):
 
         if is_rna_context_instance(self) and isinstance(obj, type):
             if isinstance(obj, types.GenericAlias):
-                v, = get_rna_value(obj.__args__[0].bl_rna, self, name_str).py__call__(NoArguments)
+                v, = get_rna_value(obj.__args__[0].bl_rna, self).py__call__(NoArguments)
                 return Values((FakeList(state, [LazyKnownValue(v)]),))
 
-            value = get_rna_value(obj.bl_rna, self, name_str)
+            value = get_rna_value(obj.bl_rna, self)
 
-        elif isinstance(obj, rnadef_types):
-            value = rnadef_to_value(obj, self, name_str) or make_compiled_value(obj, self.as_context())
+        elif isinstance(obj, rnadef_types) and obj.rna_type != bpy.types.Struct.bl_rna:
+            value = rnadef_to_value(obj, self)
 
         elif name_str == "id_data":
             value = get_rna_id_data(self)
@@ -471,12 +419,13 @@ class RnaValue(common.VirtualValue):
             value = tmp
 
         elif name_str == "bl_rna":
-            return Values((get_rna_value(obj, self, name_str),))
+            return Values((get_rna_value(bpy.types.Struct, self),))
 
         else:
             if callable(obj):
                 return Values((make_compiled_value(obj, self.as_context()),))
-            print(f"RnaValue.infer_name(): '{name}' of {self} could not be inferred.")
+            
+            # Potentially magic methods. This is not worth inferring.
             return NO_VALUES
         return value.py__call__(NoArguments)
 
