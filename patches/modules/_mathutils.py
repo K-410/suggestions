@@ -64,13 +64,6 @@ class MathutilsValue(VirtualValue):
                 return True
         return False
 
-    def py__doc__(self):
-        from ._bpy_types import is_rna_value
-        if is_rna_value(self.parent_value):
-            if rnadef := self.parent_value.obj.properties.get(self.derived_name):
-                return rnadef.description
-        return ""
-
     def py__simple_getitem__(self, index):
         if self.obj == Vector:
             return Values((common.cached_builtins.float,))
@@ -88,10 +81,10 @@ class MathutilsValue(VirtualValue):
 
         return super().py__getattribute__(name, name_context, position, analysis_errors)
 
-    def virtual_call(self, instance, arguments):
-        if instance.class_value.obj.__name__ == "__matmul__":
+    def virtual_call(self, arguments, instance=None):
+        if instance and instance.class_value.obj.__name__ == "__matmul__":
             return infer_matmul(self, arguments)
-        return NO_VALUES
+        return super().virtual_call(arguments, instance)
 
 
 # Support Matrix.row and Matrix.col subscript and iteration.
@@ -229,12 +222,14 @@ descriptor_data = (
 
 )
 
+virtual_overrides = (
+    *((x, MathutilsValue) for x in (Vector, Euler, Matrix, Quaternion)),
+    *((x, MatrixAccessValue) for x in (Matrix.row, Matrix.col))
+)
+
 
 def apply():
     tools._add_rtype_overrides(rtype_data)
     tools._add_descriptor_overrides(descriptor_data)
 
-    tools.add_value_override(Vector, MathutilsValue)
-    tools.add_value_override(Matrix, MathutilsValue)
-    tools.add_value_override(Matrix.row, MatrixAccessValue)
-    tools.add_value_override(Matrix.col, MatrixAccessValue)
+    tools.add_virtual_overrides(virtual_overrides)
