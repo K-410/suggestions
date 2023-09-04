@@ -48,6 +48,7 @@ def _apply_patches():
     patch_AbstractContext_check_for_additional_knowledge()
     patch_DirectAccess_key_errors()
     patch_parse_function_doc()
+    patch_SignatureMixin_to_string()
 
 
 def _apply_optimizations():
@@ -769,3 +770,46 @@ def patch_parse_function_doc():
         return param_str, ret
 
     _patch_function(_parse_function_doc, parse_function_doc)
+
+
+# Patches ``to_string`` to give a more sane signature.
+# No one cares about positional/keyword delimiter noise in parameters.
+def patch_SignatureMixin_to_string():
+    from jedi.inference.signature import _SignatureMixin
+    from inspect import Parameter
+
+    POSITIONAL_ONLY = Parameter.POSITIONAL_ONLY
+    VAR_POSITIONAL = Parameter.VAR_POSITIONAL
+    KEYWORD_ONLY = Parameter.KEYWORD_ONLY
+
+    def to_string(self: _SignatureMixin):
+        string_name = self.name.string_name
+
+        if self.name.api_type == "module":
+            return f"Module '{string_name}'"
+
+        param_strings = []
+        is_kw_only = False
+        is_positional = False
+
+        for n in self.get_param_names(resolve_stars=True):
+            kind = n.get_kind()
+            is_positional |= kind == POSITIONAL_ONLY
+
+            if is_positional and kind != POSITIONAL_ONLY:
+                is_positional = False
+
+            if kind == VAR_POSITIONAL:
+                is_kw_only = True
+
+            elif kind == KEYWORD_ONLY and not is_kw_only:
+                is_kw_only = True
+
+            param_strings += n.to_string(),
+
+        s = f"{string_name}({', '.join(param_strings)})"
+        if annotation := self.annotation_string:
+            s += " -> " + annotation
+        return s
+
+    _SignatureMixin.to_string = to_string
