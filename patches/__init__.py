@@ -47,6 +47,7 @@ def _apply_patches():
     patch_cache_signatures()
     patch_AbstractContext_check_for_additional_knowledge()
     patch_DirectAccess_key_errors()
+    patch_parse_function_doc()
 
 
 def _apply_optimizations():
@@ -742,3 +743,29 @@ def patch_DirectAccess_key_errors():
     # AccessHandle.py__path__ = py__path__
 
     AccessHandle.__getattr__ = _forwarder("access.__getattribute__")
+
+
+# Because it's broken. ``func(arg=-1)`` becomes ``func(arg=_1)``.
+def patch_parse_function_doc():
+    from jedi.inference.compiled.value import _parse_function_doc, docstr_defaults
+    import re
+    ret_match = re.compile(r'(,\n|[^\n-])+').match
+
+    def parse_function_doc(doc: str):
+        param_str = ""
+        ret = ""
+        end = -1
+
+        if start := doc.find("(") + 1:
+            end = doc.find(")", start)
+            if end is not -1:
+                param_str = doc[start:end]
+                end = doc.find("-> ", end)
+                if end is not -1:
+                    ret_str = ret_match(doc, start + 3).group(0).strip()
+                    # New object -> object()
+                    ret_str = re.sub(r'[nN]ew (.*)', r'\1()', ret_str)
+                    ret = docstr_defaults.get(ret_str, ret_str)
+        return param_str, ret
+
+    _patch_function(_parse_function_doc, parse_function_doc)
