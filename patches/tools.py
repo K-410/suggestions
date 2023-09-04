@@ -270,23 +270,19 @@ def make_compiled_value(obj, context):
     return create_cached_compiled_value(state, handle, context)
 
 
-def make_compiled_name(obj, context, name):
-    value = make_compiled_value(obj, context)
-    return CompiledValueName(value, name)
-
-
 def make_instance(obj, context, arguments=None):
     value = make_compiled_value(obj, context)
     return CompiledInstance(state, context, value, arguments)
 
 
-def make_instance_name(obj, context, name):
-    instance = make_instance(obj, context)
-    return CompiledValueName(instance, name)
+def set_virtual_override(obj: object, virtual_type: type):
+    """Set a single override."""
+    _virtual_overrides[obj] = virtual_type
 
 
-def add_value_override(obj, virtual_value_class):
-    _virtual_overrides[obj] = virtual_value_class
+def add_virtual_overrides(overrides: tuple[tuple[object, type]]):
+    """Add a sequence of tuple pairs of object and virtual value type."""
+    _virtual_overrides.update(overrides)
 
 
 def ensure_blank_eol(lines: list[str]):
