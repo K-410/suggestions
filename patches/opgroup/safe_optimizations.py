@@ -56,7 +56,6 @@ def apply():
     optimize_pickling()
     optimize_LazyTreeValue_infer()
     optimize_LazyInstanceClassName()
-    optimize_get_module_info()
     optimize_tree_name_to_values()
     optimize_infer_expr_stmt()
     optimize_ClassMixin_py__mro__()
@@ -72,7 +71,6 @@ def apply():
     optimize_is_annotation_name()
     optimize_apply_decorators()
     optimize_GenericClass()
-    optimize_get_executed_param_names_and_issues()
     optimize_SequenceLiteralValue()
     optimize_AccessHandle_get_access_path_tuples()
     optimize_safe_literal_eval()
@@ -972,45 +970,6 @@ def optimize_LazyInstanceClassName():
     InstanceClassFilter._convert = _convert
 
 
-# Optimize get_module_info to use already-imported modules if they exist, in
-# order to avoid invoking the import machinery which isn't actually cheap.
-def optimize_get_module_info():
-    from jedi.inference.compiled.subprocess.functions import get_module_info, _find_module
-    from jedi.file_io import KnownContentFileIO
-    from types import ModuleType
-    import sys
-
-    modules = sys.modules
-    module_getattr = ModuleType.__getattribute__
-
-    def _get_module_info(inference_state, sys_path=None, full_name=None, **kwargs):
-        if full_name in modules:
-            try:
-                spec = module_getattr(modules[full_name], "__spec__")
-                path = spec.origin
-
-                if path.endswith(".py"):
-                    with open(path, "rb") as f:
-                        content = f.read()
-                    return KnownContentFileIO(path, content), bool(spec.submodule_search_locations)
-            except:
-                pass
-
-        temp = sys.path
-        if sys_path is not None:
-            sys.path = sys_path
-
-        try:
-            return _find_module(full_name=full_name, **kwargs)
-        except ImportError:
-            return None, None
-        finally:
-            if sys_path is not None:
-                sys.path = temp
-
-    _patch_function(get_module_info, _get_module_info)
-
-
 def optimize_tree_name_to_values():
     from jedi.inference.syntax_tree import tree_name_to_values
     from ..common import state_cache_default, Values
@@ -1613,148 +1572,6 @@ def optimize_GenericClass():
         return self._class_value
 
     GenericClass._wrapped_value = _wrapped_value
-
-
-def optimize_get_executed_param_names_and_issues():
-    from jedi.inference.value.iterable import FakeTuple, FakeDict
-    from jedi.inference.lazy_value import LazyKnownValue, LazyUnknownValue
-    from jedi.inference.analysis import add as add_analysis
-    from jedi.inference.param import get_executed_param_names_and_issues, _error_argument_count, _add_argument_issue
-    from parso.python.tree import Name, Operator, Param, Function
-    from collections import deque
-    from ..common import AggregateExecutedParamName, AggregateLazyTreeValue
-
-    is_param = Param.__instancecheck__
-
-    def _get_executed_param_names_and_issues(function_value, arguments):
-        def too_many_args(argument):
-            _issues = issues
-            m = _error_argument_count(funcdef, arglen)
-            if arguments.get_calling_nodes():
-                _issues += _add_argument_issue('type-error-too-many-arguments', argument, message=m),
-            else:
-                _issues += None,
-
-        issues = []
-        param_dict = {}
-        result_params = []
-        funcdef = function_value.tree_node
-        default_param_context = function_value.get_default_param_context()
-
-        unpacked_va = list(arguments.unpack(funcdef))
-        arglen = len(unpacked_va)
-
-        arg_deque = deque(unpacked_va)
-        
-        non_matching_keys = {}
-        keys_used = {}
-        keys_only = False
-        had_multiple_value_error = False
-
-        if funcdef.__class__ is Function:
-            nodes = funcdef.children[2].children
-        else:
-            nodes = funcdef.children[1:-2]
-        
-        for param in filter(is_param, nodes):
-
-            # Inlined from optimized ``Param.name``.
-            name = param.children[0]
-            cls = name.__class__
-            if cls is not Name:
-                if cls is Operator and name.value in "**":  # Could be star unpack.
-                    name = param.children[1]
-                if name.type == "tfpdef":  # Could also be nested after operator.
-                    name = name.children[0]
-            param_name = name.value
-            param_dict[param_name] = param
-
-            is_default = False
-            key = None
-            argument = None
-
-            while arg_deque:
-                key, argument = arg_deque[0]
-                del arg_deque[0]
-                if not key:
-                    break
-
-                keys_only = True
-                if key in param_dict:
-                    key_param = param_dict[key]
-                    if key in keys_used:
-                        had_multiple_value_error = True
-                        m = ("TypeError: %s() got multiple values for keyword argument '%s'."
-                            % (funcdef.name, key))
-                        for contextualized_node in arguments.get_calling_nodes():
-                            issues += add_analysis(contextualized_node.context,
-                                'type-error-multiple-values', contextualized_node.node, message=m),
-                    else:
-                        keys_used[key] = AggregateExecutedParamName((function_value, arguments, key_param, argument, False))
-                else:
-                    non_matching_keys[key] = argument
-
-            if param_name in keys_used:
-                result_params += keys_used[param_name],
-                continue
-
-            if param.children[0].__class__ is Operator and param.children[0].value in "**":
-                if len(param.children[0].value) == 1:
-                    lazy_value_list = []
-                    if argument:
-                        lazy_value_list += argument,
-                        while arg_deque and not arg_deque[0][0]:
-                            key, argument = arg_deque[0]
-                            del arg_deque[0]
-                            lazy_value_list += argument,
-                    seq = FakeTuple(function_value.inference_state, lazy_value_list)
-                    result_arg = LazyKnownValue(seq)
-                else:
-                    if argument:
-                        too_many_args(argument)
-                    dct = FakeDict(function_value.inference_state, dict(non_matching_keys))
-                    result_arg = LazyKnownValue(dct)
-                    non_matching_keys = {}
-            elif argument:
-                result_arg = argument
-
-            elif default := param.default:
-                result_arg = AggregateLazyTreeValue((default_param_context, default))
-                is_default = True
-            else:
-                result_arg = LazyUnknownValue()
-                if not keys_only:
-                    for contextualized_node in arguments.get_calling_nodes():
-                        m = _error_argument_count(funcdef, arglen)
-                        issues += add_analysis(
-                            contextualized_node.context,
-                            'type-error-too-few-arguments',
-                            contextualized_node.node,
-                            message=m),
-
-            result_params += AggregateExecutedParamName((function_value, arguments, param, result_arg, is_default)),
-            if result_arg.__class__ is not LazyUnknownValue:
-                keys_used[param_name] = result_params[-1]
-
-        if keys_only:
-            for k in param_dict.keys() - keys_used.keys():
-                param = param_dict[k]
-
-                if not (non_matching_keys or had_multiple_value_error or param.star_count or param.default):
-                    for contextualized_node in arguments.get_calling_nodes():
-                        m = _error_argument_count(funcdef, arglen)
-                        issues += add_analysis(contextualized_node.context,
-                            'type-error-too-few-arguments', contextualized_node.node, message=m),
-
-        for key, lazy_value in non_matching_keys.items():
-            m = "TypeError: %s() got an unexpected keyword argument '%s'." % (funcdef.name, key)
-            issues += _add_argument_issue('type-error-keyword-argument', lazy_value, message=m),
-
-        if arg_deque:
-            too_many_args(arg_deque[0][1])
-        return result_params, issues
-
-    _patch_function(get_executed_param_names_and_issues, _get_executed_param_names_and_issues)
 
 
 def optimize_SequenceLiteralValue():
