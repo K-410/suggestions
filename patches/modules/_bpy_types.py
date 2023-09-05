@@ -26,17 +26,11 @@ from bpy_types import RNAMeta, StructRNA
 rnadef_types = bpy.types.Property, bpy.types.Function
 rna_types = RNAMeta, StructRNA
 
-
 bpy_struct_magic = {}
 rna_fallbacks = {}
 
-
 context_rna_pointer = _context.as_pointer()
 _void = object()
-
-
-get_rna_properties = attrgetter("bl_rna.properties")
-get_identifier = attrgetter("identifier")
 
 
 def apply():
@@ -108,8 +102,22 @@ def is_blend_data(obj) -> bool:
 
 
 @inline
+def is_compiled_value(obj) -> bool:
+    return CompiledValue.__instancecheck__
+
+
+@inline
 def get_bpy_type(obj):
     return bpy.types.__getattribute__
+
+
+@inline
+def get_rna_dict(rna) -> dict:
+    get_rnadefs = attrgetter("functions", "properties")
+    prop_collection_items = bpy.types.bpy_prop_collection.items
+    def get_rna_dict(rna) -> dict:
+        return dict(starchain(map(prop_collection_items, get_rnadefs(rna))))
+    return get_rna_dict
 
 
 # See doc/python_api/sphinx_doc_gen.py.
@@ -220,7 +228,7 @@ context_type_map = {
 }
 
 global_context = set(
-    map(get_identifier(map(get_rna_properties(bpy.types.Context)))))
+    rnadef.identifier for rnadef in bpy.types.Context.bl_rna.properties)
 
 extended_context = context_type_map.keys() | global_context
 
@@ -340,19 +348,21 @@ class RnaName(common.VirtualName):
         for value in self.parent_value.py__mro__():
             if is_rna_value(value):
                 obj = value.obj
-                if isinstance(value, PropCollectionValue) and obj.srna:
+                if is_prop_collection_value(value) and obj.srna:
                     obj = obj.srna
-                for rnadef_dict in get_rnadefs(obj.bl_rna):
-                    if name in rnadef_dict:
-                        return rnadef_dict[name].description
+
+                # The member is defined in rna.
+                if rnadef := get_rna_dict(obj).get(name):
+                    return rnadef.description
                 
-                # The member might be defined on the class and not in rna.
-                if member := type(obj).__dict__.get(name):
+                # The member is defined on the type or any of its bases.
+                if member := get_mro_dict(obj).get(name):
                     if doc := getattr(member, "__doc__", None):
-                        if isinstance(doc, str):
+                        if is_string(doc):
                             return doc
 
-            elif isinstance(value, CompiledValue) and name in bpy_struct_magic:
+            # The member is defined in bpy_struct.
+            elif is_compiled_value(value) and name in bpy_struct_magic:
                 if value.access_handle.access._obj is StructRNA:
                     member = bpy_struct_magic[name]
 
@@ -392,7 +402,7 @@ class RnaInstance(common.VirtualInstance):
 
     # Implements subscript for bpy_prop_collections.
     def py__simple_getitem__(self, index):
-        if isinstance(self.class_value, PropCollectionValue):
+        if is_prop_collection_value(self.class_value):
             srna = self.class_value.obj.fixed_type
             if srna == bpy.types.Property.bl_rna:
                 value = RnaPropertyComposite((srna, self.class_value))
@@ -411,10 +421,6 @@ class RnaInstance(common.VirtualInstance):
 
     def __repr__(self):
         return f"RnaInstance({self.class_value.obj.identifier})"
-
-
-prop_collection_items = bpy.types.bpy_prop_collection.items
-get_rnadefs = attrgetter("functions", "properties")
 
 
 # RNA value created from struct RNA definition.
@@ -487,8 +493,7 @@ class RnaValue(common.VirtualValue):
         return self.obj.identifier
 
     def get_members(self):
-        rna = self.obj.bl_rna
-        return get_mro_dict(rna) | dict(starchain(map(prop_collection_items, get_rnadefs(rna))))
+        return get_mro_dict(self.obj) | get_rna_dict(self.obj)
 
     def __repr__(self):
         return f"{get_type_name(self.__class__)}({self.obj.identifier})"
@@ -541,8 +546,7 @@ class RnaPropertyComposite(RnaValue):
     def get_members(self):
         comp = {}
         for cls in self.obj.bl_rna.__class__.__subclasses__():
-            rna = cls.bl_rna
-            comp |= get_mro_dict(cls.bl_rna) | dict(starchain(map(prop_collection_items, get_rnadefs(rna))))
+            comp |= get_rna_dict(cls.bl_rna)
         return comp
 
 
@@ -701,8 +705,8 @@ class PropArrayValue(common.VirtualValue):
 class PropCollectionValue(RnaValue):
     def get_members(self):
         mapping = get_mro_dict(bpy.types.bpy_prop_collection)
-        if srna := self.obj.srna:
-            mapping |= dict(starchain(map(prop_collection_items, get_rnadefs(srna))))
+        if self.obj.srna:
+            mapping |= get_rna_dict(self.obj.srna)
         return mapping
 
 
@@ -779,6 +783,11 @@ class ContextInstance(RnaInstance):
 @inline
 def is_rna_context_instance(obj) -> bool:
     return ContextInstance.__instancecheck__
+
+
+@inline
+def is_prop_collection_value(obj) -> bool:
+    return PropCollectionValue.__instancecheck__
 
 
 class NonScreenContextName(RnaName):
