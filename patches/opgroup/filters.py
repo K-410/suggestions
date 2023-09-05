@@ -1,13 +1,12 @@
 # This module implements optimizations for various filters and stubs.
 from jedi.inference.compiled.getattr_static import getattr_static
 from jedi.inference.compiled.access import ALLOWED_DESCRIPTOR_ACCESS
-from jedi.inference.compiled.value import CompiledName
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter
 from jedi.inference.value.klass import ClassFilter
 
 from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder
-from ..common import _check_flows, state_cache, Values, AggregateStubName
-from ..tools import is_basenode, is_namenode, state
+from ..common import _check_flows, AggregateStubName
+from ..tools import is_basenode, is_namenode
 from itertools import repeat
 
 
@@ -59,46 +58,13 @@ def is_allowed_getattr(obj, name):
     return True, False
 
 
-# CompiledName, but better.
-# - Tuple-initialized to skip the construction overhead
-# - Getattr static happens only when we actually need it.
-class DeferredCompiledName(tuple, CompiledName):
-    __init__ = object.__init__
-    
-    _inference_state = state
-
-    _parent_value  = _named_index(0)
-    string_name    = _named_index(1)
-
-    @property
-    def parent_context(self):
-        return self._parent_value.as_context()
-
-    def py__doc__(self):
-        if value := self.infer_compiled_value():
-            return value.py__doc__()
-        return ""
-
-    @property
-    def api_type(self):
-        if value := self.infer_compiled_value():
-            return value.api_type
-        return "unknown"  # XXX: Not really valid.
-
-    def infer(self):
-        has_attribute, is_descriptor = is_allowed_getattr(self._parent_value, self.string_name)
-        return Values((self.infer_compiled_value(),))
-
-    infer_compiled_value = state_cache(CompiledName.infer_compiled_value.__closure__[0].cell_contents)
-
-
 # Optimizes ``values`` to not access attributes off a compiled value when
 # converting them into names. Instead they are read only when inferred.
 def optimize_CompiledValueFilter():
-    from jedi.inference.compiled.value import CompiledValueFilter, EmptyCompiledName
+    from jedi.inference.compiled.value import CompiledValueFilter
     from itertools import repeat
+    from ..common import state_cache, AggregateCompiledName
     from builtins import dir
-    from ..common import state_cache, state_cache_kw
 
     def cached_dir(obj):
         try:
@@ -112,17 +78,10 @@ def optimize_CompiledValueFilter():
     def values(self: CompiledValueFilter):
         value = self.compiled_value
         sequences = zip(repeat(value), cached_dir(value.access_handle.access._obj))
-        # Note: type completions is not added, because why would we?
-        return list(map(DeferredCompiledName, sequences))
+        # NOTE: type completions is not added, because why would we on a compiled value?
+        return list(map(AggregateCompiledName, sequences))
 
-    @state_cache_kw
-    def _get_cached_name(self: CompiledValueFilter, name, is_empty=False, is_descriptor=False):
-        if is_empty:
-            return EmptyCompiledName(self._inference_state, name)
-        return DeferredCompiledName((self.compiled_value, name))
-        
     CompiledValueFilter.values = values
-    CompiledValueFilter._get_cached_name = _get_cached_name
 
 
 # Optimizes SelfAttributeFilter.values to exclude stubs and limit the search

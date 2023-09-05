@@ -10,16 +10,17 @@ from jedi.inference.arguments import AbstractArguments, TreeArguments
 from jedi.inference.compiled import builtin_from_name
 
 from jedi.inference.context import CompiledContext, GlobalNameFilter
+from jedi.inference.imports import Importer
 from jedi.inference.param import ExecutedParamName
 from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
 from jedi.inference.names import TreeNameDefinition, NO_VALUES, ValueSet, StubName
 from jedi.inference.value import CompiledInstance, ModuleValue
 from parso.python.tree import Name
-from parso.tree import BaseNode
 from parso.file_io import KnownContentFileIO
 from jedi.file_io import FileIOFolderMixin
-from jedi.api import Script, Completion
+from parso.tree import search_ancestor, BaseNode
 from itertools import repeat
+from jedi.api import Script, Completion
 from operator import attrgetter, methodcaller
 from pathlib import Path
 import types
@@ -398,6 +399,38 @@ def get_parent_scope_fast(node):
                     break
             scope = scope.parent
     return scope
+
+
+@inline
+def get_fget(property_obj):
+    return property.__dict__["fget"].__get__
+
+
+def infer_descriptor(property_obj, context):
+
+    # Defensive programming here would be unreadable.
+    try:
+        func = get_fget(property_obj)
+        import_names = tuple(func.__module__.split("."))
+        module, = Importer(state, import_names, context).follow()
+
+        # Jedi uses 1-based.
+        line = func.__code__.co_firstlineno + 1
+        for name in module.tree_node.get_used_names().get(func.__name__, ()):
+            if name.line != line:
+                continue
+
+            context = module.as_context()
+            cls_name = search_ancestor(name, "classdef").children[1]
+            cls_val, = tree_name_to_values(state, context, cls_name)
+            func_val, = tree_name_to_values(state, context, name)
+
+            instance, = cls_val.execute(NoArguments)
+            descriptor_val, = func_val.py__get__(instance, None)
+            return descriptor_val
+    except:
+        pass
+    return None
 
 
 @factory
@@ -1081,3 +1114,34 @@ class AggregateSelfName(Aggregation, SelfName):
     _instance     = _named_index(0)
     class_context = _named_index(1)
     tree_name     = _named_index(2)
+
+
+
+# CompiledName, but better.
+# - Tuple-initialized to skip the construction overhead
+# - Getattr static happens only when we actually need it.
+class AggregateCompiledName(Aggregation, CompiledName):
+    _inference_state = state
+
+    _parent_value  = _named_index(0)
+    string_name    = _named_index(1)
+
+    @property
+    def parent_context(self):
+        return self._parent_value.as_context()
+
+    def py__doc__(self):
+        for value in self.infer():
+            return value.py__doc__()
+        return ""
+
+    @property
+    def api_type(self):
+        for value in self.infer():
+            return value.api_type
+        return "instance"
+
+    @state_cache
+    @inline
+    def infer_compiled_value(self):
+        return CompiledName.infer_compiled_value.__closure__[0].cell_contents

@@ -49,6 +49,7 @@ def _apply_patches():
     patch_DirectAccess_key_errors()
     patch_parse_function_doc()
     patch_SignatureMixin_to_string()
+    patch_CompiledValueFilter_get_cached_name()
 
 
 def _apply_optimizations():
@@ -813,3 +814,23 @@ def patch_SignatureMixin_to_string():
         return s
 
     _SignatureMixin.to_string = to_string
+
+
+# Jedi doesn't infer property objects, because it doesn't know how, I guess?
+# Well this kind of does, at least if the decoratee is a FunctionType.
+def patch_CompiledValueFilter_get_cached_name():
+    from jedi.inference.compiled.getattr_static import getattr_static
+    from jedi.inference.compiled.value import CompiledValueFilter, EmptyCompiledName
+    from .common import state_cache_kw, AggregateCompiledName, infer_descriptor
+
+    @state_cache_kw
+    def _get_cached_name(self: CompiledValueFilter, name, is_empty=False, is_descriptor=False):
+        if is_empty:
+            obj = self.compiled_value.access_handle.access._obj
+            attr, is_get_descriptor = getattr_static(obj, name)
+            if is_get_descriptor:
+                if value := infer_descriptor(attr, self.compiled_value.parent_context):
+                    return value.name
+            return EmptyCompiledName(self._inference_state, name)
+        return AggregateCompiledName((self.compiled_value, name))
+    CompiledValueFilter._get_cached_name = _get_cached_name
