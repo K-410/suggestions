@@ -35,6 +35,10 @@ context_rna_pointer = _context.as_pointer()
 _void = object()
 
 
+get_rna_properties = attrgetter("bl_rna.properties")
+get_identifier = attrgetter("identifier")
+
+
 def apply():
     patch_AnonymousParamName_infer()
 
@@ -215,6 +219,10 @@ context_type_map = {
     "world": ("World", False),
 }
 
+global_context = set(
+    map(get_identifier(map(get_rna_properties(bpy.types.Context)))))
+
+extended_context = context_type_map.keys() | global_context
 
 rna_py_types = {
     "STRING":  str,
@@ -307,6 +315,27 @@ class RnaName(common.VirtualName):
         # ``bl_rna`` as a rnadef is defined on bpy.types.Struct.
         if name == "bl_rna":
             return bpy.types.Struct.bl_rna.description
+
+        # Context members have no rna definition, so we need to get them manually.
+        elif name in extended_context:
+
+            if self.parent_value is runtime.context_rna.class_value:
+                # Global context members.
+                if name in global_context:
+                    value = rnadef_to_value(bpy.types.Context.bl_rna.properties[name], self.parent_value)
+                    if is_rna_value(value):
+                        return value.obj.description
+                    return value.py__doc__()
+
+                # All other context members.
+                attr, is_sequence = context_type_map[name]
+                if obj := getattr(bpy.types, attr, None):
+                    rna = getattr(obj, "bl_rna", None)
+                    if is_sequence:
+                        obj = list[obj]
+                    if not rna:
+                        return make_compiled_value(attr, self.parent_context).py__doc__()
+                    return rna.description
 
         for value in self.parent_value.py__mro__():
             if is_rna_value(value):
