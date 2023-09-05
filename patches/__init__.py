@@ -16,6 +16,7 @@ def apply():
 
 def _apply_patches():
     from . import modules
+    modules._blf.apply()
     modules._gpu.apply()
     modules._bpy.apply()
     modules._bpy_types.apply()
