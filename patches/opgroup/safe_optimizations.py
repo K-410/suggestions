@@ -267,7 +267,7 @@ def optimize_ValueContext_methods():
     ValueContext.get_qualified_names = _forwarder("_value.get_qualified_names")
     ValueContext.get_value       = _unbound_getter("_value")
 
-    # We don't use predefined names.
+    # We don't use predefined names, just make it a mappingproxy.
     ValueContext.predefined_names = type(type.__dict__)({})
 
     def __init__(self: ValueContext, value):
@@ -543,9 +543,7 @@ def optimize_shadowed_dict():
     from jedi.inference.compiled import getattr_static
     from builtins import type
     from types import GetSetDescriptorType
-
-    get_dict = type.__dict__["__dict__"].__get__
-    get_mro = type.__dict__["__mro__"].__get__
+    from textension.utils import get_mro, get_dict
 
     def _shadowed_dict(klass):
         for entry in get_mro(klass):
@@ -575,14 +573,15 @@ def optimize_getattr_static():
         getattr_static as _getattr_static
     )
 
+    from textension.utils import get_dict, get_module_dict, dict_get, obj_get
     from builtins import isinstance, type
     from types import MemberDescriptorType, ModuleType
     from bpy import types as bpy_types
 
     common_dicts = {
-        type: type.__dict__["__dict__"].__get__,
-        object: type.__dict__["__dict__"].__get__,
-        ModuleType: ModuleType.__dict__["__dict__"].__get__
+        type: get_dict,
+        object: get_dict,
+        ModuleType: get_module_dict
     }
     excludes = {ModuleType.__mro__}
 
@@ -592,18 +591,21 @@ def optimize_getattr_static():
         if not isinstance(obj, type):
             cls = type(obj)
             if cls in common_dicts:
-                mro = cls.__mro__
                 try:
                     instance_result = common_dicts[cls](obj)[attr]
                 except:  # KeyError
                     # Types are not actually stored in bpy.types.__dict__.
                     if obj is bpy_types:
                         instance_result = getattr(obj, attr, _sentinel)
+                mro = cls.__mro__
             else:
-                mro = _static_getmro(cls)
                 dict_attr = _shadowed_dict(cls)
-                if (dict_attr is _sentinel or type(dict_attr) is MemberDescriptorType):
-                    instance_result = _check_instance(obj, attr)
+                if dict_attr is _sentinel or type(dict_attr) is MemberDescriptorType:
+                    try:
+                        instance_result = dict_get(obj_get(obj, "__dict__"), attr, _sentinel)
+                    except AttributeError:
+                        instance_result = _sentinel
+                mro = _static_getmro(cls)
         else:
             cls = obj
             mro = _static_getmro(cls)
@@ -621,8 +623,7 @@ def optimize_getattr_static():
                         pass
 
         if instance_result is not _sentinel and cls_result is not _sentinel:
-            if _safe_hasattr(cls_result, '__get__') \
-                    and _safe_is_data_descriptor(cls_result):
+            if _safe_hasattr(cls_result, '__get__') and _safe_is_data_descriptor(cls_result):
                 # A get/set descriptor has priority over everything.
                 return cls_result, True
 
@@ -650,9 +651,8 @@ def optimize_getattr_static():
 def optimize_static_getmro():
     from jedi.inference.compiled import getattr_static
     from jedi.debug import warning
-    from builtins import tuple, type, list
-
-    get_mro = type.__dict__['__mro__'].__get__
+    from builtins import tuple, list
+    from textension.utils import get_mro
 
     def _static_getmro(cls):
         mro = get_mro(cls)
