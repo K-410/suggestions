@@ -650,12 +650,20 @@ def optimize_getattr_static():
 # Optimizes _static_getmro to read mro.__class__.
 def optimize_static_getmro():
     from jedi.inference.compiled import getattr_static
-    from jedi.debug import warning
-    from builtins import tuple, list
     from textension.utils import get_mro
+    from jedi.debug import warning
+    from builtins import tuple, list, type
 
     def _static_getmro(cls):
-        mro = get_mro(cls)
+
+        # GenericAlias and the likes don't use type.mro.
+        while True:
+            try:
+                mro = get_mro(cls)
+                break
+            except:
+                cls = type(cls)
+
         # Should be safe enough, since the mro itself is obtained via type descriptor.
         if mro.__class__ is tuple or mro.__class__ is list:
             return mro
@@ -1789,7 +1797,7 @@ def optimize_AccessHandle_get_access_path_tuples():
     from sys import modules as sys_modules
     import builtins
 
-    instance_name_types = (MethodDescriptorType, WrapperDescriptorType, BuiltinFunctionType)
+    instance_name_types = (MethodDescriptorType, WrapperDescriptorType, BuiltinFunctionType, ModuleType)
     is_module = ModuleType.__instancecheck__
 
     @state_cache
@@ -1828,7 +1836,11 @@ def optimize_AccessHandle_get_access_path_tuples():
             if isinstance(obj, instance_name_types):
                 return obj.__name__
             obj = type(obj)
+
+        while type(obj) != type:
+            obj = type(obj)
         return get_type_name(obj)
+            
 
     AccessHandle.py__name__ = py__name__
 
