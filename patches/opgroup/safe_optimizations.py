@@ -1029,7 +1029,8 @@ def optimize_tree_name_to_values():
         while n := n.parent:
             if n.type == "expr_stmt":
                 if n.children[1].type == "annassign":
-                    return annotation.infer_annotation(context, n.children[1].children[1]).execute_annotation()
+                    for value in annotation.infer_annotation(context, n.children[1].children[1]):
+                        return value.execute_annotation()
                 break
 
         node = tree_name.get_definition(import_name_always=True, include_setitem=True)
