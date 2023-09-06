@@ -1027,6 +1027,11 @@ class AggregateLazyKnownValues(Aggregation, LazyKnownValues):
     data = _named_index(0)
 
 
+@inline
+def call_py_getattr(*args, **kw):
+    return partial(methodcaller, "py__getattribute__")
+
+
 class Values(frozenset, ValueSet):
     __slots__ = ()
 
@@ -1050,6 +1055,9 @@ class Values(frozenset, ValueSet):
         if isinstance(x, ValueSet):
             x = x._set
         return frozenset.__or__(self, x)
+
+    def py__getattribute__(self: "Values", *args, **kw):
+        return Values(starchain(map(call_py_getattr(*args, **kw), self._set)))
 
 
 class AggregateExecutedParamName(Aggregation, ExecutedParamName):

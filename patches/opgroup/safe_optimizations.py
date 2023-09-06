@@ -212,6 +212,12 @@ def optimize_ValueSet_methods():
     from jedi.inference.base_value import ValueSet
     from ..common import Values, state
 
+    # Means we've eliminated most of the old ValueSet class. That's a good thing.
+    if ValueSet is Values:
+        ValueSet = next(cls for cls in Values.__mro__ if cls.__name__ == "ValueSet")
+
+    ValueSet.py__getattribute__ = Values.py__getattribute__
+
     # We don't need a user-defined __bool__ method that ends up calling
     # ``bool(self._set)``. Python falls back to ``__len__`` for truth tets.
     del ValueSet.__bool__
