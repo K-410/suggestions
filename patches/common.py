@@ -658,10 +658,6 @@ class VirtualMixin:
     def get_members(self):
         return dict.fromkeys(dir(self.obj))
 
-    @state_cache
-    def infer_name_cached(self, name: "VirtualName"):
-        return self.infer_name(name)
-
     def infer_name(self, name: "VirtualName"):
         from .tools import make_compiled_value
         value = make_compiled_value(getattr(self.obj, name.string_name), self.as_context())
@@ -728,8 +724,9 @@ class VirtualName(Aggregation, CompiledName):
     def docstring(self, raw=False, fast=True):
         return "VirtualName docstring goes here"
 
+    @state_cache
     def infer(self):
-        return self.parent_value.infer_name_cached(self)
+        return self.parent_value.infer_name(self)
 
     @property
     def api_type(self):
@@ -759,10 +756,10 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
     obj                          = _named_index(0)
     parent_value: "VirtualValue" = _named_index(1)
 
-    def virtual_call(self, arguments, instance=None):
+    def virtual_call(self, arguments=NoArguments, instance=None):
         if instance:
             return NO_VALUES
-        return Values((self.as_instance(arguments),))
+        return Values((self.instance_cls(self, arguments),))
 
     @inline
     def __init__(self, elements):
@@ -784,9 +781,6 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
     @property
     def api_type(self):
         return "unknown"
-
-    def as_instance(self, arguments=NoArguments):
-        return self.instance_cls(self, arguments)
 
     def get_signatures(self):
         return ()

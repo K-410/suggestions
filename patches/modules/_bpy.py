@@ -211,7 +211,7 @@ def infer_collection_type(arguments):
 class PropertyFunction(VirtualFunction):
     def py__call__(self, arguments):
         # TODO: This isn't ideal.
-        instance = VirtualValue((bpy.props._PropertyDeferred, self)).as_instance(arguments)
+        instance = VirtualValue((bpy.props._PropertyDeferred, self)).virtual_call(arguments)
         instance.py__call__ = lambda *_, **__: self.py_instance__call__(arguments)
         return Values((instance,))
 

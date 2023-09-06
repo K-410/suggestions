@@ -408,7 +408,7 @@ class RnaInstance(common.VirtualInstance):
                 value = RnaPropertyComposite((srna, self.class_value))
             else:
                 value = get_rna_value(srna, self.class_value)
-            return Values((value.as_instance(),))
+            return value.virtual_call()
         return NO_VALUES
 
     def py__getitem__(self, index_value_set, contextualized_node):
