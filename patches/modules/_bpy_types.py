@@ -763,7 +763,7 @@ class ContextInstance(RnaInstance):
 
     def get_filter_values(self, is_instance):
         data = zip(repeat(self.class_value), _bpy.context_members()["screen"])
-        return self.class_value.get_filter_values(True) + list(map(RnaName, data))
+        return self.class_value.get_filter_values(True) + list(map(ContextName, data))
 
     def get_filter_get(self, name_str, _):
         if ret := self.class_value.get_filter_get(name_str, True):
@@ -771,7 +771,7 @@ class ContextInstance(RnaInstance):
         
         # These aren't part of the screen context.
         if name_str in context_type_map:
-            return Values((NonScreenContextName((self.class_value, name_str, True)),))
+            return Values((ContextName((self.class_value, name_str, True)),))
         return ()
 
 
@@ -785,7 +785,7 @@ def is_prop_collection_value(obj) -> bool:
     return PropCollectionValue.__instancecheck__
 
 
-class NonScreenContextName(RnaName):
+class ContextName(RnaName):
     def infer(self):
         name, is_collection = context_type_map[self.string_name]
         cls = getattr(bpy.types, name)
