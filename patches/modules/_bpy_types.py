@@ -119,7 +119,12 @@ def get_bpy_type(obj):
 def get_rna_dict(rna) -> dict:
     get_rnadefs = attrgetter("functions", "properties")
     prop_collection_items = bpy.types.bpy_prop_collection.items
+
     def get_rna_dict(rna) -> dict:
+        # We might be passing RNA definitions not inheriting StructRNA like
+        # bpy.types.Function, so always read ``bl_rna``.
+        rna = rna.bl_rna
+
         return dict(starchain(map(prop_collection_items, get_rnadefs(rna))))
     return get_rna_dict
 
