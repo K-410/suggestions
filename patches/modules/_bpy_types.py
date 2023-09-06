@@ -454,7 +454,7 @@ class RnaValue(common.VirtualValue):
             value = tmp
 
         elif name_str == "bl_rna":
-            return Values((get_rna_value(bpy.types.Struct, self),))
+            value = get_rna_value(bpy.types.Struct, self)
 
         else:
             if callable(obj):
