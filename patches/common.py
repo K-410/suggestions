@@ -596,7 +596,7 @@ def _repr(obj):
     return type.__dict__['__name__'].__get__(type(obj))
 
 
-class VirtualInstance(CompiledInstance):
+class VirtualInstance(Aggregation, CompiledInstance):
     is_stub         = falsy_noargs
     is_instance     = truthy_noargs
     inference_state = state
@@ -606,9 +606,8 @@ class VirtualInstance(CompiledInstance):
     def _as_context(self):
         return CompiledContext(self)
 
-    def __init__(self, value: "VirtualValue", arguments=None):
-        self._arguments  = arguments
-        self.class_value = value
+    class_value: "VirtualValue"       = _named_index(0)
+    _arguments:   AbstractArguments   = _named_index(1)
 
     def get_filters(self, origin_scope=None, include_self_names=True):
         yield from self.class_value.get_filters(origin_scope=origin_scope, is_instance=True)
@@ -759,7 +758,7 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
     def virtual_call(self, arguments=NoArguments, instance=None):
         if instance:
             return NO_VALUES
-        return Values((self.instance_cls(self, arguments),))
+        return Values((self.instance_cls((self, arguments)),))
 
     @inline
     def __init__(self, elements):
@@ -767,7 +766,7 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
         return Aggregation.__init__
 
     @inline
-    def py__call__(self, arguments=NoArguments):
+    def py__call__(self, arguments):
         return _forwarder("virtual_call")
 
     @property
@@ -800,9 +799,6 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
     # XXX: Override me.
     def get_param_names(self):
         return []
-
-    def _as_context(self):
-        return CompiledContext(self)
 
     # Subclasses override this.
     def get_members(self):

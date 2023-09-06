@@ -9,7 +9,7 @@ from itertools import repeat
 from operator import attrgetter
 from inspect import Parameter
 
-from textension.utils import _context, _forwarder, inline, starchain, get_dict, get_mro_dict
+from textension.utils import _context, _forwarder, inline, starchain, get_dict, get_mro_dict, lazy_overwrite
 
 from ._mathutils import float_subtypes, MathutilsValue
 from ..common import Values, NoArguments, get_type_name
@@ -36,9 +36,13 @@ _void = object()
 def apply():
     patch_AnonymousParamName_infer()
 
-    from ._bpy import Importer_redirects
-    runtime.context_rna = ContextInstance(bpy.types.Context.bl_rna)
-    runtime.data_rna = RnaInstance(get_rna_value(_bpy.data.bl_rna, Importer_redirects["bpy"]))
+
+    from ._bpy import bpy_module
+    context_value = get_rna_value(bpy.types.Context.bl_rna, bpy_module)
+    data_value = get_rna_value(bpy.types.BlendData.bl_rna, bpy_module)
+
+    runtime.context_rna = ContextInstance((context_value, NoArguments))
+    runtime.data_rna = RnaInstance((data_value, NoArguments))
 
     # Map bpy_struct magic methods.
     for cls in reversed(StructRNA.__mro__):
@@ -725,8 +729,7 @@ class IdPropCollectionValue(common.VirtualValue):
         return Values((make_compiled_value(obj, self.as_context()),))
 
     def py__call__(self, arguments):
-        self.values = arguments
-        return Values((self.instance_cls(self, arguments),))
+        return self.virtual_call(self.values)
 
     def py__simple_getitem__(self, index):
         for value in self.values.infer():
@@ -735,30 +738,17 @@ class IdPropCollectionValue(common.VirtualValue):
 
 
 class ContextInstance(RnaInstance):
-    parent_context = _forwarder("_parent_context")
+    @lazy_overwrite
+    def members(self):
+        instance_members = self.class_value.members.copy()
 
-    # The context is static so make members an attribute.
-    members: dict = None
-
-    def __init__(self, obj):
-        self._arguments  = None
-        from ._bpy import Importer_redirects
-
-        module = Importer_redirects["bpy"]
-        self._parent_context = module.as_context()
-
-        class_value = get_rna_value(obj, module)
-        context_members = class_value.members.copy()
-
-        for member in _bpy.context_members()["screen"]:
-            attr, is_sequence = context_type_map.get(member, ("", False))
-            if obj := getattr(bpy.types, attr, None):
-                context_members[member] = obj if not is_sequence else list[obj]
-            else:
-                pass  # Could print a warning. This is a bug.
-
-        self.members = context_members
-        self.class_value = class_value
+        for name in _bpy.context_members()["screen"]:
+            type_name, is_sequence = context_type_map[name]
+            obj = getattr(bpy.types, type_name)
+            if is_sequence:
+                obj = list[obj]
+            instance_members[name] = obj
+        return instance_members
 
     def _get_value_filters(self, *_):
         yield from self.get_filters()
