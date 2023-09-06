@@ -615,9 +615,8 @@ class VirtualInstance(Aggregation, CompiledInstance):
     def py__call__(self, arguments):
         return self.class_value.parent_value.virtual_call(arguments, self)
 
-    # Don't try to support indexing.
-    def py__simple_getitem__(self, *args, **unused):
-        return self.class_value.py__simple_getitem__(0)
+    def py__simple_getitem__(self, index):
+        return self.class_value.virtual_getitem(index, arguments=self._arguments)
 
     py__getitem__ = py__simple_getitem__
 
@@ -759,6 +758,10 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
         if instance:
             return NO_VALUES
         return Values((self.instance_cls((self, arguments)),))
+
+    # Should be overridden by subclasses.
+    def virtual_getitem(self, index, arguments=NoArguments):
+        return NO_VALUES
 
     @inline
     def __init__(self, elements):

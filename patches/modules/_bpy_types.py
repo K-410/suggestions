@@ -733,11 +733,8 @@ class IdPropCollectionValue(common.VirtualValue):
         obj = self.members[name_str]
         return Values((make_compiled_value(obj, self.as_context()),))
 
-    def py__call__(self, arguments):
-        return self.virtual_call(self.values)
-
-    def py__simple_getitem__(self, index):
-        for value in self.values.infer():
+    def virtual_getitem(self, index, arguments=NoArguments):
+        for value in arguments.infer():
             return value.py__call__(NoArguments)
         return NO_VALUES
 

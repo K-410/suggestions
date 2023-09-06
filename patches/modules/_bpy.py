@@ -12,7 +12,7 @@ from operator import getitem
 
 from ._mathutils import float_subtypes
 from ._bpy_types import MathutilsValue, PropArrayValue, IdPropCollectionValue, NO_VALUES, get_rna_value
-from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, Values, state, add_module_redirect
+from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, Values, state, add_module_redirect, NoArguments
 from ..tools import make_compiled_value
 from textension.utils import inline_class
 
@@ -173,7 +173,7 @@ class bpy_props_module(VirtualModule):
     string_names = ("bpy", "props")
     def py__getattribute__(self, name_or_str, **kw):
         if value := prop_func_map.get(name_or_str.value):
-            return (value,)
+            return Values((value,))
         return super().py__getattribute__(name_or_str)
 
 
@@ -204,17 +204,11 @@ def infer_collection_type(arguments):
     if value := dict(arguments.unpack()).get("type"):
         obj = simple_property_types["CollectionProperty"]
         parent = value.context._value
-        return IdPropCollectionValue((obj, parent)).py__call__(value)
+        return IdPropCollectionValue((obj, parent)).virtual_call(value)
     return NO_VALUES
 
 
 class PropertyFunction(VirtualFunction):
-    def py__call__(self, arguments):
-        # TODO: This isn't ideal.
-        instance = VirtualValue((bpy.props._PropertyDeferred, self)).virtual_call(arguments)
-        instance.py__call__ = lambda *_, **__: self.py_instance__call__(arguments)
-        return Values((instance,))
-
     def py_instance__call__(self, arguments):
         func_name = self.obj.__name__
 
@@ -233,6 +227,12 @@ class PropertyFunction(VirtualFunction):
 
         obj = getattr(bpy.types, func_name).bl_rna
         return get_rna_value(obj, self).py__call__(arguments)
+
+    # TODO: This isn't correct.
+    def virtual_call(self, arguments=NoArguments, instance=None):
+        instance, = VirtualValue((bpy.props._PropertyDeferred, self)).virtual_call(arguments)
+        instance.py__call__ = lambda *_, **__: self.py_instance__call__(arguments)
+        return Values((instance,))
 
 
 def fix_bpy_imports():
