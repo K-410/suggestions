@@ -765,7 +765,7 @@ def patch_parse_function_doc():
                 param_str = doc[start:end]
                 end = doc.find("-> ", end)
                 if end is not -1:
-                    ret_str = ret_match(doc, start + 3).group(0).strip()
+                    ret_str = ret_match(doc, end + 3).group(0).strip()
                     # New object -> object()
                     ret_str = re.sub(r'[nN]ew (.*)', r'\1()', ret_str)
                     ret = docstr_defaults.get(ret_str, ret_str)
