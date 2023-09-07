@@ -1,6 +1,6 @@
 # This adds fixes for jedi to outright work.
 
-from textension.utils import _patch_function, _forwarder
+from textension.utils import _patch_function, _forwarder, inline
 from .tools import _descriptor_overrides, _value_overrides, _virtual_overrides
 
 import bpy
@@ -51,6 +51,7 @@ def _apply_patches():
     patch_parse_function_doc()
     patch_SignatureMixin_to_string()
     patch_CompiledValueFilter_get_cached_name()
+    patch_BaseName_get_docstring()
 
 
 def _apply_optimizations():
@@ -835,3 +836,22 @@ def patch_CompiledValueFilter_get_cached_name():
             return EmptyCompiledName(self._inference_state, name)
         return AggregateCompiledName((self.compiled_value, name))
     CompiledValueFilter._get_cached_name = _get_cached_name
+
+
+# Patch BaseName._get_docstring to try remove the signature from the docstring
+# as it were retrieved by py__doc__ so we don't get duplicate signatures.
+def patch_BaseName_get_docstring():
+    from jedi.api.classes import Completion, BaseName
+    import re
+
+    @inline
+    def match_signature(doc: str):
+        return re.compile(r"^.*?\(.*?\) -> .*?[\n]").match
+
+    def _get_docstring(self: Completion):
+        doc = BaseName._get_docstring(self)
+        if match := match_signature(doc):
+            doc = doc[match.end():].strip()
+        return doc
+
+    Completion._get_docstring = _get_docstring
