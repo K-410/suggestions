@@ -2,7 +2,7 @@
 
 from jedi.inference.names import SubModuleName
 from jedi.inference.syntax_tree import tree_name_to_values
-
+from jedi.inference.arguments import TreeArguments
 import bpy
 import _bpy
 
@@ -12,7 +12,7 @@ from operator import getitem
 
 from ._mathutils import float_subtypes
 from ._bpy_types import MathutilsValue, PropArrayValue, IdPropCollectionValue, NO_VALUES, get_rna_value
-from ..common import VirtualFunction, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, Values, state, add_module_redirect, NoArguments
+from ..common import VirtualFunction, VirtualInstance, VirtualValue, VirtualModule, Importer_redirects, CompiledModule_redirects, find_definition, Values, state, add_module_redirect, NoArguments
 from ..tools import make_compiled_value
 from textension.utils import inline_class
 
@@ -209,30 +209,24 @@ def infer_collection_type(arguments):
 
 
 class PropertyFunction(VirtualFunction):
-    def py_instance__call__(self, arguments):
-        func_name = self.obj.__name__
+    def virtual_call(self, arguments=NoArguments, instance: VirtualInstance = None):
 
-        if func_name == "CollectionProperty" in simple_property_types:
-            return infer_collection_type(arguments)
+        if isinstance(instance, VirtualInstance) and isinstance(arguments, TreeArguments):
+            property_name = instance.class_value.py__name__()
 
-        elif func_name in simple_property_types:
-            obj = simple_property_types[func_name]
-            return VirtualValue((obj, self)).py__call__(arguments)
+            if property_name == "CollectionProperty" in simple_property_types:
+                return infer_collection_type(arguments)
+            elif obj := simple_property_types.get(property_name):
+                return VirtualValue((obj, self)).py__call__(arguments)
+            elif property_name in vector_property_types:
+                return infer_vector_type(property_name, arguments, self)
+            elif property_name == "PointerProperty":
+                return infer_pointer_type(arguments)
 
-        elif func_name in vector_property_types:
-            return infer_vector_type(func_name, arguments, self)
-
-        elif func_name == "PointerProperty":
-            return infer_pointer_type(arguments)
-
-        obj = getattr(bpy.types, func_name).bl_rna
-        return get_rna_value(obj, self).py__call__(arguments)
-
-    # TODO: This isn't correct.
-    def virtual_call(self, arguments=NoArguments, instance=None):
-        instance, = VirtualValue((bpy.props._PropertyDeferred, self)).virtual_call(arguments)
-        instance.py__call__ = lambda *_, **__: self.py_instance__call__(arguments)
-        return Values((instance,))
+            else:
+                obj = getattr(bpy.types, property_name).bl_rna
+                return get_rna_value(obj, self).py__call__(arguments)
+        return super().virtual_call(arguments, instance)
 
 
 def fix_bpy_imports():

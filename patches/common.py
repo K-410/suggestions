@@ -649,6 +649,10 @@ class VirtualInstance(Aggregation, CompiledInstance):
     def py__doc__(self):
         return self.class_value.py__doc__()
 
+    # This is how ``bpy.props.CollectionProperty(type=cls)`` is inferred.
+    def execute_annotation(self):
+        return self.class_value.virtual_call(arguments=self._arguments, instance=self)
+
 
 class VirtualMixin:
     def get_filters(self: CompiledValue, is_instance=False, origin_scope=None):
