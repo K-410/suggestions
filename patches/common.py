@@ -48,9 +48,6 @@ memoize_values = state.memoize_cache.values()
 get_start_pos = attrgetter("line", "column")
 get_cursor_focus = attrgetter("select_end_line_index", "select_end_character")
 
-scope_types = {"classdef", "comp_for", "file_input", "funcdef",  "lambdef",
-               "sync_comp_for"}
-
 runtime = namespace(is_reset=True)
 
 # Used by various optimizations.
@@ -68,8 +65,36 @@ def add_module_redirect(virtual_module, name=None):
 
 
 @inline
+def filter_names(sequence):
+    return partial(filter, is_namenode)
+
+@inline
+def filter_nodes(sequence):
+    return partial(filter, is_basenode)
+
+@inline
+def filter_strings(seq):
+    return partial(filter, str.__instancecheck__)
+
+@inline
 def get_type_name(cls: type) -> str:
     return type.__dict__["__name__"].__get__
+
+@inline
+def get_fget(property_obj):
+    return property.__dict__["fget"].__get__
+
+@inline
+def _rebuild_closure_caches():
+    return partial(map, partial.__call__, _closures, map(dict.__new__, repeat(dict)))
+
+@inline
+def map_dict_clear(dicts):
+    return partial(map, dict.clear)
+
+@inline
+def get_memoize_dicts():
+    return partial(filtertrue, memoize_values)
 
 
 # Used by VirtualValue.py__call__ and other inference functions where we
@@ -96,11 +121,6 @@ def sessions(self: dict, text_id):
     return self.setdefault(text_id, TextSession((text_id, module)))
 
 
-@inline
-def _rebuild_closure_caches():
-    return partial(map, partial.__call__, _closures, map(dict.__new__, repeat(dict)))
-
-
 def register_cache(func):
     def inner(wrap):
         func_name = getattr(func, "__name__", None) or str(func)
@@ -121,7 +141,7 @@ def reset_state():
     consume(_rebuild_closure_caches())
 
     # Clear the cache for functions that use the stock memoize.
-    consume(map(dict.clear, filtertrue(memoize_values)))
+    consume(map_dict_clear(get_memoize_dicts()))
 
     # Persistent state means we have to clear access handles or they'll cause
     # circular references undetectable by the garbage collector and leak.
@@ -182,43 +202,30 @@ def state_cache_kw(func):
 @inline
 def filter_until(pos: int | None, names):
     from itertools import compress
-    from operator import attrgetter
     from builtins import map
 
-    start_pos = attrgetter("line", "column")
+    @inline
+    def map_start_pos(names):
+        return partial(map, get_start_pos)
 
     def filter_until(pos: int | None, names):
         if pos:
-            return compress(names, map(pos.__gt__, map(start_pos, names)))
+            return compress(names, map(pos.__gt__, map_start_pos(names)))
         return names
 
     return filter_until
 
 
-definition_types = {
-    'expr_stmt',
-    'sync_comp_for',
-    'with_stmt',
-    'for_stmt',
-    'import_name',
-    'import_from',
-    'param',
-    'del_stmt',
-    'namedexpr_test',
-}
-
-
 @state_cache
 def get_scope_name_definitions(scope):
 
-    # Jedi allows ill-formed function/lambda constructs, so we can't assume
-    # ``scope`` is even a BaseNode. This is bad, but the alternative is fixing
-    # the grammar and I'm not going to touch that.
-    if not is_basenode(scope):
+    # Jedi allows ill-formed function/lambda constructs, so we cannot assume
+    # ``scope`` is always a BaseNode. This is obviously a workaround for an
+    # issue in paro's grammar, but I'm not going to touch that.
+    try:
+        pool = scope.children[:]
+    except AttributeError:  # Not a BaseNode.
         return ()
-
-    namedefs = []
-    pool = scope.children[:]
 
 
     # XXX: This code is for testing.
@@ -231,7 +238,9 @@ def get_scope_name_definitions(scope):
     #         return super().__iadd__(it)
     # namedefs = L()
 
-    for n in filter(is_basenode, pool):
+    namedefs = []
+
+    for n in filter_nodes(pool):
         if n.type in {"classdef", "funcdef"}:
             # These are always definitions.
             namedefs += n.children[1],
@@ -249,7 +258,7 @@ def get_scope_name_definitions(scope):
                 # ``a, b = X``. Here we take ``a`` and ``b``.
                 # Could be ``atom_expr``, i.e ``x.a, y.a = Z``, skip those.
                 elif name.type == "testlist_star_expr":
-                    namedefs += filter(is_namenode, name.children[::2])
+                    namedefs += filter_names(name.children[::2])
 
                 # ``a.b = c``. Not a definition.
                 elif name.type == "atom_expr":
@@ -305,7 +314,7 @@ def get_scope_name_definitions(scope):
                 name = name.children[0]
 
             if name.type == "exprlist":
-                namedefs += filter(is_namenode, name.children)
+                namedefs += filter_names(name.children)
             elif name.type == "name":
                 namedefs += name,
 
@@ -315,67 +324,71 @@ def get_scope_name_definitions(scope):
             pool += n.children
 
     # Get definitions for the rest.
-    for n in filter(is_namenode, pool):
+    for n in filter_names(pool):
         if n.get_definition(include_setitem=True):
             namedefs += n,
 
     return namedefs
 
 
+@inline
 def find_definition(ref: Name):
-    if namedef := get_definition(ref):
-        return namedef
+    scope_types = {"classdef", "comp_for", "file_input", "funcdef",  "lambdef",
+                   "sync_comp_for"}
 
-    node = ref
-    while node := node.parent:
-        # Skip the dot operator.
-        if node.type != "error_node":
-            for name in filter(is_namenode, node.children):
-                if name.value == ref.value and name is not ref:
-                    return name
-    return None
+    def find_definition(ref: Name):
+        value = ref.value
+        scope = ref.parent
 
-
-def get_definition(ref: Name):
-    value = ref.value
-    scope = ref.parent
-
-    scope_types_ = scope_types
-    while scope.type not in scope_types_:
-        scope = scope.parent
-
-    if scope.type in {"funcdef", "classdef", "except_clause"}:
-
-        children = scope.children
-        if value == children[1].value:  # Is the function/class name definition.
-            return children[1]
-
-        elif scope.type == "except_clause" and value == children[-1].value:
-            return children[-1]
-
-        # ``ref`` is probably an argument.
-        else:
+        while scope.type not in scope_types:
             scope = scope.parent
 
-    start = ref.line, ref.column
-    for name in get_cached_scope_definitions(scope)[ref.value]:
-        if (name.line, name.column) < start:
-            return name
+        if scope.type in {"funcdef", "classdef", "except_clause"}:
 
-    return None
+            children = scope.children
+            if value == children[1].value:  # Is the function/class name definition.
+                return children[1]
+
+            elif scope.type == "except_clause" and value == children[-1].value:
+                return children[-1]
+
+            # ``ref`` is probably an argument.
+            else:
+                scope = scope.parent
+
+        start = ref.line, ref.column
+        for name in get_cached_scope_definitions(scope)[ref.value]:
+            if (name.line, name.column) < start:
+                return name
+
+        node = ref
+        while node := node.parent:
+            # Skip the dot operator.
+            if node.type != "error_node":
+                for name in filter_names(node.children):
+                    if name.value == ref.value and name is not ref:
+                        return name
+        return None
+    return find_definition
 
 
-@state_cache
-def get_cached_scope_definitions(scope):
-    from collections import defaultdict
+@inline
+def get_cached_scope_definitions(scope) -> dict[str, list]:
+    from textension.utils import defaultdict_list
+    from .common import get_scope_name_definitions
 
-    cache = defaultdict(list)
-    scope_definitions = get_scope_name_definitions(scope)
-    for namedef in scope_definitions:
-        cache[namedef.value] += namedef,
+    empty_factory = repeat(()).__next__
 
-    cache.default_factory = repeat(()).__next__
-    return cache
+    @state_cache
+    def get_cached_scope_definitions(scope):
+        cache = defaultdict_list()
+        scope_definitions = get_scope_name_definitions(scope)
+        for namedef in scope_definitions:
+            cache[namedef.value] += namedef,
+
+        cache.default_factory = empty_factory
+        return cache
+    return get_cached_scope_definitions
 
 
 # This version doesn't include flow checks nor read or write to cache.
@@ -451,7 +464,7 @@ def get_submodule_names():
         # Exclude these as we already know they don't have sub-modules.
         if name not in {"builtins", "typing"}:
             m = self.obj
-            assert isinstance(m, ModuleType)
+            assert m.__class__ is ModuleType
 
             exports = set()
             # It's possible we're passing non-module objects.
@@ -473,7 +486,7 @@ def get_submodule_names():
                 pass
 
             names = []
-            for e in filter(str.__instancecheck__, exports):
+            for e in filter_strings(exports):
                 # Skip double-underscored names.
                 if e[:2] == "__" == e[-2:]:
                     continue
