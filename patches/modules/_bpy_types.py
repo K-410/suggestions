@@ -31,6 +31,7 @@ rna_fallbacks = {}
 
 context_rna_pointer = _context.as_pointer()
 _void = object()
+type_module_map =  {}
 
 
 def apply():
@@ -101,6 +102,11 @@ def is_virtual_value(obj) -> bool:
 
 
 @inline
+def is_virtual_instance(obj) -> bool:
+    return common.VirtualInstance.__instancecheck__
+
+
+@inline
 def is_blend_data(obj) -> bool:
     return bpy.types.BlendData.__instancecheck__
 
@@ -132,6 +138,24 @@ def get_rna_dict(rna) -> dict:
 
         return dict(starchain(map(prop_collection_items, get_rnadefs(rna))))
     return get_rna_dict
+
+
+def get_qualified_name(obj):
+    """Get the full name of an object's type, including its module."""
+
+    while not isinstance(obj, type):
+        obj = type(obj)
+
+    if obj in type_module_map:
+        module = type_module_map[obj]
+    else:
+        module = obj.__module__
+
+    string = f"{module}.{obj.__name__}"
+
+    if "bpy_types" in string:
+        string = string.replace("bpy_types", "bpy.types")
+    return string
 
 
 # See doc/python_api/sphinx_doc_gen.py.
@@ -644,15 +668,9 @@ class RnaFunctionParamName(SignatureParamName):
 
     def to_string(self):
         s = self.string_name
-        default = self.default
-        
         if annotated := self.annotated:
-            if is_bpy_struct(annotated):
-                annotated = type(annotated)
-            import inspect
-            fmt = inspect.formatannotation(annotated)
-            s += ": " + fmt.replace("bpy_types", "bpy.types")
-        return s + default
+            s += f": {get_qualified_name(annotated)}"
+        return s + self.default
 
     @inline
     def get_root_context(self):
@@ -683,13 +701,7 @@ class RnaFunctionSignature(AbstractSignature):
             for param in outputs:
                 param_value = rnadef_to_value(param, self.value)
                 if is_virtual_value(param_value):
-                    restype = param_value.obj
-                    if is_bpy_struct(restype):
-                        restype = type(restype)
-                    import inspect
-                    ann = inspect.formatannotation(restype)
-                    if "bpy_types" in ann:
-                        ann = ann.replace("bpy_types", "bpy.types")
+                    ann = get_qualified_name(param_value.obj)
                 else:
                     if param_value.get_root_context().is_builtins_module():
                         ann = param_value.name.string_name
