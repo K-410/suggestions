@@ -8,7 +8,8 @@ from textension.utils import (
     _patch_function,
     truthy_noargs,
     falsy,
-    falsy_noargs)
+    falsy_noargs,
+    inline)
 
 
 from itertools import repeat
@@ -903,12 +904,26 @@ def optimize_BaseNode_end_pos():
 # inference states. We can't even use that in Blender.
 def optimize_CompiledValue_api_type():
     from jedi.inference.compiled.value import CompiledValue
-    from types import ModuleType, BuiltinFunctionType, MethodType, \
-         FunctionType, MethodDescriptorType, ClassMethodDescriptorType, WrapperDescriptorType, GetSetDescriptorType
+    import types
 
-    function_types = MethodDescriptorType, BuiltinFunctionType, MethodType, FunctionType, ClassMethodDescriptorType, WrapperDescriptorType
+    function_types = (
+        types.BuiltinFunctionType,
+        types.FunctionType,
+        types.MethodType,
+        staticmethod,
+        classmethod,
+        types.MethodDescriptorType,
+        types.ClassMethodDescriptorType,
+        types.WrapperDescriptorType,
+    )
 
-    is_module = ModuleType.__instancecheck__
+    @inline
+    def is_module(obj) -> bool:
+        return types.ModuleType.__instancecheck__
+
+    @inline
+    def is_getset_descriptor(obj) -> bool:
+        return types.GetSetDescriptorType.__instancecheck__
 
     @property
     def api_type(self: CompiledValue):
@@ -920,7 +935,7 @@ def optimize_CompiledValue_api_type():
             return "class"
         elif is_module(obj):
             return "module"
-        elif isinstance(obj, GetSetDescriptorType):
+        elif is_getset_descriptor(obj):
             if getattr(obj, "__name__", None) == "__class__":
                 return "class"
         return "instance"
@@ -1613,7 +1628,7 @@ def optimize_SequenceLiteralValue():
 # AccessHandle doesn't have ``get_access_path_tuples``, but jedi treats it as
 # such via ``__getattr__``. Exception based attribute forwarding is slow.
 def optimize_AccessHandle_get_access_path_tuples():
-    from types import ModuleType, MethodDescriptorType, WrapperDescriptorType, BuiltinFunctionType
+    import types
     from jedi.inference.compiled.subprocess import AccessHandle
     from textension.utils import lazy_overwrite
     from builtins import type, isinstance
@@ -1621,8 +1636,16 @@ def optimize_AccessHandle_get_access_path_tuples():
     from sys import modules as sys_modules
     import builtins
 
-    instance_name_types = (MethodDescriptorType, WrapperDescriptorType, BuiltinFunctionType, ModuleType)
-    is_module = ModuleType.__instancecheck__
+    instance_name_types = (
+        types.FunctionType,
+        types.MethodType,
+        types.BuiltinFunctionType,
+        types.ClassMethodDescriptorType,
+        types.MethodDescriptorType,
+        types.WrapperDescriptorType,
+        types.ModuleType,
+    )
+    is_module = types.ModuleType.__instancecheck__
 
     @state_cache
     def get_access_path_tuples(self: AccessHandle):
