@@ -116,6 +116,11 @@ def get_bpy_type(obj):
 
 
 @inline
+def is_classmethod(obj) -> bool:
+    return classmethod.__instancecheck__
+
+
+@inline
 def get_rna_dict(rna) -> dict:
     get_rnadefs = attrgetter("functions", "properties")
     prop_collection_items = bpy.types.bpy_prop_collection.items
@@ -366,6 +371,11 @@ class RnaName(common.VirtualName):
                 
                 # The member is defined on the type or any of its bases.
                 if member := get_mro_dict(obj).get(name):
+
+                    # If a class method, we need the underlying function.
+                    if isinstance(member, classmethod):
+                        member = getattr(member, "__func__", member)
+
                     if doc := getattr(member, "__doc__", None):
                         if is_string(doc):
                             return doc
@@ -466,18 +476,16 @@ class RnaValue(common.VirtualValue):
             value = get_rna_value(bpy.types.Struct, self)
 
         else:
-            if callable(obj):
-                return Values((make_compiled_value(obj, self.as_context()),))
-            
-            # Potentially magic methods. This is not worth inferring.
-            return NO_VALUES
+            if is_classmethod(obj):
+                obj = getattr(obj, "__func__", obj)
+            return Values((make_compiled_value(obj, self.as_context()),))
         return value.py__call__(NoArguments)
 
     @property
     def api_type(self):
         if self.obj.rna_type.name == "Function Definition":
             return "function"
-        
+
         # Is the bl_rna member.
         elif is_virtual_value(self.parent_value) and self.obj == self.parent_value.obj:
             return "instance"
