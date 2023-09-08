@@ -89,41 +89,50 @@ def sort_completions(completions):
     def find(string, substr):
         return str.find
 
-    def fuzzy_sort(names, like_name):
-        test_sequence = tuple(enumerate(like_name))
-        names = list(names)
-        weights = {}
-        like_name_lower = like_name.lower()
-        like_name_len = len(like_name)
+    # Replace underscores with the highest ordinal
+    devalue_underscores = methodcaller("replace", "_", "\U0010ffff")
 
+    def fuzzy_sort(names, match):
+        weights = {}
+        names = list(names)
+        match_length  = len(match)
+        match_lowered = match.lower()
+        match_enum    = tuple(enumerate(match))
+
+        # Note: Weights are inverted as trailing matches are sorted ordinally.
         for name in names:
-            rank = 0
-            index = 0
+
             string = name.string_name
-            string_lower = name._string_name_lower
-            length_bias = like_name_len - len(string)
+            string_lowered = name._string_name_lower
+
+            # Similar leading match.
+            if string_lowered.startswith(match_lowered):
+                rank = -250 * (1 + string.startswith(match))
+                weights[name] = (rank, 0, devalue_underscores(string[match_length:]))
+                continue
+
+            length_bias = len(string) - match_length
 
             # Long names or names that don't strictly match.
-            if length_bias < -20 or like_name_lower not in string_lower:
-                rank = -500
+            if length_bias > 20 or match_lowered not in string_lowered:
+                weights[name] = (1000, length_bias, string)
+                continue
 
             else:
-                if string.startswith(like_name):
-                    rank = 1000
-
+                rank  = 0
+                index = 0
                 start = 0
-                for index, char in test_sequence:
-                    test = find(string_lower, char, start)
+                for index, char in match_enum:
+                    test = find(string_lowered, char, start)
                     if test is not -1:
                         # Relative locality + case match + index match.
-                        rank += (start - test) + (string[test] is char) + (test is index)
-                        start = test
+                        rank -= (start - test) + (string[test] is char) + (test is index)
+                        start = test + 1
                     else:
-                        rank -= 10
+                        rank += 10
                         start = index
-            weights[name] = (rank, length_bias, string[index:])
-        return sorted(names, key=weights.__getitem__, reverse=True)
-
+                weights[name] = (rank, length_bias, string[index:])
+        return sorted(names, key=weights.__getitem__)
 
     def sort_completions(names: list[CompletionBase], like_name: str):
         if settings.use_fuzzy_search and like_name:
