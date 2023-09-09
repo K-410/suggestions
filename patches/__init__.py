@@ -52,6 +52,7 @@ def _apply_patches():
     patch_SignatureMixin_to_string()
     patch_CompiledValueFilter_get_cached_name()
     patch_BaseName_get_docstring()
+    patch_canon_typeshed_compatibility()
 
 
 def _apply_optimizations():
@@ -859,3 +860,12 @@ def patch_BaseName_get_docstring():
         return doc
 
     Completion._get_docstring = _get_docstring
+
+
+# The pip version of Jedi uses custom typeshed stubs. There are several
+# issues with them so we're using canon typeshed instead. We will run into
+# compatibility issues down the road. This attemts to address those.
+def patch_canon_typeshed_compatibility():
+    from jedi.inference.gradual.typeshed import _IMPORT_MAP
+
+    _IMPORT_MAP.clear()
