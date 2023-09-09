@@ -1361,11 +1361,18 @@ def optimize_NodeOrLeaf_get_next_leaf():
 def optimize_find_overload_functions():
     from jedi.inference.value.function import _find_overload_functions
     from itertools import compress, repeat
-    from operator import attrgetter, eq
+    from functools import partial
+    from ..common import filter_funcdefs
     from builtins import map
+    import operator
 
-    get_type = attrgetter("type")
-    rep_decorated = repeat("decorated")
+    @inline
+    def map_types(seq):
+        return partial(map, operator.attrgetter("type"))
+
+    @inline
+    def map_equal_decorated(types):
+        return partial(map, operator.eq, repeat("decorated"))
 
     def find_overload_functions(context, node):
         ret = []
@@ -1377,21 +1384,21 @@ def optimize_find_overload_functions():
                 scope = scope.parent
 
             children  = scope.children
-            selectors = map(eq, rep_decorated, map(get_type, children))
+            selectors = map_equal_decorated(map_types(children))
 
             for dec in compress(children, selectors):
-                funcdef = dec.children[1]
-                if funcdef.children[1].value == name_str:
+                for funcdef in filter_funcdefs(dec.children):
+                    if funcdef.children[1].value == name_str:
 
-                    # Can be ``decorator`` or ``decorators`` (plural).
-                    # The latter contains a list of ``decorator`` nodes.
-                    dec = dec.children[0]
-                    if dec.type == "decorators":
+                        # Can be ``decorator`` or ``decorators`` (plural).
+                        # The latter contains a list of ``decorator`` nodes.
                         dec = dec.children[0]
+                        if dec.type == "decorators":
+                            dec = dec.children[0]
 
-                    dec_name = dec.children[1]
-                    if dec_name.type == "name" and dec_name.value == "overload":
-                        ret += funcdef,
+                        dec_name = dec.children[1]
+                        if dec_name.type == "name" and dec_name.value == "overload":
+                            ret += funcdef,
         return ret
 
     _patch_function(_find_overload_functions, find_overload_functions)
