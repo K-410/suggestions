@@ -379,15 +379,18 @@ def optimize_ImportFrom_get_defined_names():
 # into a named tuple. Jedi can deal with whether or not the files are valid.
 def optimize_create_stub_map():
     from jedi.inference.gradual.typeshed import _create_stub_map
-    from textension.utils import Aggregation, _named_index
+    from textension.utils import Aggregation, _named_index, map_not
     from itertools import compress
-    from operator import methodcaller, not_
+    from operator import methodcaller
     from builtins import list, map, filter
     from os import listdir
+    from functools import partial
 
     tail = "/__init__.pyi"
     is_ext = methodcaller("__contains__", ".")
-    is_pyi = methodcaller("endswith", ".pyi")
+    @inline
+    def filter_pyi(seq):
+        return partial(filter, methodcaller("endswith", ".pyi"))
 
     class PathInfo2(Aggregation):
         path           = _named_index(0)
@@ -409,11 +412,11 @@ def optimize_create_stub_map():
         has_ext = list(map(is_ext, listed))
 
         # Directories.
-        for directory in compress(listed, map(not_, has_ext)):
+        for directory in compress(listed, map_not(has_ext)):
             stubs[directory] = PathInfo2((f"{prefix}{directory}{tail}", is_third_party))
 
         # Single modules.
-        for file in filter(is_pyi, compress(listed, has_ext)):
+        for file in filter_pyi(compress(listed, has_ext)):
             stubs[file[:-4]] = PathInfo2((f"{prefix}{file}", is_third_party))
 
         if "__init__" in stubs:
@@ -1158,7 +1161,7 @@ def optimize_CompiledInstanceName():
     class InstanceName(Aggregation, CompiledInstanceName):
         _wrapped_name = _named_index(0)
 
-        # This just makes optimized filter_names faster.
+        # This just makes filter_completions faster.
         tree_name     = None
 
         def __repr__(self):
@@ -1433,14 +1436,13 @@ def optimize_builtin_from_name():
 
 def optimize_get_metaclasses():
     from jedi.inference.value.klass import ClassValue
-    from ..common import Values, state_cache
-    from ..tools import is_pynode
+    from ..common import Values, state_cache, filter_pynodes
 
     def _get_metaclass(value: ClassValue):
         # Only ``arglist`` is valid for metaclasses.
         arglist = value.tree_node.children[3]
         if arglist.type == "arglist":
-            for a in filter(is_pynode, arglist.children):
+            for a in filter_pynodes(arglist.children):
                 if a.type == "argument" and a.children[0].value == "metaclass":
                     for metacls in value.parent_context.infer_node(a.children[2])._set:
                         return metacls
@@ -1452,7 +1454,7 @@ def optimize_get_metaclasses():
         # XXX: Same as ``_get_metaclass``.
         arglist = self.tree_node.children[3]
         if arglist.type == "arglist":
-            for a in filter(is_pynode, arglist.children):
+            for a in filter_pynodes(arglist.children):
                 if a.type == "argument" and a.children[0].value == "metaclass":
                     for metacls in self.parent_context.infer_node(a.children[2])._set:
                         return Values((metacls,))

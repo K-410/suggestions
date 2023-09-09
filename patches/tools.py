@@ -1,7 +1,7 @@
 # This module implements various utilities for Suggestions.
 
 from jedi.inference.compiled.subprocess import functions
-from jedi.inference.compiled.value import CompiledValue, CompiledValueName, create_cached_compiled_value
+from jedi.inference.compiled.value import create_cached_compiled_value
 from jedi.inference.value.instance import CompiledInstance, ValueSet
 import jedi.api as api
 
@@ -76,55 +76,6 @@ _descriptor_overrides = {}
 _rtype_overrides = {}
 _value_overrides = {}
 _virtual_overrides = {}
-
-@inline
-def is_pynode(node) -> bool:
-    from parso.python.tree import PythonNode
-    return PythonNode.__instancecheck__
-
-
-@inline
-def is_basenode(node) -> bool:
-    from parso.tree import BaseNode
-    return BaseNode.__instancecheck__
-
-
-@inline
-def is_leaf(node) -> bool:
-    from parso.tree import Leaf
-    return Leaf.__instancecheck__
-
-@inline
-def is_namenode(node) -> bool:
-    return Name.__instancecheck__
-
-
-@inline
-def is_operator(node) -> bool:
-    return Operator.__instancecheck__
-
-
-@inline
-def is_funcdef(node) -> bool:
-    from parso.python.tree import Function
-    return Function.__instancecheck__
-
-
-@inline
-def is_str(obj) -> bool:
-    return str.__instancecheck__
-
-
-@inline
-def is_param(node) -> bool:
-    from parso.python.tree import Param
-    return Param.__instancecheck__
-
-
-@inline
-def is_classdef(node) -> bool:
-    from parso.python.tree import Class
-    return Class.__instancecheck__
 
 
 @factory
@@ -218,12 +169,6 @@ class AccessOverride(DirectObjectAccess):
             if isinstance(value, GetSetDescriptorType):
                 return False, True, None
         return super().is_allowed_getattr(name, safe=safe)
-
-
-def set_rtype(func, rtype):
-    lines = func.__doc__.splitlines()
-    selector = map(not_, map(contains, lines, repeat(":rtype:")))
-    return "\n".join(compress(lines, selector)) + f"\n:rtype: {rtype}"
 
 
 def override_prologue(override_func):

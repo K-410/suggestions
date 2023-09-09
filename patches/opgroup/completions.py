@@ -175,7 +175,7 @@ def convert_completions(completions: list[classes.Completion], like_name):
 def optimize_Completion_complete():
     from jedi.api.completion import (
         Completion, _extract_string_while_in_string, complete_dict, complete_file_name)
-    from .completions import sort_completions, filter_names, convert_completions
+    from .completions import sort_completions, filter_completions, convert_completions
 
     def complete(self: Completion):
         leaf = self._module_node.get_leaf_for_position(self._original_position, include_prefixes=True)
@@ -203,7 +203,7 @@ def optimize_Completion_complete():
             return convert_completions(prefixed_completions, self._like_name)
 
         completion_names = self._complete_python(leaf)[1]
-        completions = filter_names(completion_names, self.stack, self._like_name)
+        completions = filter_completions(completion_names, self.stack, self._like_name)
         return sort_completions(completions, self._like_name)
 
     Completion.complete = complete
@@ -246,7 +246,7 @@ def contains_fuzzy_ordered(query: str, string: str):
 
 
 @inline
-def filter_names(completions, stack, like_name):
+def filter_completions(completions, stack, like_name):
     from textension.utils import defaultdict_list
     from .completions import contains_fuzzy_unordered
     from itertools import compress, repeat
@@ -258,7 +258,7 @@ def filter_names(completions, stack, like_name):
     search_types = (partial(map, contains_fuzzy_unordered),
                     partial(map, contains_fuzzy_ordered))
 
-    def filter_names(completions, stack, like_name):
+    def filter_completions(completions, stack, like_name):
 
         class Completion(CompletionBase):
             _like_name = like_name
@@ -285,4 +285,4 @@ def filter_names(completions, stack, like_name):
             names[name.string_name] += name,
 
         return map(Completion, zip(names, map_lower(names), names.values()))
-    return filter_names
+    return filter_completions

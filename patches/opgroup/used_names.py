@@ -2,7 +2,6 @@
 # partial updates to module tree nodes. Optimized filter methods that depend
 # on this optimization are also added here.
 
-from collections import defaultdict
 from operator import attrgetter
 
 from parso.python.tree import Module
@@ -11,11 +10,9 @@ from parso.python.diff import (_get_next_leaf_if_indentation,
                                 _PositionUpdatingFinished,
                                 _NodesTreeNode)
 
-from textension.utils import instanced_default_cache, dict_items, starchain, lazy_overwrite
-from ..tools import is_basenode, is_namenode, is_leaf
-
-
-get_direct_node = attrgetter("tree_node.parent")
+from textension.utils import instanced_default_cache, dict_items, starchain, lazy_overwrite, inline, defaultdict_list
+from ..common import filter_basenodes, filter_names
+from functools import partial
 
 
 def apply():
@@ -29,18 +26,21 @@ def optimize_Module_get_used_names():
     _NodesTreeNode.finish = finish
 
 
+@inline
+def map_direct_nodes(node_tree_nodes):
+    return partial(map, attrgetter("tree_node.parent"))
+
+
 def optimize_GlobalNameFilter_values():
     from jedi.inference.filters import GlobalNameFilter
-    from builtins import filter
-    from ..tools import is_basenode
     from ..common import filter_until
 
     def is_valid(stmt, branch):
         pool = branch.children[:]
-        for n in filter(is_basenode, pool):
-            if stmt in filter(is_basenode, n.children):
+        for n in filter_basenodes(pool):
+            if stmt in filter_basenodes(n.children):
                 return True
-            pool += filter(is_basenode, n.children)
+            pool += filter_basenodes(n.children)
         return False
 
     def get_direct_node(node):
@@ -85,7 +85,7 @@ class NamesCache(dict):
 
     def update(self):
         # Get the current module base nodes.
-        nodes = set(filter(is_basenode, self.module.children))
+        nodes = set(filter_basenodes(self.module.children))
 
         # Remove unreferenced nodes.
         for node in self.nodes - nodes:
@@ -95,14 +95,14 @@ class NamesCache(dict):
 
         # Map the names. Only new and updated nodes are mapped.
         for node in nodes - self.nodes | self.updates:
-            names = defaultdict(list)
+            names = defaultdict_list()
             pool  = node.children[:]
-            for n in filter(is_basenode, pool):
+            for n in filter_basenodes(pool):
                 pool += n.children
                 if n.type == "global_stmt":
                     globals_ += n,
 
-            for n in filter(is_namenode, pool):
+            for n in filter_names(pool):
                 names[n.value] += n,
             self[node] = dict_items(names)
 
@@ -110,7 +110,7 @@ class NamesCache(dict):
         self.nodes = nodes
 
         # Compose ``used_names`` from the module base nodes.
-        self.result = result = defaultdict(list)
+        self.result = result = defaultdict_list()
         for name, names in starchain(self.values):
             result[name] += names
 
@@ -151,7 +151,7 @@ def finish(self: _NodesTreeNode):
 
     # Add updated module base nodes to the names cache.
     node_cache[self.tree_node].updates = set(
-        filter(is_basenode, map(get_direct_node, self._node_children)))
+        filter_basenodes(map_direct_nodes(self._node_children)))
 
     
 def optimize_AbstractUsedNamesFilter_init():

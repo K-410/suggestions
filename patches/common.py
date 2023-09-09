@@ -32,7 +32,7 @@ from textension.utils import (
      set_name, truthy_noargs, instanced_default_cache, Aggregation, starchain,
      lazy_overwrite, namespace, filtertrue, get_mro_dict)
 
-from .tools import state, get_handle, factory, is_namenode, is_basenode, ensure_blank_eol
+from .tools import state, get_handle, factory, ensure_blank_eol
 from .. import settings
 
 import bpy
@@ -65,12 +65,26 @@ def add_module_redirect(virtual_module, name=None):
 
 
 @inline
+def is_namenode(node) -> bool:
+    return Name.__instancecheck__
+
+@inline
 def filter_names(sequence):
     return partial(filter, is_namenode)
 
 @inline
-def filter_nodes(sequence):
-    return partial(filter, is_basenode)
+def is_leaf(node) -> bool:
+    from parso.tree import Leaf
+    return Leaf.__instancecheck__
+
+@inline
+def is_classdef(node) -> bool:
+    from parso.python.tree import Class
+    return Class.__instancecheck__
+
+@inline
+def is_str(obj) -> bool:
+    return str.__instancecheck__
 
 @inline
 def filter_strings(seq):
@@ -95,6 +109,51 @@ def map_dict_clear(dicts):
 @inline
 def get_memoize_dicts():
     return partial(filtertrue, memoize_values)
+
+@inline
+def is_funcdef(node) -> bool:
+    from parso.python.tree import Function
+    return Function.__instancecheck__
+
+@inline
+def filter_funcdefs(nodes):
+    return partial(filter, is_funcdef)
+
+@inline
+def is_basenode(node) -> bool:
+    from parso.tree import BaseNode
+    return BaseNode.__instancecheck__
+
+@inline
+def filter_basenodes(nodes):
+    return partial(filter, is_basenode)
+
+@inline
+def is_param(node) -> bool:
+    from parso.python.tree import Param
+    return Param.__instancecheck__
+
+@inline
+def filter_params(nodes):
+    return partial(filter, is_param)
+
+@inline
+def is_pynode(node) -> bool:
+    from parso.python.tree import PythonNode
+    return PythonNode.__instancecheck__
+
+@inline
+def filter_pynodes(nodes):
+    return partial(filter, is_pynode)
+
+@inline
+def is_operator(node) -> bool:
+    from parso.python.tree import Operator
+    return Operator.__instancecheck__
+
+@inline
+def filter_operators(nodes):
+    return partial(filter, is_operator)
 
 
 # Used by VirtualValue.py__call__ and other inference functions where we
@@ -240,7 +299,7 @@ def get_scope_name_definitions(scope):
 
     namedefs = []
 
-    for n in filter_nodes(pool):
+    for n in filter_basenodes(pool):
         if n.type in {"classdef", "funcdef"}:
             # These are always definitions.
             namedefs += n.children[1],

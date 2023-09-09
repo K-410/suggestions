@@ -5,8 +5,7 @@ from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext
 from jedi.inference.value.klass import ClassFilter
 
 from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder
-from ..common import _check_flows, AggregateStubName
-from ..tools import is_basenode, is_namenode
+from ..common import _check_flows, AggregateStubName, filter_basenodes, filter_names, filter_funcdefs, filter_params
 from itertools import repeat
 
 
@@ -89,7 +88,6 @@ def optimize_CompiledValueFilter():
 def optimize_SelfAttributeFilter():
     from jedi.inference.value.instance import SelfAttributeFilter
     from parso.python.tree import Class
-    from ..tools import is_basenode, is_namenode, is_funcdef
     from ..common import AggregateSelfName
 
     def values(self: SelfAttributeFilter):
@@ -106,15 +104,15 @@ def optimize_SelfAttributeFilter():
                 pool  = []
                 names = []
 
-                for n in filter(is_funcdef, class_nodes):
+                for n in filter_funcdefs(class_nodes):
                     pool += n.children[-1].children
 
                 # Recurse node trees.
-                for n in filter(is_basenode, pool):
+                for n in filter_basenodes(pool):
                     pool += n.children
 
                 # Get name definitions.
-                for n in filter(is_namenode, pool):
+                for n in filter_names(pool):
                     if n.get_definition(include_setitem=True):
                         names += n,
 
@@ -236,7 +234,6 @@ def optimize_AnonymousMethodExecutionFilter():
     from parso.python.tree import Lambda
     from ..common import get_cached_scope_definitions
     from ..common import get_scope_name_definitions
-    from ..tools import is_param
 
     def get(self: AnonymousMethodExecutionFilter, name_string):
         names = get_cached_scope_definitions(self._parser_scope)[name_string]
@@ -259,7 +256,7 @@ def optimize_AnonymousMethodExecutionFilter():
             params = children[2].children
 
         # Get parameter name definitions.
-        for param in filter(is_param, params):
+        for param in filter_params(params):
             names += param.children[0],
 
         # The suite.
@@ -375,7 +372,7 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
     namedefs = []
     pool  = scope.children[:]
 
-    for n in filter(is_basenode, pool):
+    for n in filter_basenodes(pool):
         if n.type in {"classdef", "funcdef"}:
             # Add straight to ``namedefs`` we know they are definitions.
             namedefs += n.children[1],
@@ -415,7 +412,7 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
             pool += n.children
 
     # Get name definitions.
-    for n in filter(is_namenode, pool):
+    for n in filter_names(pool):
         if n.get_definition(include_setitem=True):
             namedefs += n,
 
@@ -478,10 +475,10 @@ def get_module_definition_by_name(module, string_name):
     if key not in definition_cache:
         pool = [module]
 
-        for n in filter(is_basenode, pool):
+        for n in filter_basenodes(pool):
             pool += (n.children[1],) if n.type in {"classdef", "funcdef"} else n.children
 
-        for n in filter(is_namenode, pool):
+        for n in filter_names(pool):
             if n.value == string_name and n.get_definition(include_setitem=True):
                 break
         else:

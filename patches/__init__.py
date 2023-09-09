@@ -582,8 +582,8 @@ def patch_get_importer_names():
     from jedi.api.completion import Completion, _gather_nodes
     from itertools import repeat, compress
     import sys
-    from .tools import is_namenode, is_operator
     from importlib.util import find_spec
+    from .common import filter_operators, is_namenode
 
     startswith = str.startswith
     modules = sys.modules.keys()
@@ -597,7 +597,7 @@ def patch_get_importer_names():
             context = module.as_context()
             # This fix applies only when there's at least 1 import name and 1 dot
             # operator. In this context, dots, comma and parentheses may appear.
-            for op in names and filter(is_operator, _gather_nodes(self.stack)):
+            for op in names and filter_operators(_gather_nodes(self.stack)):
                 if op.value is ".":
                     # Compose the import statement and look for it in sys.modules.
                     comp = ".".join(string_names)
