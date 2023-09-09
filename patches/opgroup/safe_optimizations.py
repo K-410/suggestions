@@ -1103,13 +1103,16 @@ def optimize_infer_expr_stmt():
 # Removes recursion protection, remove generator, move exception handling
 # outside bases inference loop, support starred bases.
 def optimize_ClassMixin_py__mro__():
-    from jedi.inference.value.klass import ClassMixin
     from jedi.inference.value.iterable import Sequence
+    from jedi.inference.value.klass import ClassMixin
     from textension.utils import starchain
+    from functools import partial
     from builtins import map, iter, list
     from operator import methodcaller
 
-    call_infer = methodcaller("infer")
+    @inline
+    def map_infer(bases):
+        return partial(map, methodcaller("infer"))
 
     def py__mro__(self: ClassMixin):
         mro = [self]
@@ -1118,8 +1121,9 @@ def optimize_ClassMixin_py__mro__():
 
         while True:
             try:
-                for cls in starchain(map(call_infer, iter_bases)):
-                    mro += cls.py__mro__()
+                for cls in starchain(map_infer(iter_bases)):
+                    if cls not in mro:
+                        mro += cls.py__mro__()
                 break
 
             # Support inferring bases: ``class A(*get_bases()): pass``.
