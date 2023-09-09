@@ -372,7 +372,47 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
     namedefs = []
     pool  = scope.children[:]
 
+    import sys
+    import operator
+    logic_map = {
+        ">": operator.gt,
+        ">=": operator.ge,
+        "==": operator.eq,
+        "!=": operator.ne,
+        "<": operator.lt,
+        "<=": operator.le,
+    }
+    def versioning(comp_node):
+        lhs, op, rhs = comp_node.children
+        if "sys.version_info" in lhs.get_code():
+            numbers = []
+            for num in rhs.children[1].children[::2]:
+                if num.type == "number":
+                    try:
+                        numbers += int(num.value),
+                    except:
+                        pass
+            if cmp := logic_map.get(op.value):
+                if not cmp(sys.version_info, tuple(numbers)):
+                    return False
+            else:
+                assert False, op.value
+        return True
+
+
     for n in filter_basenodes(pool):
+        if n.type == "if_stmt":
+            comp = n.children[1]
+            if comp.type == "comparison":
+                if not versioning(comp):
+                    for i, if_child in enumerate(n.children[4:], 4):
+                        if if_child.type == "keyword":
+                            if if_child.value == "else":
+                                pool += n.children[i + 2],
+                            else:
+                                assert False, (if_child.value, stub_filter)
+                    continue
+
         if n.type in {"classdef", "funcdef"}:
             # Add straight to ``namedefs`` we know they are definitions.
             namedefs += n.children[1],
@@ -384,13 +424,19 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
                 name = n.children[0]
                 # Could be ``atom_expr``, as in dotted name. Skip those.
                 if name.type == "name":
-                    namedefs += name,
+                    op = n.children[1]
+                    # Jedi only considers equals as definitions (not augmented).
+                    if op.type == "operator" and op.value == "=":
+                        namedefs += name,
                 else:
                     print("get_stub_values:", repr(name.type))
 
             elif n.type == "import_from":
                 name = n.children[3]
                 if name.type == "operator":
+                    # Starred imports are ignored in stubs.
+                    if name.value == "*":
+                        continue
                     name = n.children[4]
 
                 # Only matching aliased imports are exported for stubs.
