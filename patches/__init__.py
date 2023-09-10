@@ -847,7 +847,7 @@ def patch_BaseName_get_docstring():
 
     @inline
     def match_signature(doc: str):
-        return re.compile(r"^.*?\(.*?\) -> .*?[\n]").match
+        return re.compile(r"^.*?\(.*?\)(?: -> .*?)?[\n]").match
 
     @inline
     def match_rst_signature(doc: str):
