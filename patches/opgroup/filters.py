@@ -368,30 +368,29 @@ def optimize_ClassMixin_get_filters():
 def filter_node_type(node_type, seq):
     from textension.utils import instanced_default_cache
     from itertools import compress, repeat
-    from operator import attrgetter, eq
     from functools import partial
+    from operator import eq
+    from ..common import map_types
 
     @instanced_default_cache
     def node_types(self: dict, node_type):
         self[node_type] = partial(map, eq, repeat(node_type))
         return self[node_type]
 
-    get_types = partial(map, attrgetter("type"))
-
     def filter_node_type(node_type, seq):
-        return compress(seq, node_types[node_type](get_types(seq)))
+        return compress(seq, node_types[node_type](map_types(seq)))
 
     return filter_node_type
 
 
 @inline
 def get_versioned_nodes(if_stmt):
-    from ..common import filter_keywords, filter_numbers
-    from itertools import count
-    from functools import partial
     from parso.python.tree import String
+    from functools import partial
+    from itertools import count
     from builtins import tuple
     import operator
+    from ..common import filter_keywords, filter_numbers, map_values
     from sys import platform, version_info
 
     logic_map = {
@@ -408,13 +407,13 @@ def get_versioned_nodes(if_stmt):
     def test_node(n):
         if n.type == "comparison":
             lhs, op, rhs = n.children
-            a_string = lhs.get_code()
-            if rhs.__class__ is String and "sys.platform" in a_string:
+            string = lhs.get_code()
+            if rhs.__class__ is String and "sys.platform" in string:
                 return logic_map[op.value](platform, rhs.value.strip("\"\'"))
 
-            elif "sys.version_info" in a_string and \
+            elif "sys.version_info" in string and \
                 (n := next(filter_node_type("testlist_comp", rhs.children), None)):
-                    ints = tuple(to_ints(get_values(filter_numbers(n.children))))
+                    ints = tuple(to_ints(map_values(filter_numbers(n.children))))
                     return logic_map[op.value](version_info, ints)
 
             assert False, "Should not be here when testing on typeshed stubs."
@@ -426,9 +425,6 @@ def get_versioned_nodes(if_stmt):
     @inline
     def to_ints(number_strings):
         return partial(map, int)
-    @inline
-    def get_values(numbers):
-        return partial(map, operator.attrgetter("value"))
 
     def get_versioned_nodes(if_stmt):
         # 0    1    2    3    4     5    6    7    8     9    10
@@ -462,22 +458,18 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
             n = n.children[0]
 
             if n.type == "expr_stmt":
-                name = n.children[0]
-                # Could be ``atom_expr``, as in dotted name. Skip those.
-                if name.type == "name":
-                    op = n.children[1]
+                op = n.children[1]
+                # ``n.children[0].type`` must now be "name".
 
-                    if op.type == "annassign":
-                        op = op.children[0]
+                if op.type == "annassign":
+                    op = op.children[0]
 
-                    # ``op.type`` must now be "operator".
-                    # Only assignments/annotations without a single leading
-                    # underscore are exported by stubs per PEP 484.
-                    if op.value in {"=", ":"}:
-                        if name.value[0] is not "_" or name.value[-1] is not "_":
-                            namedefs += name,
-                else:
-                    assert False, f"Unhandled: {name.type!r}"
+                # ``op.type`` must now be "operator".
+
+                # Only assignments/annotations without a single leading
+                # underscore are exported by stubs per PEP 484.
+                if op.value in {"=", ":"}:
+                    namedefs += n.children[0],
 
             elif n.type == "import_from":
                 name = n.children[3]
@@ -501,7 +493,14 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
                 pool += n.children
 
         elif n.type == "decorated":
-            pool += n.children[1],
+            # Omit decorated classes using ``type_check_only``.
+            for dec in iter(decorators := [n.children[0]]):
+                if dec.type == "decorators":
+                    decorators += dec.children
+                elif dec.children[1].value == "type_check_only":
+                    break
+            else:
+                pool += n.children[1],
 
         # Python version/platform-dependent definitions.
         elif n.type == "if_stmt":
@@ -510,18 +509,11 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
         else:
             pool += n.children
 
-    # Get name definitions.
-    for n in filter_names(pool):
-        if n.get_definition(include_setitem=True):
-            namedefs += n,
-
     tmp = []
     for name in reversed(namedefs):
         value = name.value
-        if value[0] is "_" != value[:2][-1]:
-            continue
-        tmp += name,
-
+        if value[0] is not "_" or value[-1] is "_":
+            tmp += name,
 
     ret = self[stub_filter] = stub_filter._convert_names(stub_filter._filter(tmp))
     return ret
