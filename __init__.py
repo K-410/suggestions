@@ -235,6 +235,10 @@ class Suggestions(ui.widgets.ListBox):
         self.show_description = visible
         utils.safe_redraw()
 
+    def on_activate(self) -> None:
+        self.active.index = self.hover.index
+        bpy.ops.textension.suggestions_commit('INVOKE_DEFAULT')
+
 
 @utils.factory
 def get_instance() -> Suggestions:
