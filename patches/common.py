@@ -173,6 +173,14 @@ def is_number(obj) -> bool:
 def filter_numbers(nodes):
     return partial(filter, is_number)
 
+@inline
+def map_types(seq):
+    return partial(map, attrgetter("type"))
+
+@inline
+def map_values(numbers):
+    return partial(map, attrgetter("value"))
+
 
 # Used by VirtualValue.py__call__ and other inference functions where we
 # don't have any arguments to unpack. For constructors.

@@ -1366,13 +1366,9 @@ def optimize_find_overload_functions():
     from jedi.inference.value.function import _find_overload_functions
     from itertools import compress, repeat
     from functools import partial
-    from ..common import filter_funcdefs
+    from ..common import filter_funcdefs, map_types
     from builtins import map
     import operator
-
-    @inline
-    def map_types(seq):
-        return partial(map, operator.attrgetter("type"))
 
     @inline
     def map_equal_decorated(types):
