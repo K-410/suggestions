@@ -4,7 +4,7 @@ from jedi.inference.compiled.access import ALLOWED_DESCRIPTOR_ACCESS
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter
 from jedi.inference.value.klass import ClassFilter
 
-from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder
+from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder, inline
 from ..common import _check_flows, AggregateStubName, filter_basenodes, filter_names, filter_funcdefs, filter_params
 from itertools import repeat
 
@@ -364,6 +364,87 @@ def optimize_ClassMixin_get_filters():
     ClassMixin.get_filters = get_filters
 
 
+@inline
+def filter_node_type(node_type, seq):
+    from textension.utils import instanced_default_cache
+    from itertools import compress, repeat
+    from operator import attrgetter, eq
+    from functools import partial
+
+    @instanced_default_cache
+    def node_types(self: dict, node_type):
+        self[node_type] = partial(map, eq, repeat(node_type))
+        return self[node_type]
+
+    get_types = partial(map, attrgetter("type"))
+
+    def filter_node_type(node_type, seq):
+        return compress(seq, node_types[node_type](get_types(seq)))
+
+    return filter_node_type
+
+
+@inline
+def get_versioned_nodes(if_stmt):
+    from ..common import filter_keywords, filter_numbers
+    from itertools import count
+    from functools import partial
+    from parso.python.tree import String
+    from builtins import tuple
+    import operator
+    from sys import platform, version_info
+
+    logic_map = {
+        ">":  operator.gt,
+        ">=": operator.ge,
+        "==": operator.eq,
+        "!=": operator.ne,
+        "<":  operator.lt,
+        "<=": operator.le,
+    }
+
+    tests = {"or_test":  any, "and_test": all}
+
+    def test_node(n):
+        if n.type == "comparison":
+            lhs, op, rhs = n.children
+            a_string = lhs.get_code()
+            if rhs.__class__ is String and "sys.platform" in a_string:
+                return logic_map[op.value](platform, rhs.value.strip("\"\'"))
+
+            elif "sys.version_info" in a_string and \
+                (n := next(filter_node_type("testlist_comp", rhs.children), None)):
+                    ints = tuple(to_ints(get_values(filter_numbers(n.children))))
+                    return logic_map[op.value](version_info, ints)
+
+            assert False, "Should not be here when testing on typeshed stubs."
+        return tests[n.type](map_test_node(n.children[::2]))
+    
+    @inline
+    def map_test_node(nodes):
+        return partial(map, test_node)
+    @inline
+    def to_ints(number_strings):
+        return partial(map, int)
+    @inline
+    def get_values(numbers):
+        return partial(map, operator.attrgetter("value"))
+
+    def get_versioned_nodes(if_stmt):
+        # 0    1    2    3    4     5    6    7    8     9    10
+        # if test   :  suite elif test   :  suite else   :  suite
+        children = if_stmt.children
+        for index, keyword in zip(count(step=4), filter_keywords(children)):
+            if keyword.value == "else":
+                return children[index + 2].children
+
+            # ``if`` and ``elif``.
+            elif test_node(children[index + 1]):
+                return children[index + 3].children
+        return ()
+    return get_versioned_nodes
+
+
 def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
     context = stub_filter.parent_context
 
@@ -372,47 +453,7 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
     namedefs = []
     pool  = scope.children[:]
 
-    import sys
-    import operator
-    logic_map = {
-        ">": operator.gt,
-        ">=": operator.ge,
-        "==": operator.eq,
-        "!=": operator.ne,
-        "<": operator.lt,
-        "<=": operator.le,
-    }
-    def versioning(comp_node):
-        lhs, op, rhs = comp_node.children
-        if "sys.version_info" in lhs.get_code():
-            numbers = []
-            for num in rhs.children[1].children[::2]:
-                if num.type == "number":
-                    try:
-                        numbers += int(num.value),
-                    except:
-                        pass
-            if cmp := logic_map.get(op.value):
-                if not cmp(sys.version_info, tuple(numbers)):
-                    return False
-            else:
-                assert False, op.value
-        return True
-
-
     for n in filter_basenodes(pool):
-        if n.type == "if_stmt":
-            comp = n.children[1]
-            if comp.type == "comparison":
-                if not versioning(comp):
-                    for i, if_child in enumerate(n.children[4:], 4):
-                        if if_child.type == "keyword":
-                            if if_child.value == "else":
-                                pool += n.children[i + 2],
-                            else:
-                                assert False, (if_child.value, stub_filter)
-                    continue
-
         if n.type in {"classdef", "funcdef"}:
             # Add straight to ``namedefs`` we know they are definitions.
             namedefs += n.children[1],
@@ -425,11 +466,18 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
                 # Could be ``atom_expr``, as in dotted name. Skip those.
                 if name.type == "name":
                     op = n.children[1]
-                    # Jedi only considers equals as definitions (not augmented).
-                    if op.type == "operator" and op.value == "=":
-                        namedefs += name,
+
+                    if op.type == "annassign":
+                        op = op.children[0]
+
+                    # ``op.type`` must now be "operator".
+                    # Only assignments/annotations without a single leading
+                    # underscore are exported by stubs per PEP 484.
+                    if op.value in {"=", ":"}:
+                        if name.value[0] is not "_" or name.value[-1] is not "_":
+                            namedefs += name,
                 else:
-                    print("get_stub_values:", repr(name.type))
+                    assert False, f"Unhandled: {name.type!r}"
 
             elif n.type == "import_from":
                 name = n.children[3]
@@ -454,6 +502,11 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
 
         elif n.type == "decorated":
             pool += n.children[1],
+
+        # Python version/platform-dependent definitions.
+        elif n.type == "if_stmt":
+            pool += get_versioned_nodes(n)
+
         else:
             pool += n.children
 

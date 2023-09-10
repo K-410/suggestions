@@ -155,6 +155,24 @@ def is_operator(node) -> bool:
 def filter_operators(nodes):
     return partial(filter, is_operator)
 
+@inline
+def is_keyword(obj) -> bool:
+    from parso.python.tree import Keyword
+    return Keyword.__instancecheck__
+
+@inline
+def filter_keywords(nodes):
+    return partial(filter, is_keyword)
+
+@inline
+def is_number(obj) -> bool:
+    from parso.python.tree import Number
+    return Number.__instancecheck__
+
+@inline
+def filter_numbers(nodes):
+    return partial(filter, is_number)
+
 
 # Used by VirtualValue.py__call__ and other inference functions where we
 # don't have any arguments to unpack. For constructors.
