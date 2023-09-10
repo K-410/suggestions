@@ -41,6 +41,16 @@ class TEXT_OT_autocomplete(OpOverride):
         return OPERATOR_CANCELLED
 
 
+def _get_extended_api_type(name):
+    from .patches.common import get_extended_type
+
+    api_type = name.api_type
+    if api_type in {"class", "instance"}:
+        if annotation := get_extended_type(name):
+            api_type = annotation
+    return api_type
+
+
 class Description(ui.widgets.TextView):
     parent: "Suggestions"
 
@@ -55,14 +65,17 @@ class Description(ui.widgets.TextView):
         return None
 
     def draw(self):
-        if self.active_entry is not self.last_entry:
-            if self.active_entry:
-                string = f"type: {self.active_entry._name.api_type}\n\n"
-                string += self.active_entry.docstring()
+        entry = self.active_entry
+
+        if entry is not self.last_entry:
+            if entry:
+                api_type = _get_extended_api_type(entry._name)
+                string = f"type: {api_type}\n\n"
+                string += entry.docstring()
             else:
                 string = ()
             self.set_from_string(string)
-            self.last_entry = self.active_entry
+            self.last_entry = entry
         return super().draw()
 
 

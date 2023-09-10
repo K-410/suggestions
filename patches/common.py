@@ -9,6 +9,9 @@ from jedi.inference.lazy_value import LazyKnownValues, LazyTreeValue
 from jedi.inference.arguments import AbstractArguments, TreeArguments
 from jedi.inference.compiled import builtin_from_name
 
+from jedi.inference.value.function import FunctionValue, MethodValue
+from jedi.inference.base_value import ValueWrapper
+from jedi.inference.value.instance import CompiledBoundMethod
 from jedi.inference.context import CompiledContext, GlobalNameFilter
 from jedi.inference.imports import Importer
 from jedi.inference.param import ExecutedParamName
@@ -692,6 +695,38 @@ def _check_flows(self, names):
 
 def _repr(obj):
     return type.__dict__['__name__'].__get__(type(obj))
+
+
+def get_extended_type(name: "CompiledName"):
+
+    for value in name.infer():
+        if isinstance(value, CompiledBoundMethod):
+            return "method"
+        elif isinstance(value, VirtualValue):
+            obj = value.obj
+        elif isinstance(value, VirtualInstance):
+            obj = value.class_value.obj
+        else:
+            if isinstance(value, ValueWrapper):
+                value = value._wrapped_value
+
+            if isinstance(value, CompiledValue):
+                obj = value.access_handle.access._obj
+            elif isinstance(value, FunctionValue):
+                if isinstance(value, MethodValue):
+                    return "method"
+                return "function"
+            else:
+                return value.py__name__()
+
+        if not isinstance(obj, type):
+            obj = type(obj)
+
+        import inspect
+        ann = inspect.formatannotation(obj)
+        if "bpy_types" in ann:
+            ann = ann.replace("bpy_types", "bpy.types")
+        return ann
 
 
 class VirtualInstance(Aggregation, CompiledInstance):
