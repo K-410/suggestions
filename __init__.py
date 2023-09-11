@@ -1,7 +1,7 @@
 # This module implements auto-completions.
 
 
-from textension.btypes.defs import OPERATOR_CANCELLED
+from textension.btypes.defs import OPERATOR_CANCELLED, BLF_BOLD
 from textension.overrides import OpOverride
 from textension.utils import _context, _system
 from textension import utils, ui, prefs
@@ -30,9 +30,6 @@ _get_sync_key = operator.attrgetter("select_end_line", "select_end_character")
 
 # Token separators excluding dot/period
 separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
-
-
-BLF_BOLD = 1 << 11  # ``blf.enable(0, BLF_BOLD)`` adds bold effect.
 
 
 class TEXT_OT_autocomplete(OpOverride):
