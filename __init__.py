@@ -77,6 +77,17 @@ class Description(ui.widgets.TextView):
             self.last_entry = entry
         return super().draw()
 
+    def add_font_delta(self, delta: int):
+        parent = self.parent
+
+        rel_size = parent.description_relative_font_size + delta
+        abs_size = parent.space_data.font_size + rel_size
+
+        rel_size -= abs_size - max(5, abs_size)
+        parent.description_relative_font_size = rel_size
+        self._update_lines()
+        utils.safe_redraw()
+
 
 class Suggestions(ui.widgets.ListBox):
     default_width  = 260
