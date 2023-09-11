@@ -53,6 +53,7 @@ def _apply_patches():
     patch_CompiledValueFilter_get_cached_name()
     patch_BaseName_get_docstring()
     patch_canon_typeshed_compatibility()
+    patch_Script_get_signatures()
 
 
 def _apply_optimizations():
@@ -869,3 +870,30 @@ def patch_canon_typeshed_compatibility():
     from jedi.inference.gradual.typeshed import _IMPORT_MAP
 
     _IMPORT_MAP.clear()
+
+
+# Patches ClassMixin.get_signatures to also check ``__new__`` and not just
+# ``__init__`` for parameter names in signatures. Fixes partial(|<-  ) and
+# probably others.
+def patch_Script_get_signatures():
+    from jedi.inference.value.klass import ClassMixin
+    from .common import NoArguments
+
+    def get_signatures(self: ClassMixin):
+        if metaclasses := self.get_metaclasses():
+            if sigs := self.get_metaclass_signatures(metaclasses):
+                return sigs
+
+        for instance in self.py__call__(NoArguments):
+            for method_name in ("__call__", "__init__"):
+                for method in instance.py__getattribute__(method_name):
+                    ret = []
+                    found = False
+                    for sig in method.get_signatures():
+                        sig = sig.bind(self)
+                        found |= bool(sig.get_param_names())
+                        ret += sig,
+                    if found:
+                        return ret
+        return []
+    ClassMixin.get_signatures = get_signatures
