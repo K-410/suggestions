@@ -3,7 +3,7 @@
 
 from textension.btypes.defs import OPERATOR_CANCELLED, BLF_BOLD
 from textension.overrides import OpOverride
-from textension.utils import _context, _system
+from textension.utils import _context, _system, get_text_line_sync_key
 from textension import utils, ui, prefs
 
 import operator
@@ -25,8 +25,6 @@ settings = utils.namespace(
 
 # Backup.
 _gc_enable = gc.enable
-
-_get_sync_key = operator.attrgetter("select_end_line", "select_end_character")
 
 # Token separators excluding dot/period
 separators = {*" !\"#$%&\'()*+,-/:;<=>?@[\\]^`{|}~"}
@@ -133,7 +131,7 @@ class Suggestions(ui.widgets.ListBox):
 
     def poll(self) -> bool:
         if text := self.is_visible and _context.edit_text:
-            if _get_sync_key(text) == self.sync_key:
+            if get_text_line_sync_key(text) == self.sync_key:
                 return bool(self.lines)
             # TODO: Setting this in the poll isn't a good idea.
             self.last_position = -1, -1
@@ -142,7 +140,7 @@ class Suggestions(ui.widgets.ListBox):
         return False
 
     def sync_cursor(self, line_index) -> None:
-        self.sync_key = _get_sync_key(_context.edit_text)
+        self.sync_key = get_text_line_sync_key(_context.edit_text)
         self.last_position = line_index, self.sync_key[1]
         return None
 
@@ -296,7 +294,7 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
         nlines = context.space_data.drawcache.total_lines
 
         # Text line index is O(N) so avoid syncing cursor as much as possible.
-        if instance.sync_key != _get_sync_key(text) or instance.last_nlines != nlines:
+        if instance.sync_key != get_text_line_sync_key(text) or instance.last_nlines != nlines:
             instance.sync_cursor(text.select_end_line_index)
             instance.last_nlines = nlines
 
