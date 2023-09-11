@@ -50,6 +50,13 @@ class Description(ui.widgets.TextView):
     parent: "Suggestions"
     last_entry       = None
 
+    foreground_color = utils._forwarder("parent.description_foreground_color")
+    background_color = utils._forwarder("parent.description_background_color")
+    font_size        = utils._forwarder("parent.description_font_size")
+    line_padding     = utils._forwarder("parent.description_line_padding")
+    use_word_wrap    = utils._forwarder("parent.description_use_word_wrap")
+    shadow           = utils._forwarder("parent.shadow")
+
     @property
     def active_entry(self):
         if self.parent.active.index != -1:
@@ -83,7 +90,17 @@ class Suggestions(ui.widgets.ListBox):
     last_position           = 0, 0
     sync_key                = ()
     last_nlines             = 0
+    is_visible              = False
 
+    show_description          = False
+    show_bold_matches         = False
+
+    use_auto_font_size        = True
+    use_fuzzy_search          = True
+    use_ordered_fuzzy_search  = True
+    use_case_sensitive_search = False
+
+    shadow                  = 0.0,  0.0,  0.0,  0.5
     background_color        = 0.15, 0.15, 0.15, 1.0
     border_color            = 0.30, 0.30, 0.30, 1.0
 
@@ -95,103 +112,23 @@ class Suggestions(ui.widgets.ListBox):
     hover_border_color      = 1.0, 1.0, 1.0, 0.4
     hover_border_width      = 1
 
-    fixed_font_size        = 16
-    foreground_color       = 0.4,  0.7,  1.0,  1.0
-    match_foreground_color = 0.87, 0.60, 0.25, 1.0
+    fixed_font_size         = 16
+    foreground_color        = 0.4,  0.7,  1.0,  1.0
+    match_foreground_color  = 0.87, 0.60, 0.25, 1.0
 
-    description_foreground_color = 0.7, 0.7, 0.7, 1.0
-    description_font_size = 16
-    description_line_padding = 1.25
-    description_use_monospace = False
-    description_use_word_wrap = True
-
-    is_visible             = False
-
-    show_description         = False
-    show_bold_matches        = False
-    use_auto_font_size        = True
-    use_fuzzy_search          = True
-    use_ordered_fuzzy_search  = True
-    use_case_sensitive_search = False
+    description_foreground_color = 0.7,  0.7,  0.7,  1.0
+    description_background_color = 0.18, 0.18, 0.18, 1.0
+    description_font_size        = 16
+    description_line_padding     = 1.25
+    description_use_monospace    = False
+    description_use_word_wrap    = True
 
     def __init__(self, st):
         super().__init__(parent=None)
         self.space_data = st
         self.description = Description(self)
         self.height_hint = self.height
-        self.update_from_defaults()
-
-    @classmethod
-    def update_from_defaults(cls):
-        p = cls.preferences
-        has_prop = utils.get_mro_dict(cls).__contains__
-        keys = list(filter(has_prop, p.bl_rna.properties.keys()))
-
-        new_dict = dict(zip(keys, map(p.path_resolve, keys)))
-        utils._update_namespace(cls, **new_dict)
-
-        Description.foreground_color = cls.description_foreground_color
-        Description.font_size = cls.description_font_size
-        Description.line_padding = cls.description_line_padding
-
-        Description.font_id = int(cls.description_use_monospace) 
-        Description.use_word_wrap = cls.description_use_word_wrap
-
-        from operator import attrgetter
-
-        names = ("background_color", "border_color", "border_width")
-
-        ui.widgets.EdgeResizer.show_resize_handles = p.show_resize_handles
-        sizer_color = tuple(p.resizer_color) + (0.0,)
-
-        for instance in Suggestions.instances:
-            instance.update_uniforms(
-                shadow=(0.0, 0.0, 0.0, 0.5),
-                background_color=cls.background_color,
-                border_color=cls.border_color,
-                border_width=cls.border_width,
-                corner_radius=cls.corner_radius
-            )
-            instance.description.update_uniforms(shadow=(0.0, 0.0, 0.0, 0.5))
-            instance.description._update_lines()
-
-            # Uniforms.
-            for widget in ("active", "hover", "scrollbar", "scrollbar.thumb"):
-                concat = map((widget.replace(".", "_") + "_").__add__, names)
-                
-                w = attrgetter(widget)(instance)
-                w.update_uniforms(
-                    **dict(zip(names, map(new_dict.__getitem__, tuple(concat)))),
-                    corner_radius=cls.corner_radius)
-                    
-            # Resizer settings.
-            for sizer in instance.resizer.sizers:
-                sizer.update_uniforms(background_color=sizer_color, border_color=sizer_color)
-                sizer.set_alpha(0.0)
-
-            instance.reset_cache()
-
-
-        runtime_names = ("use_fuzzy_search", "use_ordered_fuzzy_search", "use_case_sensitive_search")
-        curr_runtime = tuple(map(settings.__getattribute__, runtime_names))
-
-        values = map(p.path_resolve, runtime_names)
-        settings.update(**dict(zip(runtime_names, values)))
-
-        # utils.redraw_editors(area='TEXT_EDITOR', region_type='WINDOW')
-        if curr_runtime != tuple(map(settings.__getattribute__, runtime_names)):
-            instance_cache = get_instance.__kwdefaults__["cache"]
-            # If an instance is already open, complete with new settings.
-            for window in _context.window_manager.windows:
-                for area in window.screen.areas:
-                    if area.type != 'TEXT_EDITOR':
-                        continue
-                    st = area.spaces.active
-                    instance = instance_cache.get(st)
-                    if not instance or not instance.is_visible:
-                        continue
-                    with bpy.context.temp_override(space_data=st, window=window, area=area):
-                        bpy.ops.textension.suggestions_complete(toggle_description=False)
+        update_defaults()
 
     def resize(self, size):
         super().resize(size)
@@ -359,8 +296,7 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
         if instance.is_visible and self.toggle_description:
             instance.toggle_description()
             return {'FINISHED'}
-    
-        bpy.error = False
+
         if not settings.loaded:
             _setup(force=True)
 
@@ -379,14 +315,11 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
         try:
             ret = complete(text)
         except BaseException as e:
-            bpy.error = True
             import traceback
             traceback.print_exc()
             print("Error at:", tuple(text.cursor_focus))
             raise e from None
         else:
-            bpy.ret = ret  # For introspection
-
             # We don't want garbage collection to spuriously run until things
             # have been rendered.
             instance._temp_lines += instance.lines,
@@ -420,6 +353,9 @@ class TEXTENSION_OT_suggestions_commit(utils.TextOperator):
         line, column = text.cursor_focus
 
         entry = instance.active_entry
+
+        if not entry:
+            return {'CANCELLED'}
 
         word_start = column - entry._like_name_length
 
@@ -466,8 +402,10 @@ class TEXTENSION_OT_suggestions_dismiss(utils.TextOperator):
         if instance.is_visible:
             instance.dismiss()
             return {'CANCELLED'}
-        # Pass the event.
-        return {'PASS_THROUGH'}
+
+        else:
+            # Not visible, give the event to other operators.
+            return {'PASS_THROUGH'}
 
 
 # TODO: Make this generic and move to ui module.
@@ -565,11 +503,76 @@ def _enable_gc():
     gc.enable()
 
 
-_instances: tuple[Suggestions] = get_instance.__kwdefaults__["cache"].values()
+def update_defaults(self: "TEXTENSION_PG_suggestions" = None, context = None):
+    from idprop.types import IDPropertyArray
 
+    p = Suggestions.preferences
 
-def update_defaults(self: "TEXTENSION_PG_suggestions", context):
-    Suggestions.update_from_defaults()
+    new_settings = {}
+
+    for key in p.bl_rna.properties.keys():
+        if hasattr(Suggestions, key):
+            value = p.path_resolve(key)
+
+            # Float array to tuple.
+            if isinstance(value, IDPropertyArray):
+                value = tuple(value)
+            new_settings[key] = value
+
+    # Update defaults on the class.
+    utils._update_namespace(Suggestions, **new_settings)
+
+    Description.font_id = int(Suggestions.description_use_monospace)
+
+    # ``corner_radius`` is omitted since it's global.
+    names = ("background_color", "border_color", "border_width")
+    widget_names = ("active", "hover", "scrollbar", "scrollbar.thumb")
+
+    ui.widgets.EdgeResizer.show_resize_handles = p.show_resize_handles
+    sizer_color = tuple(p.resizer_color) + (0.0,)
+    sizer_uniforms = dict.fromkeys(names[:2], sizer_color)
+
+    for instance in Suggestions.instances:
+        instance.update_from_defaults()
+        instance.description.update_from_defaults()
+        instance.description._update_lines()
+
+        # Get the corresponding uniform value stored on the class.
+        for name in widget_names:
+            concat = map((name.replace(".", "_") + "_").__add__, names)
+
+            widget = operator.attrgetter(name)(instance)
+            uniforms = dict(zip(names, map(new_settings.__getitem__, concat)))
+            widget.update_uniforms(corner_radius=Suggestions.corner_radius,
+                                   **uniforms)
+
+        # Resizer settings.
+        for sizer in instance.resizer.sizers:
+            sizer.update_uniforms(**sizer_uniforms)
+            sizer.set_alpha(0.0)
+
+        instance.reset_cache()
+
+    runtime_names = ("use_fuzzy_search", "use_ordered_fuzzy_search", "use_case_sensitive_search")
+    curr_runtime = tuple(map(settings.__getattribute__, runtime_names))
+
+    values = map(p.path_resolve, runtime_names)
+    settings.update(**dict(zip(runtime_names, values)))
+
+    if curr_runtime != tuple(map(settings.__getattribute__, runtime_names)):
+        instance_cache = get_instance.__kwdefaults__["cache"]
+
+        # If an instance is already open, complete with new settings.
+        for window in _context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type != 'TEXT_EDITOR':
+                    continue
+                st = area.spaces.active
+                instance = instance_cache.get(st)
+                if not instance or not instance.is_visible:
+                    continue
+                with bpy.context.temp_override(space_data=st, window=window, area=area):
+                    bpy.ops.textension.suggestions_complete(toggle_description=False)
 
 
 class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
@@ -587,7 +590,6 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
     fixed_font_size: bpy.props.IntProperty(
         default=Suggestions.fixed_font_size,
         update=update_defaults,
-        name="Font Size",
         max=144,
         min=1,
     )
@@ -769,6 +771,11 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         update=update_defaults,
         **color_default_kw,
     )
+    description_background_color: bpy.props.FloatVectorProperty(
+        default=Suggestions.description_background_color,
+        update=update_defaults,
+        **color_default_kw,
+    )
     description_use_monospace: bpy.props.BoolProperty(
         default=Suggestions.description_use_monospace,
         update=update_defaults
@@ -805,7 +812,7 @@ def add_runtime_toggle(layout, path, text, emboss=True):
                     depress=value,
                     emboss=emboss,
                     icon=('TRIA_DOWN' if value else 'TRIA_RIGHT') if emboss else 'NONE')
-    
+
     op.path = path
     r.alignment = 'EXPAND'# if emboss else 'LEFT'
     if value:
@@ -814,11 +821,6 @@ def add_runtime_toggle(layout, path, text, emboss=True):
 
 
 def draw_settings(prefs, context, layout):
-
-    def centered_label(layout, text):
-        r = layout.row()
-        r.alignment = 'CENTER'
-        r.label(text=text)
 
     suggestions = prefs.suggestions
 
@@ -840,14 +842,14 @@ def draw_settings(prefs, context, layout):
         c.prop(suggestions, "use_auto_font_size", text="Automatic Font Size")
 
         r = c.row()
-        r.prop(suggestions, "fixed_font_size")
+        r.prop(suggestions, "fixed_font_size", text="Font Size")
         r.enabled = not suggestions.use_auto_font_size
 
-        c.prop(suggestions, "line_padding")
-        c.prop(suggestions, "text_padding")
+        c.prop(suggestions, "line_padding", text="Line Height")
+
         c.separator(factor=3)
-        c.prop(suggestions, "corner_radius", slider=True)
-        c.prop(suggestions, "scrollbar_width")
+        c.prop(suggestions, "corner_radius", slider=True, text="Roundness")
+        c.prop(suggestions, "scrollbar_width", text="Scrollbar Width")
         c.separator(factor=3)
 
     if c := add_runtime_toggle(layout, "show_theme_settings", "Theme"):
@@ -887,6 +889,7 @@ def draw_settings(prefs, context, layout):
         c.prop(suggestions, "description_font_size", text="Font Size")
         c.prop(suggestions, "description_line_padding", text="Line Height")
         c.prop(suggestions, "description_foreground_color", text="Foreground")
+        c.prop(suggestions, "description_background_color", text="Background")
 
 
 def _setup(force=False):
@@ -930,7 +933,8 @@ def enable():
     default.delete_hooks += on_delete,
 
     Suggestions.preferences = prefs.add_settings(TEXTENSION_PG_suggestions)
-    Suggestions.update_from_defaults()
+    update_defaults()
+
     utils.add_draw_hook(draw_suggestions, draw_index=9)
     ui.add_hit_test(hit_test_suggestions)
 
