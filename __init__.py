@@ -48,10 +48,7 @@ def _get_extended_api_type(name):
 
 class Description(ui.widgets.TextView):
     parent: "Suggestions"
-
-    font_size: int   = 14
     last_entry       = None
-    foreground_color = 0.7, 0.7, 0.7, 1.0
 
     @property
     def active_entry(self):
@@ -102,6 +99,12 @@ class Suggestions(ui.widgets.ListBox):
     foreground_color       = 0.4,  0.7,  1.0,  1.0
     match_foreground_color = 0.87, 0.60, 0.25, 1.0
 
+    description_foreground_color = 0.7, 0.7, 0.7, 1.0
+    description_font_size = 16
+    description_line_padding = 1.25
+    description_use_monospace = False
+    description_use_word_wrap = True
+
     is_visible             = False
 
     show_description         = False
@@ -116,8 +119,79 @@ class Suggestions(ui.widgets.ListBox):
         self.space_data = st
         self.description = Description(self)
         self.height_hint = self.height
-        self.update_uniforms(shadow=(0.0, 0.0, 0.0, 0.5))
-        self.description.update_uniforms(shadow=(0.0, 0.0, 0.0, 0.5))
+        self.update_from_defaults()
+
+    @classmethod
+    def update_from_defaults(cls):
+        p = cls.preferences
+        has_prop = utils.get_mro_dict(cls).__contains__
+        keys = list(filter(has_prop, p.bl_rna.properties.keys()))
+
+        new_dict = dict(zip(keys, map(p.path_resolve, keys)))
+        utils._update_namespace(cls, **new_dict)
+
+        Description.foreground_color = cls.description_foreground_color
+        Description.font_size = cls.description_font_size
+        Description.line_padding = cls.description_line_padding
+
+        Description.font_id = int(cls.description_use_monospace) 
+        Description.use_word_wrap = cls.description_use_word_wrap
+
+        from operator import attrgetter
+
+        names = ("background_color", "border_color", "border_width")
+
+        ui.widgets.EdgeResizer.show_resize_handles = p.show_resize_handles
+        sizer_color = tuple(p.resizer_color) + (0.0,)
+
+        for instance in Suggestions.instances:
+            instance.update_uniforms(
+                shadow=(0.0, 0.0, 0.0, 0.5),
+                background_color=cls.background_color,
+                border_color=cls.border_color,
+                border_width=cls.border_width,
+                corner_radius=cls.corner_radius
+            )
+            instance.description.update_uniforms(shadow=(0.0, 0.0, 0.0, 0.5))
+            instance.description._update_lines()
+
+            # Uniforms.
+            for widget in ("active", "hover", "scrollbar", "scrollbar.thumb"):
+                concat = map((widget.replace(".", "_") + "_").__add__, names)
+                
+                w = attrgetter(widget)(instance)
+                w.update_uniforms(
+                    **dict(zip(names, map(new_dict.__getitem__, tuple(concat)))),
+                    corner_radius=cls.corner_radius)
+                    
+            # Resizer settings.
+            for sizer in instance.resizer.sizers:
+                sizer.update_uniforms(background_color=sizer_color, border_color=sizer_color)
+                sizer.set_alpha(0.0)
+
+            instance.reset_cache()
+
+
+        runtime_names = ("use_fuzzy_search", "use_ordered_fuzzy_search", "use_case_sensitive_search")
+        curr_runtime = tuple(map(settings.__getattribute__, runtime_names))
+
+        values = map(p.path_resolve, runtime_names)
+        settings.update(**dict(zip(runtime_names, values)))
+
+        # utils.redraw_editors(area='TEXT_EDITOR', region_type='WINDOW')
+        if curr_runtime != tuple(map(settings.__getattribute__, runtime_names)):
+            instance_cache = get_instance.__kwdefaults__["cache"]
+            # If an instance is already open, complete with new settings.
+            for window in _context.window_manager.windows:
+                for area in window.screen.areas:
+                    if area.type != 'TEXT_EDITOR':
+                        continue
+                    st = area.spaces.active
+                    instance = instance_cache.get(st)
+                    if not instance or not instance.is_visible:
+                        continue
+                    with bpy.context.temp_override(space_data=st, window=window, area=area):
+                        bpy.ops.textension.suggestions_complete(toggle_description=False)
 
     def resize(self, size):
         super().resize(size)
@@ -494,111 +568,8 @@ def _enable_gc():
 _instances: tuple[Suggestions] = get_instance.__kwdefaults__["cache"].values()
 
 
-@utils.factory
-def _set_runtime_uniforms():
-    def retself(obj): return obj
-
-    def wrapper(path, attr, value):
-        getter = operator.attrgetter(path) if path else retself
-        for obj in map(getter, _instances):
-            obj.update_uniforms(**{attr: value})
-        utils.redraw_editors()
-    return wrapper
-
-
-def update_corner_radius(self, context):
-    get = operator.attrgetter("active", "hover", "scrollbar", "scrollbar.thumb")
-
-    value = self.corner_radius
-    Suggestions.corner_radius = value
-
-    for instance in _instances:
-        instance.update_uniforms(corner_radius=value)
-        for widget in get(instance):
-            widget.update_uniforms(corner_radius=value)
-
-
-def update_sizers(self, context):
-    get_sizers = operator.attrgetter("resizer.sizers")
-    ui.widgets.EdgeResizer.show_resize_handles = getattr(self, "show_resize_handles")
-
-    color = tuple(self.resizer_color) + (0.0,)
-    for sizer in utils.starchain(map(get_sizers, _instances)):
-        sizer.update_uniforms(background_color=color, border_color=color)
-        sizer.set_alpha(0.0)
-
-
-def update_value(name: str):
-    def update_setting(self: "TEXTENSION_PG_suggestions", context) -> None:
-        setattr(Suggestions, name, getattr(self, name))
-        utils.consume(map(operator.methodcaller("reset_cache"), _instances))
-        utils.redraw_editors('TEXT_EDITOR', 'WINDOW')
-    return update_setting
-
-
-def uniform_color_property(path):
-    name = path.replace(".", "_")
-
-    ret = bpy.props.FloatVectorProperty(
-        name=name.replace("_", " ").title(),
-        default=getattr(Suggestions, name),
-        update=update_uniform(path),
-        min=0.0,
-        max=1.0,
-        size=4,
-        subtype='COLOR_GAMMA'
-    )
-    sys._getframe(1).f_locals["__annotations__"][name] = ret
-
-
-def update_uniform_child(path: str, uniform: str):
-    name = f"{path}_{uniform}".replace(".", "_")
-    def update(self, context, *, get_child=operator.attrgetter(path), name=name):
-        value = getattr(self, name)
-        setattr(Suggestions, name, value)
-        for instance in _instances:
-            get_child(instance).update_uniforms(**{uniform: value})
-        utils.redraw_editors('TEXT_EDITOR', 'WINDOW')
-    return update
-
-
-def update_uniform(self, context):
-    names = ("background_color", "border_color", "border_width")
-    values = {name: getattr(self, name) for name in names}
-    for instance in _instances:
-        instance.update_uniforms(**values)
-    for name in names:
-        setattr(Suggestions, name, values[name])
-
-
-def update_description(self, context):
-    Description.use_word_wrap = self.description_use_word_wrap
-    Description.font_size = self.description_font_size
-    Description.line_padding = self.description_line_padding
-    Description.font_id = int(self.description_use_monospace) 
-
-    for instance in _instances:
-        instance.description._update_lines()
-
-
-def update_runtime_from_prefs(self: "TEXTENSION_PG_suggestions", context):
-    settings.use_fuzzy_search = self.use_fuzzy_search
-    settings.use_ordered_fuzzy_search = self.use_ordered_fuzzy_search
-    settings.use_case_sensitive_search = self.use_case_sensitive_search
-
-    instance_cache = get_instance.__kwdefaults__["cache"]
-
-    # If an instance is already open, complete with new settings.
-    for window in _context.window_manager.windows:
-        for area in window.screen.areas:
-            if area.type != 'TEXT_EDITOR':
-                continue
-            st = area.spaces.active
-            instance = instance_cache.get(st)
-            if not instance or not instance.is_visible:
-                continue
-            with bpy.context.temp_override(space_data=st, window=window, area=area):
-                bpy.ops.textension.suggestions_complete(toggle_description=False)
+def update_defaults(self: "TEXTENSION_PG_suggestions", context):
+    Suggestions.update_from_defaults()
 
 
 class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
@@ -614,198 +585,194 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
     color_default_kw = {"min": 0, "max": 1, "size": 4, "subtype": 'COLOR_GAMMA'}
 
     fixed_font_size: bpy.props.IntProperty(
-        update=update_value("fixed_font_size"),
         default=Suggestions.fixed_font_size,
+        update=update_defaults,
         name="Font Size",
         max=144,
         min=1,
     )
     use_case_sensitive_search: bpy.props.BoolProperty(
-        update=update_runtime_from_prefs,
+        description="Suggestions are case-sensitive to the typed text",
         default=Suggestions.use_case_sensitive_search,
-        name="Match Case",
-        description="Suggestions are case-sensitive to the typed text"
+        update=update_defaults,
     )
     use_fuzzy_search: bpy.props.BoolProperty(
-        update=update_runtime_from_prefs,
+        description="Show completions with partial (fuzzy) matches",
         default=Suggestions.use_fuzzy_search,
-        name="Fuzzy Search",
-        description="Show completions with partial (fuzzy) matches"
+        update=update_defaults,
     )
     use_ordered_fuzzy_search: bpy.props.BoolProperty(
-        update=update_runtime_from_prefs,
+        description="Use strict fuzzy search order. \n"
+                    "When enabled, `pain` won't match `pineapple`",
         default=Suggestions.use_ordered_fuzzy_search,
-        name="Ordered Search",
-        description="Use strict fuzzy search order. \nWhen enabled, `PAIN` won't match `PINeApple`"
+        update=update_defaults,
     )
     show_bold_matches: bpy.props.BoolProperty(
-        update=update_value("show_bold_matches"),
+        description="Show the matching part of a completion in bold",
         default=Suggestions.show_bold_matches,
-        name="Bold Matches",
-        description="Show the matching part of a completion in bold"
+        update=update_defaults,
     )
     use_auto_font_size: bpy.props.BoolProperty(
-        update=update_value("use_auto_font_size"),
+        description="Completion font size follows the editor's font size",
         default=Suggestions.use_auto_font_size,
-        name="Automatic Font Size",
-        description="Completion font size follows the editor's font size"
+        update=update_defaults,
     )
     show_resize_handles: bpy.props.BoolProperty(
-        update=update_sizers,
-        name="Highlight Resizers",
+        description="Highlight resize handles when hovered",
+        update=update_defaults,
         default=True
     )
     line_padding: bpy.props.FloatProperty(
-        update=update_value("line_padding"),
         default=Suggestions.line_padding,
-        name="Line Height",
+        update=update_defaults,
         min=0.5,
         max=4.0,
     )
     text_padding: bpy.props.IntProperty(
-        update=update_value("text_padding"),
         default=Suggestions.text_padding,
-        name="Text Padding",
+        update=update_defaults,
         max=1000,
         min=0,
     )
     scrollbar_width: bpy.props.IntProperty(
-        name="Scrollbar Width",
-        update=update_value("scrollbar_width"),
         default=Suggestions.scrollbar_width,
+        update=update_defaults,
         max=100,
         min=0,
     )
     foreground_color: bpy.props.FloatVectorProperty(
-        update=update_value("foreground_color"),
         default=Suggestions.foreground_color,
-        name="Foreground Color",
+        update=update_defaults,
         **color_default_kw,
     )
     match_foreground_color: bpy.props.FloatVectorProperty(
-        update=update_value("match_foreground_color"),
         default=Suggestions.match_foreground_color,
-        name="Match Foreground Color",
+        update=update_defaults,
         **color_default_kw,
     )
     corner_radius: bpy.props.FloatProperty(
-        update=update_corner_radius,
-        name="Roundness",
+        update=update_defaults,
         default=0.0,
         max=10.0,
         min=0.0,
     )
 
     resizer_color: bpy.props.FloatVectorProperty(
-        default=(0.38, 0.38, 0.38), **(color_default_kw | {"size": 3}),
-        update=update_sizers,
-        name="Resize Handle Color"        
+        default=(0.38, 0.38, 0.38),
+        update=update_defaults,
+        **(color_default_kw | {"size": 3}),
     )
 
     background_color: bpy.props.FloatVectorProperty(
         default=Suggestions.background_color,
-        update=update_uniform,
+        update=update_defaults,
         **color_default_kw
     )
     border_color: bpy.props.FloatVectorProperty(
         default=Suggestions.border_color,
-        update=update_uniform,
+        update=update_defaults,
         **color_default_kw
     )
     border_width: bpy.props.IntProperty(
         default=int(Suggestions.border_width),
-        update=update_uniform,
+        update=update_defaults,
         min=0,
         max=20
     )
 
     active_background_color: bpy.props.FloatVectorProperty(
-        update=update_uniform_child("active", "background_color"),
         default=Suggestions.active_background_color,
+        update=update_defaults,
         **color_default_kw
     )
     active_border_color: bpy.props.FloatVectorProperty(
-        update=update_uniform_child("active", "border_color"),
         default=Suggestions.active_border_color,
+        update=update_defaults,
         **color_default_kw,
     )
     active_border_width: bpy.props.FloatProperty(
-        update=update_uniform_child("active", "border_width"),
         default=Suggestions.active_border_width,
+        update=update_defaults,
         max=20.0,
         min=0.0
     )
 
     hover_background_color: bpy.props.FloatVectorProperty(
-        update=update_uniform_child("hover", "background_color"),
         default=Suggestions.hover_background_color,
+        update=update_defaults,
         **color_default_kw,
     )
     hover_border_color: bpy.props.FloatVectorProperty(
-        update=update_uniform_child("hover", "border_color"),
         default=Suggestions.hover_border_color,
+        update=update_defaults,
         **color_default_kw
     )
     hover_border_width: bpy.props.FloatProperty(
-        update=update_uniform_child("hover", "border_width"),
         default=Suggestions.hover_border_width,
+        update=update_defaults,
         max=20.0,
         min=0.0
     )
 
     scrollbar_background_color: bpy.props.FloatVectorProperty(
-        update=update_uniform_child("scrollbar", "background_color"),
         default=Suggestions.scrollbar_background_color,
+        update=update_defaults,
         **color_default_kw
     )
     scrollbar_border_color: bpy.props.FloatVectorProperty(
-        update=update_uniform_child("scrollbar", "border_color"),
         default=Suggestions.scrollbar_border_color,
+        update=update_defaults,
         **color_default_kw
     )
     scrollbar_border_width: bpy.props.FloatProperty(
-        update=update_uniform_child("scrollbar", "border_width"),
         default=Suggestions.scrollbar_border_width,
+        update=update_defaults,
         max=20.0,
         min=0.0
     )
 
     scrollbar_thumb_background_color: bpy.props.FloatVectorProperty(
-        update=update_uniform_child("scrollbar.thumb", "background_color"),
         default=Suggestions.scrollbar_thumb_background_color,
+        update=update_defaults,
         **color_default_kw
     )
     scrollbar_thumb_border_color: bpy.props.FloatVectorProperty(
-        update=update_uniform_child("scrollbar.thumb", "border_color"),
         default=Suggestions.scrollbar_thumb_border_color,
+        update=update_defaults,
         **color_default_kw
     )
     scrollbar_thumb_border_width: bpy.props.FloatProperty(
-        update=update_uniform_child("scrollbar.thumb", "border_width"),
         default=Suggestions.scrollbar_thumb_border_width,
+        update=update_defaults,
         max=20.0,
         min=0.0
     )
 
     description_use_word_wrap: bpy.props.BoolProperty(
-        update=update_description,
+        update=update_defaults,
         default=True
     )
-    description_font_size: bpy.props.IntProperty(default=14, min=7, max=144, update=update_description)
+    description_font_size: bpy.props.IntProperty(
+        default=Suggestions.description_font_size,
+        min=7,
+        max=144,
+        update=update_defaults
+    )
     description_line_padding: bpy.props.FloatProperty(
-        update=update_description,
-        default=Description.line_padding,
-        name="Line Height",
+        default=Suggestions.description_line_padding,
+        update=update_defaults,
         min=0.5,
         max=4.0,
     )
     description_foreground_color: bpy.props.FloatVectorProperty(
-        update=update_description,
-        default=Description.foreground_color,
-        name="Foreground Color",
+        default=Suggestions.description_foreground_color,
+        update=update_defaults,
         **color_default_kw,
     )
-    description_use_monospace: bpy.props.BoolProperty(update=update_description)
+    description_use_monospace: bpy.props.BoolProperty(
+        default=Suggestions.description_use_monospace,
+        update=update_defaults
+    )
 
 
 classes = (
@@ -856,22 +823,21 @@ def draw_settings(prefs, context, layout):
     suggestions = prefs.suggestions
 
     layout = layout.column(align=True)
-    # layout.emboss = 'NONE_OR_STATUS'
     layout.use_property_split = True
     layout.use_property_decorate = False
 
     if c := add_runtime_toggle(layout, "show_general_settings", "General"):
-        c.prop(suggestions, "use_case_sensitive_search")
-        c.prop(suggestions, "use_fuzzy_search")
+        c.prop(suggestions, "use_case_sensitive_search", text="Match Case")
+        c.prop(suggestions, "use_fuzzy_search", text="Fuzzy Search")
 
         r = c.row()
-        r.prop(suggestions, "use_ordered_fuzzy_search")
+        r.prop(suggestions, "use_ordered_fuzzy_search", text="Ordered Search")
         r.enabled = suggestions.use_fuzzy_search
 
-        c.prop(suggestions, "show_bold_matches")
-        c.prop(suggestions, "show_resize_handles")
+        c.prop(suggestions, "show_bold_matches", text="Bold Matches")
+        c.prop(suggestions, "show_resize_handles", text="Highlight Resizers")
         c.separator()
-        c.prop(suggestions, "use_auto_font_size")
+        c.prop(suggestions, "use_auto_font_size", text="Automatic Font Size")
 
         r = c.row()
         r.prop(suggestions, "fixed_font_size")
@@ -923,23 +889,6 @@ def draw_settings(prefs, context, layout):
         c.prop(suggestions, "description_foreground_color", text="Foreground")
 
 
-def apply_preferences():
-    p = Suggestions.preferences
-    has_prop = Suggestions.__dict__.__contains__
-    keys = list(filter(has_prop, p.bl_rna.properties.keys()))
-
-    for name, value in zip(keys, map(p.path_resolve, keys)):
-        setattr(Suggestions, name, value)
-
-    Description.font_id = int(p.description_use_monospace) 
-    Description.font_size = p.description_font_size
-    Description.line_padding = p.description_line_padding
-    Description.foreground_color = p.description_foreground_color
-    Description.use_word_wrap = p.description_use_word_wrap
-
-    update_runtime_from_prefs(p, _context)
-
-
 def _setup(force=False):
     if settings.loaded:
         return
@@ -981,7 +930,7 @@ def enable():
     default.delete_hooks += on_delete,
 
     Suggestions.preferences = prefs.add_settings(TEXTENSION_PG_suggestions)
-    apply_preferences()
+    Suggestions.update_from_defaults()
     utils.add_draw_hook(draw_suggestions, draw_index=9)
     ui.add_hit_test(hit_test_suggestions)
 
