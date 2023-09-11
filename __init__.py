@@ -685,6 +685,13 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         max=100,
         min=0,
     )
+    
+    shadow: bpy.props.FloatVectorProperty(
+        default=Suggestions.shadow,
+        update=update_defaults,
+        **color_default_kw
+    )
+
     foreground_color: bpy.props.FloatVectorProperty(
         default=Suggestions.foreground_color,
         update=update_defaults,
@@ -903,6 +910,7 @@ def draw_settings(prefs, context, layout):
         c.separator(factor=3)
 
     if c := add_runtime_toggle(layout, "show_theme_settings", "Theme"):
+        c.prop(suggestions, "shadow", text="Shadow Color")
 
         if p := add_runtime_toggle(c, "show_theme_listbox", "List Box", emboss=False):
             p.prop(suggestions, "foreground_color", text="Foreground")
