@@ -547,25 +547,42 @@ def update_defaults(self: "TEXTENSION_PG_suggestions" = None, context = None):
 
     # ``corner_radius`` is omitted since it's global.
     names = ("background_color", "border_color", "border_width")
-    widget_names = ("active", "hover", "scrollbar", "scrollbar.thumb")
 
     ui.widgets.EdgeResizer.show_resize_handles = p.show_resize_handles
     sizer_color = tuple(p.resizer_color) + (0.0,)
     sizer_uniforms = dict.fromkeys(names[:2], sizer_color)
 
+    def update_scrollbar(cls, scrollbar):
+        scrollbar.update_uniforms(
+            background_color=cls.scrollbar_background_color,
+            border_color=cls.scrollbar_border_color,
+            border_width=cls.scrollbar_border_width,
+        )
+        scrollbar.thumb.update_uniforms(
+            background_color=cls.scrollbar_thumb_background_color,
+            border_color=cls.scrollbar_thumb_border_color,
+            border_width=cls.scrollbar_thumb_border_width,
+        )
+
     for instance in Suggestions.instances:
+        instance.set_corner_radius(Suggestions.corner_radius)
         instance.update_from_defaults()
         instance.description.update_from_defaults()
         instance.description._update_lines()
+        instance.description.set_corner_radius(Suggestions.corner_radius)
 
         # Get the corresponding uniform value stored on the class.
-        for name in widget_names:
+        for name in ("active", "hover"):
             concat = map((name.replace(".", "_") + "_").__add__, names)
 
             widget = operator.attrgetter(name)(instance)
             uniforms = dict(zip(names, map(new_settings.__getitem__, concat)))
             widget.update_uniforms(corner_radius=Suggestions.corner_radius,
                                    **uniforms)
+
+        update_scrollbar(Suggestions, instance.scrollbar)
+        update_scrollbar(Suggestions, instance.description.scrollbar)
+        update_scrollbar(Suggestions, instance.description.scrollbar_h)
 
         # Resizer settings.
         for sizer in instance.resizer.sizers:
