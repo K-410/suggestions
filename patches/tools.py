@@ -28,8 +28,6 @@ class StateModuleCache(dict):
         _check_type(value_set, ValueSet, frozenset)
 
         assert string_names, "Empty tuple"
-        if not value_set:
-            print("Warning: Empty ValueSet for", string_names)
 
         consume(_check_type(s, str) for s in string_names)
         self[string_names] = value_set
