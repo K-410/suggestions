@@ -32,7 +32,6 @@ def _apply_patches():
     patch_import_resolutions()
     patch_get_builtin_module_names()
     patch_compiledvalue()  # XXX: Not having this means tuple[X] isn't subscriptable.
-    # patch_misc()  # XXX: This is very experimental.
     patch_is_pytest_func()
     patch_paths_from_list_modifications()
 
@@ -403,43 +402,6 @@ def patch_get_builtin_module_names():
         return builtin | set(tmp)
     
     _patch_function(functions.get_builtin_module_names, get_builtin_module_names)
-
-
-def patch_misc():
-    from importlib import _bootstrap_external
-    from importlib._bootstrap_external import path_sep, path_separators
-    from itertools import repeat
-    from builtins import filter
-    import os
-    import bpy
-
-    def restore():
-        _bootstrap_external._path_stat = org_path_stat
-        cache.clear()
-
-    def init(path):
-        _bootstrap_external._path_stat = fast_path_stat
-        bpy.app.timers.register(restore)
-        return fast_path_stat(path)
-
-    class Cache(dict):
-        def __missing__(self, path):
-            ret = self[path] = stat(path)
-            return ret
-
-    cache = Cache()
-    stat = os.stat
-    org_path_stat = _bootstrap_external._path_stat
-    fast_path_stat = cache.__getitem__
-    _bootstrap_external._path_stat = init
-
-    path_seps = repeat(path_separators)
-    join = path_sep.join
-    rstrip = str.rstrip
-
-    def _path_join(*parts):
-        return join(map(rstrip, filter(None, parts), path_seps))
-    _patch_function(_bootstrap_external._path_join, _path_join)
 
 
 # Patches FakeList to have its 'array_type' class attribute fixed.
