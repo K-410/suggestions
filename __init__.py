@@ -118,10 +118,12 @@ class Suggestions(ui.widgets.ListBox):
 
     description_foreground_color = 0.7,  0.7,  0.7,  1.0
     description_background_color = 0.18, 0.18, 0.18, 1.0
-    description_font_size        = 16
+    description_fixed_font_size  = 16
     description_line_padding     = 1.25
     description_use_monospace    = False
     description_use_word_wrap    = True
+    description_use_auto_font_size = True
+    description_relative_font_size = -2
 
     def __init__(self, st):
         super().__init__(parent=None)
@@ -139,6 +141,14 @@ class Suggestions(ui.widgets.ListBox):
         if self.use_auto_font_size:
             return getattr(self.space_data, "font_size", self.fixed_font_size)
         return self.fixed_font_size
+
+    @property
+    def description_font_size(self):
+        font_size = self.description_fixed_font_size
+        if self.description_use_auto_font_size:
+            size_offset = self.description_relative_font_size
+            font_size = max(5, getattr(self.space_data, "font_size", font_size) + size_offset)
+        return font_size
 
     def poll(self) -> bool:
         if text := self.is_visible and _context.edit_text:
@@ -619,6 +629,11 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         default=Suggestions.use_auto_font_size,
         update=update_defaults,
     )
+    description_use_auto_font_size: bpy.props.BoolProperty(
+        description="Description font size follows the editor's font size",
+        default=Suggestions.description_use_auto_font_size,
+        update=update_defaults,
+    )
     show_resize_handles: bpy.props.BoolProperty(
         description="Highlight resize handles when hovered",
         update=update_defaults,
@@ -754,9 +769,16 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         update=update_defaults,
         default=True
     )
-    description_font_size: bpy.props.IntProperty(
-        default=Suggestions.description_font_size,
+    description_fixed_font_size: bpy.props.IntProperty(
+        default=Suggestions.description_fixed_font_size,
         min=7,
+        max=144,
+        update=update_defaults
+    )
+    description_relative_font_size: bpy.props.IntProperty(
+        description="Relative font size when automatic font size is enabled",
+        default=Suggestions.description_relative_font_size,
+        min=-144,
         max=144,
         update=update_defaults
     )
@@ -886,7 +908,16 @@ def draw_settings(prefs, context, layout):
     if c := add_runtime_toggle(layout, "show_description_settings", "Description"):
         c.prop(suggestions, "description_use_word_wrap", text="Use Word Wrap")
         c.prop(suggestions, "description_use_monospace", text="Use Monospace")
-        c.prop(suggestions, "description_font_size", text="Font Size")
+        c.prop(suggestions, "description_use_auto_font_size", text="Automatic Font Size")
+
+        r = c.row()
+        r.prop(suggestions, "description_relative_font_size", text="Relative Font Size")
+        r.enabled = suggestions.description_use_auto_font_size
+
+        r = c.row()
+        r.prop(suggestions, "description_fixed_font_size", text="Font Size")
+        r.enabled = not suggestions.description_use_auto_font_size
+
         c.prop(suggestions, "description_line_padding", text="Line Height")
         c.prop(suggestions, "description_foreground_color", text="Foreground")
         c.prop(suggestions, "description_background_color", text="Background")
