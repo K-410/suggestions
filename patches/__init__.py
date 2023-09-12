@@ -39,7 +39,6 @@ def _apply_patches():
     patch_various_redirects()
     patch_SequenceLiteralValue()
     patch_complete_dict()
-    patch_convert_values()
     patch_get_user_context()
     patch_Importer()
     patch_get_importer_names()
@@ -91,19 +90,6 @@ def patch_get_user_context():
         return module_context.create_context(leaf)
 
     _patch_function(completion.get_user_context, get_user_context)
-
-
-# This fixes jedi attempting to complete from both stubs and compiled modules,
-# which isn't allowed by PEP 484. It's either or.
-def patch_convert_values():
-    from jedi.inference.gradual import conversion
-
-    # This makes ``prefer_stubs`` True by default and False if ``only_stubs`` is True.
-    def convert_values(values, only_stubs=False, prefer_stubs=True, ignore_compiled=True):
-        if only_stubs:
-            prefer_stubs = False
-        return convert_values(values, only_stubs=only_stubs, prefer_stubs=prefer_stubs, ignore_compiled=ignore_compiled)
-    # convert_values = _patch_function(conversion.convert_values, convert_values)
 
 
 # Fix unpickling errors jedi doesn't catch.
