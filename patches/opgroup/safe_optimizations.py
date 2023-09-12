@@ -80,6 +80,7 @@ def apply():
     optimize_AccessHandle_shit()
     optimize_ExactValue_py__class__()
     optimize_Sequence_get_wrapped_value()
+    optimize_Stack_allowed_transition_names_and_token_types()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -1826,3 +1827,27 @@ def optimize_Sequence_get_wrapped_value():
         return c
 
     Sequence._get_wrapped_value = _get_wrapped_value
+
+
+def optimize_Stack_allowed_transition_names_and_token_types():
+    from parso.parser import Stack, ReservedString
+    from functools import partial
+    from operator import attrgetter
+
+    @inline
+    def get_dfa(stack_nodes):
+        return partial(map, attrgetter("dfa"))
+
+    def _allowed_transition_names_and_token_types(self):
+        ret = []
+
+        for dfa in get_dfa(self[::-1]):
+            for transition in dfa.transitions:
+                if transition.__class__ is ReservedString:
+                    transition = transition.value
+                ret += transition,
+            if not dfa.is_final:
+                break
+        return ret
+
+    Stack._allowed_transition_names_and_token_types = _allowed_transition_names_and_token_types
