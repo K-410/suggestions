@@ -1194,7 +1194,7 @@ class Values(frozenset, ValueSet):
         return frozenset.__or__(self, x)
 
     def py__getattribute__(self: "Values", *args, **kw):
-        return Values(starchain(map(call_py_getattr(*args, **kw), self._set)))
+        return Values(starchain(map(call_py_getattr(*args, **kw), self)))
 
 
 class AggregateExecutedParamName(Aggregation, ExecutedParamName):
