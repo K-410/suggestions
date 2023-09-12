@@ -614,17 +614,20 @@ def patch_ExactValue():
     # Instead we forward them to known data paths.
     del ExactValue.__getattribute__
 
+    # See ExactValue.__getattribute__.
     ExactValue.access_handle     = _forwarder("_compiled_value.access_handle")
     ExactValue.execute_operation = _forwarder("_compiled_value.execute_operation")
     ExactValue.get_safe_value    = _forwarder("_compiled_value.get_safe_value")
-    ExactValue.is_bound_method   = _forwarder("_compiled_value.is_bound_method")
-    ExactValue.is_compiled       = truthy_noargs
-    ExactValue.negate            = _forwarder("_compiled_value.negate")
     ExactValue.py__bool__        = _forwarder("_compiled_value.py__bool__")
-    ExactValue.parent_context    = _forwarder("_compiled_value.parent_context")
-    ExactValue._arguments        = _forwarder("_compiled_value._arguments")
+    ExactValue.negate            = _forwarder("_compiled_value.negate")
+    ExactValue.is_compiled       = truthy_noargs
+
+    # These end up going to LazyValueWrapper._wrapped_value stub value.
+    ExactValue.is_bound_method   = _forwarder("_wrapped_value.is_bound_method")
+    ExactValue.parent_context    = _forwarder("_wrapped_value.parent_context")
+    ExactValue._arguments        = _forwarder("_wrapped_value._arguments")
     ExactValue.is_stub           = falsy_noargs
-    ExactValue.get_filters       = _forwarder("_compiled_value.get_filters")
+    ExactValue.get_filters       = _forwarder("_wrapped_value.get_filters")
 
     def __init__(self: ExactValue, compiled_value):
         self._compiled_value = compiled_value
