@@ -54,6 +54,7 @@ def _apply_patches():
     patch_canon_typeshed_compatibility()
     patch_Script_get_signatures()
     patch_HelperValueMixin_is_same_class()
+    patch_Completion_complete_trailer()
 
 def _apply_optimizations():
     from . import opgroup
@@ -881,3 +882,24 @@ def patch_HelperValueMixin_is_same_class():
         return self == class2
     
     HelperValueMixin.is_same_class = is_same_class
+
+
+# Patches Completion._complete_trailer to fix "object. |<-" completion.
+# The added space causes Jedi to pick the wrong ``previous_leaf``, the dot
+# operator, which ends up throwing an AssertionError during inference.
+# This is a shorthand fix. The correct fix would be to detect the wrong leaf
+# in Completion._complete_python, but that's too much code to drag in here.1 
+def patch_Completion_complete_trailer():
+    from jedi.api.completion import Completion, infer_call_of_leaf
+
+    def _complete_trailer(self: Completion, previous_leaf):
+        while previous_leaf.value == ".":
+            previous_leaf = previous_leaf.get_previous_leaf()
+        inferred_context = self._module_context.create_context(previous_leaf)
+        values = infer_call_of_leaf(inferred_context, previous_leaf)
+
+        # NOTE: ``cached_name`` so-called optimization is removed.
+        # We've already optimized Jedi to hell.
+        return None, self._complete_trailer_for_values(values)
+
+    Completion._complete_trailer = _complete_trailer
