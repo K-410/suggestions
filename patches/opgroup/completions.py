@@ -8,6 +8,7 @@ from ... import settings
 
 def apply():
     optimize_Completion_complete()
+    optimize_Completion_complete_keywords()
 
 
 @inline
@@ -286,3 +287,36 @@ def filter_completions(completions, stack, like_name):
 
         return map(Completion, zip(names, map_lower(names), names.values()))
     return filter_completions
+
+
+def optimize_Completion_complete_keywords():
+    from jedi.api.completion import Completion
+    from jedi.api.keywords import KeywordName
+    from ..common import state
+
+    class KeywordName2(str, KeywordName):
+        inference_state = state
+        parent_context  = _forwarder("inference_state.builtins_module")
+        string_name     = _forwarder("__init__.__self__")
+
+        __repr__ = KeywordName.__repr__
+        __init__ = str.__init__
+
+    @inline
+    def filter_isalpha(strings):
+        return partial(filter, str.isalpha)
+    @inline
+    def filter_is_str(sequence):
+        return partial(filter, str.__instancecheck__)
+    @inline
+    def filter_value_keywords(strings):
+        return partial(filter, {"True", "False", "None"}.__contains__)
+
+    def _complete_keywords(self: Completion, allowed_transitions, only_values):
+        strings = filter_isalpha(filter_is_str(allowed_transitions))
+
+        if only_values:
+            strings = filter_value_keywords(strings)
+        return map(KeywordName2, strings)
+    
+    Completion._complete_keywords = _complete_keywords
