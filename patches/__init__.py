@@ -53,7 +53,7 @@ def _apply_patches():
     patch_BaseName_get_docstring()
     patch_canon_typeshed_compatibility()
     patch_Script_get_signatures()
-
+    patch_HelperValueMixin_is_same_class()
 
 def _apply_optimizations():
     from . import opgroup
@@ -862,3 +862,22 @@ def patch_Script_get_signatures():
                         return ret
         return []
     ClassMixin.get_signatures = get_signatures
+
+
+# Patches HelperValueMixin.is_same_class to work with classes that are for all
+# intents and purposes identical, but are two distinct objects in memory.
+# This happens when builtin stub values are cached.
+def patch_HelperValueMixin_is_same_class():
+    from jedi.inference.base_value import HelperValueMixin
+
+    def is_same_class(self: HelperValueMixin, class2):
+        # Class matching should prefer comparisons that are not this function.
+        if type(class2).is_same_class != HelperValueMixin.is_same_class:
+            return class2.is_same_class(self)
+
+        # Compare by tree nodes.
+        if self.tree_node is class2.tree_node is not None:
+            return True
+        return self == class2
+    
+    HelperValueMixin.is_same_class = is_same_class
