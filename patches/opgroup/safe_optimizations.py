@@ -213,6 +213,10 @@ def optimize_BaseNode_get_leaf_for_position():
 
 def optimize_ValueSet_methods():
     from jedi.inference.base_value import ValueSet
+    from textension.utils import starchain
+    from functools import partial
+    from itertools import repeat
+    from operator import methodcaller
     from ..common import Values, state
 
     # Means we've eliminated most of the old ValueSet class. That's a good thing.
@@ -231,26 +235,27 @@ def optimize_ValueSet_methods():
     ValueSet.__len__  = _forwarder("_set.__len__")
     ValueSet.__ne__   = _forwarder("_set.__ne__")
 
-    state_execute = state.execute
+    @inline
+    def map_execute(values, arguments):
+        return partial(map, state.execute)
 
     # Skip wrappers that aren't useful.
     def execute(self: ValueSet, arguments):
-        result = []
-
-        for value in self._set:
-            result += state_execute(value, arguments)._set
-        return Values(result)
+        return Values(starchain(map_execute(self, repeat(arguments))))
 
     ValueSet.execute = execute
 
-    from operator import methodcaller
     call_py__class__ = methodcaller("py__class__")
 
     def py__class__(self: ValueSet):
-        return Values(map(call_py__class__, self._set))
+        return Values(map(call_py__class__, self))
 
     ValueSet.py__class__ = py__class__
 
+    def __or__(self: ValueSet, other):
+        return Values(starchain((self, other)))
+
+    ValueSet.__or__ = __or__
 
 def optimize_ValueContext_methods():
     from jedi.inference.context import ValueContext
