@@ -335,7 +335,7 @@ def patch_Importer():
             self.import_path = import_path
 
         # If initialization was deferred to the original, convert here.
-        self.import_path = self._str_import_path = tuple(s.value if is_namenode(s) else s for s in self.import_path)
+        self.import_path = self._str_import_path = tuple(map(str, self.import_path))
 
     __init__ = _patch_function(Importer.__init__, __init__)
 
@@ -356,7 +356,8 @@ def patch_Importer():
                 from_name = import_path[-1]
                 import_path = from_names
 
-        import_path = tuple(n.value for n in import_path)
+        # Assumes Leaf.__str__ unbound getter optimization.
+        import_path = tuple(map(str, import_path))
         importer = Importer(state, import_path, module_context, import_node.level)
         return from_name, import_path, import_node.level, importer.follow()
 
