@@ -739,6 +739,9 @@ def optimize_Leaf():
 
     Leaf.__init__ = __init__
 
+    # Allow doing str(leaf) to get the leaf's value.
+    Leaf.__str__ = _unbound_getter("value")
+
 
 def optimize_split_lines():
     from parso import split_lines
