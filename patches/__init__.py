@@ -54,6 +54,7 @@ def _apply_patches():
     patch_Script_get_signatures()
     patch_HelperValueMixin_is_same_class()
     patch_Completion_complete_trailer()
+    patch_BaseName_get_signatures()
 
 def _apply_optimizations():
     from . import opgroup
@@ -890,3 +891,34 @@ def patch_Completion_complete_trailer():
         return None, self._complete_trailer_for_values(values)
 
     Completion._complete_trailer = _complete_trailer
+
+
+# Patches BaseName._get_signatures to return the signatures of the first value
+# of a set of values. The rest of the values are almost always duplicates.
+def patch_BaseName_get_signatures():
+    from jedi.inference.gradual.conversion import _python_to_stub_names
+    from jedi.api.classes import BaseName, MixedName
+
+    @inline
+    def is_mixed_name(name):
+        return MixedName.__instancecheck__
+    
+    def _get_signatures(self: BaseName, for_docstring=False):
+        api_type = self._name.api_type
+
+        if api_type == 'property':
+            return []
+
+        elif api_type == "statement" and for_docstring and not self.is_stub():
+            return []
+
+        elif is_mixed_name(self._name):
+            return self._name.infer_compiled_value().get_signatures()
+
+        for name in _python_to_stub_names((self._name,), fallback_to_python=True):
+            for value in name.infer():
+                if signatures := value.get_signatures():
+                    return signatures
+        return []
+
+    BaseName._get_signatures = _get_signatures
