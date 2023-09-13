@@ -81,6 +81,7 @@ def apply():
     optimize_ExactValue_py__class__()
     optimize_Sequence_get_wrapped_value()
     optimize_Stack_allowed_transition_names_and_token_types()
+    optimize_Function_iter_return_stmts()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -1851,3 +1852,26 @@ def optimize_Stack_allowed_transition_names_and_token_types():
         return ret
 
     Stack._allowed_transition_names_and_token_types = _allowed_transition_names_and_token_types
+
+
+# Removes the recursion. Also fixes endless loops whenever Jedi is executing
+# decorators that just return the function argument.
+def optimize_Function_iter_return_stmts():
+    from parso.python.tree import Function
+
+    def iter_return_stmts(self: Function):
+        pool = self.children[:]
+
+        ret = []
+        for node in iter(pool):
+            elem_type = node.type
+            # parso.python.tree._RETURN_STMT_CONTAINERS
+            if elem_type in {"if_stmt", "while_stmt", "for_stmt", "try_stmt",
+                             "with_stmt", "async_stmt", "suite", "simple_stmt"}:
+                pool += node.children
+
+            elif elem_type == "return_stmt" or (elem_type == "keyword" and node.value == "return"):
+                ret += node,
+        return ret
+
+    Function.iter_return_stmts = iter_return_stmts
