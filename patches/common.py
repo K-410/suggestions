@@ -1188,10 +1188,8 @@ class Values(frozenset, ValueSet):
     def from_sets(cls, sets):
         return cls(starchain(sets))
 
-    def __or__(self, x):
-        if isinstance(x, ValueSet):
-            x = x._set
-        return frozenset.__or__(self, x)
+    def __or__(self, other):
+        return Values(starchain((self, other)))
 
     def py__getattribute__(self: "Values", *args, **kw):
         return Values(starchain(map(call_py_getattr(*args, **kw), self)))
