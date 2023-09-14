@@ -408,6 +408,15 @@ def get_scope_name_definitions(scope):
 
         elif n.type in {"error_node", "arglist"}:
             continue
+
+        elif n.type == "try_stmt":
+            for c in filter_basenodes(n.children):
+                if c.type == "suite":
+                    pool += c.children
+                elif c.type == "except_clause":
+                    for name in filter_names(c.children):
+                        if name.get_previous_sibling() == "as":
+                            namedefs += name,
         else:
             pool += n.children
 
