@@ -364,24 +364,6 @@ def optimize_ClassMixin_get_filters():
     ClassMixin.get_filters = get_filters
 
 
-@inline
-def filter_node_type(node_type, seq):
-    from textension.utils import instanced_default_cache
-    from itertools import compress, repeat
-    from functools import partial
-    from operator import eq
-    from ..common import map_types
-
-    @instanced_default_cache
-    def node_types(self: dict, node_type):
-        self[node_type] = partial(map, eq, repeat(node_type))
-        return self[node_type]
-
-    def filter_node_type(node_type, seq):
-        return compress(seq, node_types[node_type](map_types(seq)))
-
-    return filter_node_type
-
 
 @inline
 def get_versioned_nodes(if_stmt):
@@ -390,7 +372,7 @@ def get_versioned_nodes(if_stmt):
     from itertools import count
     from builtins import tuple
     import operator
-    from ..common import filter_keywords, filter_numbers, map_values
+    from ..common import filter_keywords, filter_numbers, map_values, filter_node_type
     from sys import platform, version_info
 
     logic_map = {
