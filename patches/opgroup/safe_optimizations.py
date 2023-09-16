@@ -84,6 +84,10 @@ def apply():
     optimize_Function_iter_return_stmts()
     optimize_LazyKnownValues_infer()
     optimize_ValueContext_is_builtins_module()
+    optimize_HelperValueMixin_is_sub_class_of()
+    optimize_TreeSignature()
+    optimize_numpydocstr()
+    optimize_Function_iter_yield_exprs()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -1919,4 +1923,71 @@ def optimize_ValueContext_is_builtins_module():
     ValueContext.__eq__ = _forwarder("_value.__eq__")
     ValueContext.is_builtins_module = _unbound_method(partial(eq, state.builtins_module))
 
+
+# Adds caching, removes debug.
+def optimize_HelperValueMixin_is_sub_class_of():
+    from jedi.inference.base_value import HelperValueMixin
+    from ..common import state_cache
+    from operator import methodcaller
+
+
+    @state_cache
+    def is_sub_class_of(self, class_value):
+        is_same_class = methodcaller("is_same_class", class_value)
+        return next(map(is_same_class, self.py__mro__()), False)
+
+    HelperValueMixin.is_sub_class_of = is_sub_class_of
+
+
+# Allow only one TreeSignature instance if the arguments are the same.
+def optimize_TreeSignature():
+    from jedi.inference.signature import TreeSignature
+    from ..common import state_cache_kw, state_cache
+
+    # If creation arguments are same, use cache.
+    @state_cache_kw
+    def __new__(cls: TreeSignature, value, function_value=None, is_bound=False):
+        return object.__new__(cls)
+
+    TreeSignature.__new__ = __new__
+    TreeSignature.matches_signature = state_cache(TreeSignature.matches_signature)
+
+
+# No, we don't have ``numpydoc``. Stop thrashing the disk.
+def optimize_numpydocstr():
+    from jedi.inference.docstrings import _search_param_in_numpydocstr
+    from jedi.inference.docstrings import _search_return_in_numpydocstr
+
+    def search_param_in_numpydocstr(docstr, param_str):
+        return ()
+    
+    def search_return_in_numpydocstr(docstr):
+        yield from ()
+
+    _patch_function(_search_param_in_numpydocstr, search_param_in_numpydocstr)
+    _patch_function(_search_return_in_numpydocstr, search_return_in_numpydocstr)
+
+
+# Flatten the recursive function.
+def optimize_Function_iter_yield_exprs():
+    from parso.python.tree import Function
+    from ..common import is_basenode
+
+    def iter_yield_exprs(self: Function):
+        pool = self.children[:]
+        ret = []
+        for node in iter(pool):
+            if node.type in {"classdef", "funcdef", "lambdef"}:
+                continue
+
+            if is_basenode(node):
+                pool += node.children
+
+            elif node.value == "yield":
+                if node.parent.type == 'yield_expr':
+                    node = node.parent
+                ret += node,
+        return ret
+
+    Function.iter_yield_exprs = iter_yield_exprs
 
