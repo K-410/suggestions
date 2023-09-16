@@ -26,10 +26,9 @@ def unwrap(func):
 
 def optimize_memos():
     from jedi.inference.base_value import HelperValueMixin, NO_VALUES
-    @state_cache
-    def as_context(self, *args):
-        return self._as_context(*args)
-    HelperValueMixin.as_context = as_context
+    from operator import methodcaller
+
+    HelperValueMixin.as_context = state_cache(methodcaller("_as_context"))
 
 
     from jedi.inference.base_value import LazyValueWrapper, safe_property
