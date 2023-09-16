@@ -41,14 +41,9 @@ def optimize_AbstractContext_py__getattribute__():
     from jedi.inference.analysis import add as add_analysis
     from jedi.inference.context import AbstractContext, _get_global_filters_for_name
     from jedi.inference.finder import filter_name
-    from operator import methodcaller
 
-    from textension.utils import starchain, partial
-    from ..common import Values, is_namenode
-
-    @inline
-    def map_infer(names):
-        return partial(map, methodcaller("infer"))
+    from textension.utils import starchain
+    from ..common import Values, is_namenode, map_infer
 
     def py__getattribute__(self: AbstractContext,
                            name_or_str,
