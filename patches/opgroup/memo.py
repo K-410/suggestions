@@ -48,9 +48,6 @@ def optimize_memos():
     ImportName.infer = infer
 
 
-    from jedi.inference.value.klass import ClassValue
-    ClassValue.py__bases__ = state_cache(unwrap(ClassValue.py__bases__))
-
     from jedi.inference.gradual.base import DefineGenericBaseClass
     DefineGenericBaseClass.get_generics = state_cache(unwrap(DefineGenericBaseClass.get_generics))
 
