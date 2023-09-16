@@ -60,7 +60,7 @@ def apply():
     optimize_tree_name_to_values()
     optimize_infer_expr_stmt()
     optimize_ClassMixin_py__mro__()
-    optimize_Param_name()
+    optimize_Param_properties()
     optimize_CompiledInstanceName()
     optimize_AbstractContext_get_root_context()
     optimize_NodesTree_copy_nodes()
@@ -1147,10 +1147,11 @@ def optimize_ClassMixin_py__mro__():
     ClassMixin.py__mro__ = py__mro__
 
 
-def optimize_Param_name():
+def optimize_Param_properties():
+    from textension.utils import lazy_overwrite
     from parso.python.tree import Param
 
-    @property
+    @lazy_overwrite
     def name(self: Param):
         name = self.children[0]
         if name.type == "name":
@@ -1163,8 +1164,9 @@ def optimize_Param_name():
         if name.type == "tfpdef":
             return name.children[0]
         return name
-    
+
     Param.name = name
+    Param.star_count = lazy_overwrite(Param.star_count.fget)
 
 
 def optimize_CompiledInstanceName():
