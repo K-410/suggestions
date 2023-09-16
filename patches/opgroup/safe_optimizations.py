@@ -88,6 +88,7 @@ def apply():
     optimize_TreeSignature()
     optimize_numpydocstr()
     optimize_Function_iter_yield_exprs()
+    optimize_as_context()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -1991,3 +1992,24 @@ def optimize_Function_iter_yield_exprs():
 
     Function.iter_yield_exprs = iter_yield_exprs
 
+
+
+def optimize_as_context():
+    from jedi.inference.base_value import HelperValueMixin
+    from textension.utils import lazy_overwrite, _unbound_getter
+    from ..common import state_cache
+
+    @lazy_overwrite
+    def _context(self: HelperValueMixin):
+        return self._as_context()
+
+    HelperValueMixin._as_context_property = _context
+    HelperValueMixin.as_context = _unbound_getter("_as_context_property")
+
+    # Special handling for FunctionMixing and its subclasses. They are the
+    # only types that pass an argument to ``as_context``.
+    from jedi.inference.value.function import FunctionMixin
+    @state_cache
+    def as_context(self: FunctionMixin, *arguments):
+        return self._as_context(*arguments)
+    FunctionMixin.as_context = as_context
