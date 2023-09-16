@@ -89,6 +89,7 @@ def apply():
     optimize_numpydocstr()
     optimize_Function_iter_yield_exprs()
     optimize_as_context()
+    optimize_FunctionMixin_get_signatures()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -274,6 +275,23 @@ def optimize_ValueSet_methods():
 
     Values.get_signatures = ValueSet.get_signatures = get_signatures
     ValueSet.from_sets = Values.from_sets
+
+    def __getattr__(self, name):
+        def mapper(*args, **kwargs):
+            call_method = methodcaller(name, *args, **kwargs)
+            return Values(starchain(map(call_method, self)))
+        return mapper
+
+    ValueSet.__getattr__ = Values.__getattr__ = __getattr__
+
+    @inline
+    def map_annotation_classes(sequence):
+        return partial(map, methodcaller("gather_annotation_classes"))
+
+    def gather_annotation_classes(self):
+        return Values(starchain(map_annotation_classes(self)))
+    
+    ValueSet.gather_annotation_classes = Values.gather_annotation_classes = gather_annotation_classes
 
 
 def optimize_ValueContext_methods():
@@ -2008,3 +2026,14 @@ def optimize_as_context():
     def as_context(self: FunctionMixin, *arguments):
         return self._as_context(*arguments)
     FunctionMixin.as_context = as_context
+
+
+def optimize_FunctionMixin_get_signatures():
+    from jedi.inference.value.function import FunctionMixin
+    from jedi.inference.signature import TreeSignature
+    
+    def get_signatures(self: FunctionMixin):
+        # TODO: Use aggregation.
+        return map(TreeSignature, self.get_signature_functions())
+    
+    FunctionMixin.get_signatures = get_signatures
