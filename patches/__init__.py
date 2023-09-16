@@ -257,31 +257,59 @@ def patch_is_pytest_func():
 # Patches Jedi's import resolutions to allow completing sub-modules assigned
 # either at runtime or from built-in, file-less modules. This is required for
 # import completions of both compiled and mixed file/runtime modules like bpy,
-# gpu, mathutils, etc. Names are obtained from compiled modules using safety
-# principles similar to how Jedi does things in getattr_static.
+# gpu, mathutils, etc.
 def patch_import_resolutions():
-    from jedi.inference.compiled.value import CompiledModule
-    from jedi.inference.imports import import_module
 
-    from .tools import get_handle, state
-    from .common import Values
-    import importlib
+    from jedi.inference.value.namespace import ImplicitNamespaceValue
+    from jedi.inference.imports import import_module, _load_builtin_module, \
+        ImplicitNSInfo, _load_python_module
+    import sys
 
-    module_cache = state.module_cache
+    # ``import_module`` undecorated.
+    import_module = import_module.__closure__[0].cell_contents["import_module"]
+    import_module = import_module.__closure__[0].cell_contents
+    import_module = import_module.__closure__[0].cell_contents
 
-    # Required for builtin module import fallback when Jedi fails.
-    def import_module_override(state, name, parent_module, sys_path, prefer_stubs):
-        ret = import_module(state, name, parent_module, sys_path, prefer_stubs)
-        if not ret:
-            try:
-                access_handle = get_handle(importlib.import_module(".".join(name)))
-                ret = Values((CompiledModule(state, access_handle),))
-                module_cache.add(name, ret)
-            except ImportError:
-                pass
-        return ret
+    from .common import Values, NO_VALUES
 
-    import_module = _patch_function(import_module, import_module_override)
+    @inline
+    def is_implicit_ns_info(obj) -> bool:
+        return ImplicitNSInfo.__instancecheck__
+
+    def fixed_import_module(inference_state, import_names, parent_module_value, sys_path):
+        # XXX: We don't allow auto imports.
+        # if import_names[0] in settings.auto_import_modules:
+        #     if module := _load_builtin_module(inference_state, import_names, sys_path):
+        #         return Values((module,))
+        #     return NO_VALUES
+
+        module_name = '.'.join(import_names)
+        if parent_module_value is None:
+            file_io_or_ns, is_pkg = inference_state.compiled_subprocess.get_module_info(string=import_names[-1], full_name=module_name, sys_path=sys_path, is_global_search=True)
+
+        else:
+            if paths := parent_module_value.py__path__():
+                file_io_or_ns, is_pkg = inference_state.compiled_subprocess.get_module_info(string=import_names[-1], path=paths, full_name=module_name, is_global_search=False)
+
+            else:
+                # No paths means the module is file-less. We need to nudge
+                # things along. Mathutils submodules are like this.
+                is_pkg = None
+                file_io_or_ns = None
+                if module_name in sys.modules:
+                    is_pkg = False
+
+        if is_pkg is not None:
+            if is_implicit_ns_info(file_io_or_ns):
+                module = ImplicitNamespaceValue(inference_state, string_names=tuple(file_io_or_ns.name.split('.')), paths=file_io_or_ns.paths)
+            elif file_io_or_ns:
+                module = _load_python_module(inference_state, file_io_or_ns, import_names=import_names, is_package=is_pkg)
+            else:
+                module = _load_builtin_module(inference_state, import_names, sys_path)
+            return Values((module,))
+        return NO_VALUES
+
+    _patch_function(import_module, fixed_import_module)
 
 
 # Patches Importer to fix several problems.
