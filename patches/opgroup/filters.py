@@ -21,6 +21,7 @@ def apply():
 
     optimize_StubModules()
     optimize_AbstractUsedNamesFilter_convert_names()
+    optimize_AbstractUsedNamesFilter_get()
 
 
 # Pretty much same as ClassFilter, except using aggregate initialization
@@ -593,3 +594,15 @@ def optimize_AbstractUsedNamesFilter_convert_names():
         return list(map(self.name_class, zip(repeat(self.parent_context), names)))
 
     _AbstractUsedNamesFilter._convert_names = _convert_names
+
+
+def optimize_AbstractUsedNamesFilter_get():
+    from jedi.inference.filters import _AbstractUsedNamesFilter
+    from ..common import get_cached_scope_definitions
+
+    def get(self: _AbstractUsedNamesFilter, name):
+        names = get_cached_scope_definitions(self._parser_scope)[name]
+        names = self._filter(names)
+        return self._convert_names(names)
+
+    _AbstractUsedNamesFilter.get = get
