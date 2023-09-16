@@ -55,6 +55,7 @@ def _apply_patches():
     patch_HelperValueMixin_is_same_class()
     patch_Completion_complete_trailer()
     patch_BaseName_get_signatures()
+    patch_CompiledModule_py__package__()
 
 def _apply_optimizations():
     from . import opgroup
@@ -972,3 +973,11 @@ def patch_BaseName_get_signatures():
         return []
 
     BaseName._get_signatures = _get_signatures
+
+
+# Add missing method to CompiledModule for submodule inference.
+def patch_CompiledModule_py__package__():
+    from jedi.inference.compiled.value import CompiledModule
+    from textension.utils import _unbound_getter
+
+    CompiledModule.py__package__  = _unbound_getter("string_names")
