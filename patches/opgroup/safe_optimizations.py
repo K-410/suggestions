@@ -1135,18 +1135,13 @@ def optimize_ClassMixin_py__mro__():
     from jedi.inference.value.iterable import Sequence
     from jedi.inference.value.klass import ClassMixin
     from textension.utils import starchain
-    from functools import partial
-    from builtins import map, iter, list
-    from operator import methodcaller
+    from itertools import chain
+    from ..common import map_infer, state_cache
 
-    @inline
-    def map_infer(bases):
-        return partial(map, methodcaller("infer"))
-
+    @state_cache
     def py__mro__(self: ClassMixin):
         mro = [self]
-        bases = list(self.py__bases__())
-        iter_bases = iter(bases)
+        iter_bases = iter(self.py__bases__())
 
         while True:
             try:
@@ -1159,7 +1154,7 @@ def optimize_ClassMixin_py__mro__():
             # This is an obscure edge case, but supporting it is trivial.
             except AttributeError:
                 if isinstance(cls, Sequence):  # type: ignore
-                    bases += cls.iterate()
+                    iter_bases = chain(iter_bases, starchain(cls.iterate()))
 
         return mro
 
