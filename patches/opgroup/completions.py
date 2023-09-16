@@ -1,6 +1,6 @@
 from textension.utils import _named_index, _forwarder, Aggregation, lazy_class_overwrite, factory, inline
 from functools import partial
-from operator import methodcaller, attrgetter, eq
+from operator import methodcaller, attrgetter
 from jedi.api import classes
 from ..tools import state
 from ... import settings
@@ -14,11 +14,6 @@ def apply():
 @inline
 def slice_to(length: int) -> slice:
     return partial(slice, None)
-
-
-@inline
-def map_eq(sequence1, sequence2) -> map:
-    return partial(map, eq)
 
 
 @inline
@@ -253,8 +248,9 @@ def filter_completions(completions, stack, like_name):
     from itertools import compress, repeat
     from operator import itemgetter
     from builtins import map, zip
+    from ..common import map_eq
 
-    from .completions import CompletionBase, map_strings, map_lower, map_eq, slice_to
+    from .completions import CompletionBase, map_strings, map_lower, slice_to
 
     search_types = (partial(map, contains_fuzzy_unordered),
                     partial(map, contains_fuzzy_ordered))

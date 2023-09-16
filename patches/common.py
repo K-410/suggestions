@@ -185,6 +185,12 @@ def map_values(numbers):
     return partial(map, attrgetter("value"))
 
 
+@inline
+def map_eq(sequence1, sequence2) -> map:
+    from operator import eq
+    return partial(map, eq)
+
+
 # Used by VirtualValue.py__call__ and other inference functions where we
 # don't have any arguments to unpack. For constructors.
 @inline
