@@ -82,6 +82,8 @@ def apply():
     optimize_Sequence_get_wrapped_value()
     optimize_Stack_allowed_transition_names_and_token_types()
     optimize_Function_iter_return_stmts()
+    optimize_LazyKnownValues_infer()
+    optimize_ValueContext_is_builtins_module()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -1897,3 +1899,24 @@ def optimize_Function_iter_return_stmts():
         return ret
 
     Function.iter_return_stmts = iter_return_stmts
+
+
+# Make LazyKnownValues.infer() return self.data without setting up a frame.
+def optimize_LazyKnownValues_infer():
+    from jedi.inference.lazy_value import LazyKnownValues
+
+    LazyKnownValues.infer = _unbound_getter("data")
+
+
+# Make ValueContext.is_builtins_module() skip setting up a frame.
+def optimize_ValueContext_is_builtins_module():
+    from jedi.inference.context import ValueContext
+    from textension.utils import _unbound_method
+    from functools import partial
+    from operator import eq
+    from ..common import state
+
+    ValueContext.__eq__ = _forwarder("_value.__eq__")
+    ValueContext.is_builtins_module = _unbound_method(partial(eq, state.builtins_module))
+
+
