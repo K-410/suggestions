@@ -257,6 +257,18 @@ def optimize_ValueSet_methods():
 
     ValueSet.__or__ = __or__
 
+    @inline
+    def map_get_signatures(values):
+        return partial(map, methodcaller("get_signatures"))
+
+    def get_signatures(self):
+        # Return a ValueSet to filter out identical signatures.
+        return Values(starchain(map_get_signatures(self)))
+
+    Values.get_signatures = ValueSet.get_signatures = get_signatures
+    ValueSet.from_sets = Values.from_sets
+
+
 def optimize_ValueContext_methods():
     from jedi.inference.context import ValueContext
     from ..tools import state
