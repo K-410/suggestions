@@ -18,6 +18,7 @@ from functools import partial
 def apply():
     optimize_Module_get_used_names()
     optimize_GlobalNameFilter_values()
+    optimize_GlobalNameFilter_get()
     optimize_AbstractUsedNamesFilter_init()
 
 
@@ -65,6 +66,22 @@ def optimize_GlobalNameFilter_values():
         return self._convert_names(names)
 
     GlobalNameFilter.values = values
+
+
+def optimize_GlobalNameFilter_get():
+    from jedi.inference.filters import GlobalNameFilter
+    from ..common import get_global_statements
+
+    def get(self: GlobalNameFilter, name):
+        try:
+            names = get_global_statements(self.module_context.tree_node)[name]
+        except KeyError:
+            return []
+
+        # Don't filter, names are guaranteed to be global statements.
+        return self._convert_names(names)
+
+    GlobalNameFilter.get = get
 
 
 def node_cache_fallback(self: dict, module):

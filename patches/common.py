@@ -323,6 +323,39 @@ def filter_until(pos: int | None, names):
     return filter_until
 
 
+# Meant to be called by GlobalNameFilter.get
+@inline
+def get_global_statements(module):
+    from operator import attrgetter
+    from parso.python.tree import GlobalStmt
+    from textension.utils import defaultdict_list
+
+    @inline
+    def map_children(nodes):
+        return partial(map, attrgetter("children"))
+
+    @state_cache
+    def get_global_statements(module):
+        pool = module.children[:]
+        globs = defaultdict_list()
+        for n in filter_basenodes(pool):
+            if n.type in {"classdef", "funcdef"}:
+
+                # The suite. We're just looking for valid global statements
+                # within a function.
+                pool += n.children[-1].children
+            elif n.type in {"for_stmt", "if_stmt", "try_stmt", "while_stmt", "with_stmt", "comp_for"}:
+                
+                pool += starchain(map_children(filter_node_type("suite", n.children)))
+            elif n.type == "simple_stmt":
+                if n.children[0].__class__ is GlobalStmt:
+                    name = n.children[0].children[1]
+                    globs[name.value] += name,
+
+        return globs
+    return get_global_statements
+
+
 @state_cache
 def get_scope_name_definitions(scope):
 
