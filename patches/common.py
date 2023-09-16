@@ -475,6 +475,11 @@ def get_scope_name_definitions(scope):
                     for name in filter_names(c.children):
                         if name.get_previous_sibling() == "as":
                             namedefs += name,
+
+        # Expression assignment here is to avoid duplicate else-clause.
+        elif n.type == "async_stmt" and (n := n.children[1]).type == "funcdef":
+            namedefs += n.children[1],
+
         else:
             pool += n.children
 
