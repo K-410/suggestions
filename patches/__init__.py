@@ -327,8 +327,10 @@ def patch_import_resolutions():
 # All which are reasons for Jedi completing them partially or not at all.
 # So instead of addressing each problem differently, we use virtual modules.
 def patch_Importer():
-    from jedi.inference.imports import Importer
-    from .common import Importer_redirects, state, is_namenode, Values
+    from jedi.inference.imports import Importer, import_module_by_names
+    from .common import Importer_redirects, state, Values, NO_VALUES
+    from jedi.inference.value.namespace import ImplicitNamespaceValue
+    import os
 
     Importer._inference_state = state
     Importer._fixed_sys_path = None
@@ -339,9 +341,29 @@ def patch_Importer():
 
     # Import redirection for actual modules.
     def follow(self: Importer):
-        if module := Importer_redirects.get(".".join(self._str_import_path)):
+        import_path = self._str_import_path
+        if module := Importer_redirects.get(".".join(import_path)):
             return Values((module,))
-        return follow(self)
+        
+        if not self.import_path:
+            if self._fixed_sys_path:
+                import_path = (os.path.basename(self._fixed_sys_path[0]),)
+                ns = ImplicitNamespaceValue(state, import_path,self._fixed_sys_path)
+                return Values((ns,))
+            return NO_VALUES
+        if not self._infer_possible:
+            return NO_VALUES
+
+        if from_cache := state.stub_module_cache.get(import_path):
+            return Values((from_cache,))
+        if from_cache := state.module_cache.get(import_path):
+            return from_cache
+
+        # Use the real sys path, not dynamically modified.
+        sys_path = state.project._get_sys_path(add_init_paths=True)
+
+        return import_module_by_names(
+            state, self.import_path, sys_path, self._module_context)
 
     follow = _patch_function(Importer.follow, follow)
 
