@@ -23,7 +23,7 @@ from parso.file_io import KnownContentFileIO
 from jedi.file_io import FileIOFolderMixin
 from parso.tree import search_ancestor, BaseNode
 from itertools import repeat
-from jedi.api import Script, Completion
+from itertools import repeat, compress, count
 from operator import attrgetter, methodcaller
 from pathlib import Path
 import types
@@ -441,6 +441,12 @@ def get_scope_name_definitions(scope):
             # Just into the pool and look for names the old way.
             elif n.type == "atom":
                 pool += n.children
+
+            elif n.type == "del_stmt":
+                del_names = set(map_values(filter_names(n.children[1].children)))
+                selectors = map(del_names.__contains__, map_values(namedefs))
+                for index in reversed(list(compress(count(), selectors))):
+                    del namedefs[index]
 
         elif n.type == "decorated":
             pool += n.children[1],
