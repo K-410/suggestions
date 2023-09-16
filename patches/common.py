@@ -184,6 +184,9 @@ def map_types(seq):
 def map_values(numbers):
     return partial(map, attrgetter("value"))
 
+@inline
+def map_infer(bases):
+    return partial(map, methodcaller("infer"))
 
 @inline
 def map_eq(sequence1, sequence2) -> map:
