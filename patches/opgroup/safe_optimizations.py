@@ -2028,12 +2028,26 @@ def optimize_as_context():
     FunctionMixin.as_context = as_context
 
 
-def optimize_FunctionMixin_get_signatures():
+def optimize_get_signatures():
     from jedi.inference.value.function import FunctionMixin
-    from jedi.inference.signature import TreeSignature
+    from jedi.inference.value.instance import BoundMethod
+    from itertools import repeat
+    from ..common import AggregateTreeSignature, AggregateBoundMethod, AggregateBoundTreeSignature
+    from operator import attrgetter
+    from functools import partial
+
+    map_function_value = partial(map, attrgetter("_function_value"))
+
+    def get_function_signatures(self: FunctionMixin):
+        return map(AggregateTreeSignature, zip(self.get_signature_functions()))
     
-    def get_signatures(self: FunctionMixin):
-        # TODO: Use aggregation.
-        return map(TreeSignature, self.get_signature_functions())
-    
-    FunctionMixin.get_signatures = get_signatures
+    FunctionMixin.get_signatures = get_function_signatures
+
+    def get_method_signatures(self: BoundMethod):
+        args = zip(repeat(self),
+                   map_function_value(get_function_signatures(self)),
+                   repeat(True))
+        return map(AggregateBoundTreeSignature, args)
+
+    BoundMethod.get_signatures = get_method_signatures
+    BoundMethod.get_signature_functions = AggregateBoundMethod.get_signature_functions

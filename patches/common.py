@@ -2,11 +2,12 @@
 
 from jedi.inference.compiled.value import (
     CompiledValue, CompiledValueFilter, CompiledName, CompiledModule)
-from jedi.inference.value.instance import SelfName
+from jedi.inference.value.instance import BoundMethod
 from jedi.inference.syntax_tree import tree_name_to_values
 from jedi.inference.value.klass import ClassValue, ClassName
 from jedi.inference.lazy_value import LazyKnownValues, LazyTreeValue
 from jedi.inference.arguments import AbstractArguments, TreeArguments
+from jedi.inference.signature import TreeSignature
 from jedi.inference.compiled import builtin_from_name
 
 from jedi.inference.value.function import FunctionValue, MethodValue
@@ -1362,3 +1363,35 @@ class AggregateCompiledName(Aggregation, CompiledName):
     @inline
     def infer_compiled_value(self):
         return CompiledName.infer_compiled_value.__closure__[0].cell_contents
+
+
+class AggregateTreeSignatureBase(Aggregation, TreeSignature):
+    def bind(self, value):
+        return AggregateBoundTreeSignature((value, self._function_value, True))
+
+    matches_signature = state_cache(TreeSignature.matches_signature)
+    get_param_names   = state_cache_kw(TreeSignature.get_param_names)
+
+
+class AggregateTreeSignature(AggregateTreeSignatureBase):
+    value           = _named_index(0)
+    _function_value = _forwarder("value")
+    is_bound        = False
+
+
+class AggregateBoundTreeSignature(AggregateTreeSignatureBase):
+    value           = _named_index(0)
+    _function_value = _named_index(1)
+    is_bound        = True
+
+
+class AggregateBoundMethod(Aggregation, BoundMethod):
+    instance       = _named_index(0)
+    _class_context = _named_index(1)
+    _wrapped_value = _named_index(2)
+
+    def get_signature_functions(self):
+        args = zip(repeat(self.instance),
+                   repeat(self._class_context),
+                   self._wrapped_value.get_signature_functions())
+        return map(AggregateBoundMethod, args)
