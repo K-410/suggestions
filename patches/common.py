@@ -2,6 +2,7 @@
 
 from jedi.inference.compiled.value import (
     CompiledValue, CompiledValueFilter, CompiledName, CompiledModule)
+from jedi.inference.value.instance import SelfName, CompiledBoundMethod
 from jedi.inference.value.instance import BoundMethod
 from jedi.inference.syntax_tree import tree_name_to_values
 from jedi.inference.value.klass import ClassValue, ClassName
@@ -19,11 +20,10 @@ from jedi.inference.param import ExecutedParamName
 from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
 from jedi.inference.names import TreeNameDefinition, NO_VALUES, ValueSet, StubName
 from jedi.inference.value import CompiledInstance, ModuleValue
-from parso.python.tree import Name
+from parso.python.tree import Name, ClassOrFunc, Lambda
 from parso.file_io import KnownContentFileIO
-from jedi.file_io import FileIOFolderMixin
 from parso.tree import search_ancestor, BaseNode
-from itertools import repeat
+
 from itertools import repeat, compress, count
 from operator import attrgetter, methodcaller
 from pathlib import Path
@@ -222,6 +222,38 @@ def filter_node_type(node_type, seq):
     return filter_node_type
 
 
+@inline
+def create_node_type_filter(node_type: str):
+    from textension.utils import close_cells
+    from operator import eq
+
+    cache = {}
+
+    def create_node_type_filter(node_type):
+        if node_type not in cache:
+            cache[node_type] = partial(map, eq, repeat(node_type))
+
+        mapper = cache[node_type]
+
+        @close_cells(mapper)
+        def filter_nodes(nodes):
+            return compress(nodes, mapper(map_types(nodes)))
+        return filter_nodes
+
+    return create_node_type_filter
+
+
+@inline
+def filter_suites(nodes):
+    return create_node_type_filter("suite")
+
+
+@inline
+def filter_class_or_func(nodes):
+    from parso.python.tree import ClassOrFunc
+    return partial(filter, ClassOrFunc.__instancecheck__)
+
+
 def yield_once(func):
     memo = state.memoize_cache[func] = {}
     def wrapper(*key):
@@ -336,31 +368,45 @@ def filter_until(pos: int | None, names):
 # Meant to be called by GlobalNameFilter.get
 @inline
 def get_global_statements(module):
-    from operator import attrgetter
-    from parso.python.tree import GlobalStmt
+    from parso.python.tree import GlobalStmt, PythonMixin
     from textension.utils import defaultdict_list
+    from .common import filter_suites
 
+    # PythonNode and PythonBaseNode share this. Needed for filtering scopes and statements.
+    filter_py_base_node = partial(filter, PythonMixin.__instancecheck__)
     @inline
     def map_children(nodes):
         return partial(map, attrgetter("children"))
 
     @state_cache
     def get_global_statements(module):
-        pool = module.children[:]
         globs = defaultdict_list()
-        for n in filter_basenodes(pool):
-            if n.type in {"classdef", "funcdef"}:
 
+        # In case of large modules, start with direct functions/classes.
+        pool = [filter_class_or_func(module.children)]
+
+        for node in filter_py_base_node(starchain(pool)):
+            node_type = node.type
+
+            if node_type == "simple_stmt":
+                if node.children[0].__class__ is GlobalStmt:
+                    name = node.children[0].children[1]
+                    globs[name.value] += name,
+
+            elif node_type in {"newline", "error_node", "error_leaf"}:
+                continue
+
+            elif node_type in {"classdef", "funcdef"}:
                 # The suite. We're just looking for valid global statements
                 # within a function.
-                pool += n.children[-1].children
-            elif n.type in {"for_stmt", "if_stmt", "try_stmt", "while_stmt", "with_stmt", "comp_for"}:
-                
-                pool += starchain(map_children(filter_node_type("suite", n.children)))
-            elif n.type == "simple_stmt":
-                if n.children[0].__class__ is GlobalStmt:
-                    name = n.children[0].children[1]
-                    globs[name.value] += name,
+                pool += node.children[-1].children,
+
+            elif node_type == "decorated":
+                pool += (node.children[1],),
+
+            # Flow types.
+            elif node_type in {"for_stmt", "if_stmt", "try_stmt", "while_stmt", "with_stmt"}:
+                pool += map_children(filter_suites(node.children)),
 
         return globs
     return get_global_statements
