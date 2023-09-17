@@ -297,8 +297,7 @@ def reset_state():
 
     # Persistent state means we have to clear access handles or they'll cause
     # circular references undetectable by the garbage collector and leak.
-    state.compiled_subprocess._handles.clear()
-    state.compiled_subprocess = state.environment.get_inference_state_subprocess(state)
+    state._access_handles.clear()
 
     state.reset_recursion_limitations()
     state.inferred_element_counts = {}
