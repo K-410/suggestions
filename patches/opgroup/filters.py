@@ -292,6 +292,9 @@ def optimize_BaseTreeInstance_get_filters():
         SelfAttributeFilter,
     )
 
+    is_class_filter = ClassFilter.__instancecheck__
+    is_compiled_value_filter = CompiledValueFilter.__instancecheck__
+
     def get_filters(self: _BaseTreeInstance, origin_scope=None, include_self_names=True):
         class_value = self.get_annotated_class_object()
 
@@ -303,9 +306,9 @@ def optimize_BaseTreeInstance_get_filters():
         class_filters = class_value.get_filters(origin_scope=origin_scope, is_instance=True)
 
         for f in class_filters:
-            if isinstance(f, ClassFilter):
+            if is_class_filter(f):
                 yield InstanceClassFilter(self, f)
-            elif isinstance(f, CompiledValueFilter):
+            elif is_compiled_value_filter(f):
                 yield CompiledInstanceClassFilter(self, f)
             else:
                 yield f
