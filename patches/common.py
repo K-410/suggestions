@@ -885,20 +885,23 @@ def get_statement_type(name):
                 except AttributeError:
                     assert isinstance(node, Lambda)
                     return "<lambda>"
+        return value.api_type
+    return None
+
+
+def api_type_from_name(name):
+    if isinstance(name, TreeNameDefinition):
+        if definition := name.tree_name.get_definition(import_name_always=True):
+            # Jedi will just put "module" on any import statement, which isn't useful.
+            if definition.type in {"import_name", "import_from"}:
+                for value in name.infer():
+                    return value.api_type
+            return name._API_TYPES.get(definition.type, "statement")
     return name.api_type
 
+
 def get_extended_type(name):
-    from jedi.inference.names import TreeNameDefinition
-
-    api_type = name.api_type
-
-    # Jedi will just put "module" on any import statement, which is terrible.
-    if isinstance(name, TreeNameDefinition):
-        definition = name.tree_name.get_definition(import_name_always=True)
-        if definition and definition.type in {"import_name", "import_from"}:
-            for value in name.infer():
-                api_type = value.api_type
-                break
+    api_type = api_type_from_name(name)
 
     # Try to get the type name.
     if api_type in {"class", "instance"}:
@@ -906,7 +909,7 @@ def get_extended_type(name):
 
     # Try to get something useful other than "statement".
     elif api_type == "statement":
-        return get_statement_type(name)
+        return get_statement_type(name) or api_type
 
     return api_type
 
