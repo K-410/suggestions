@@ -56,6 +56,8 @@ def _apply_patches():
     patch_Completion_complete_trailer()
     patch_BaseName_get_signatures()
     patch_CompiledModule_py__package__()
+    patch_InferenceStateSameProcess()
+
 
 def _apply_optimizations():
     from . import opgroup
@@ -984,3 +986,35 @@ def patch_CompiledModule_py__package__():
     from textension.utils import _unbound_getter
 
     CompiledModule.py__package__  = _unbound_getter("string_names")
+
+
+# Patches InferenceStateSameProcess to leverage persistent InferenceState.
+def patch_InferenceStateSameProcess():
+    from jedi.inference.compiled.subprocess import InferenceStateSameProcess, \
+        DirectObjectAccess, AccessHandle
+    from .common import state
+
+    state_process = InferenceStateSameProcess(state)
+    state_process._handles = state._access_handles
+    state.compiled_subprocess = state_process
+
+    _handles: dict = state_process._handles
+
+    def get_or_create_access_handle(self: InferenceStateSameProcess, obj):
+        id_ = id(obj)
+        try:
+            return _handles[id_]
+        except KeyError:
+            access = DirectObjectAccess(state, obj)
+            handle = AccessHandle(self, access, id_)
+            return _handles.setdefault(id_, handle)
+
+    def get_access_handle(self: InferenceStateSameProcess, id_):
+        return _handles[id_]
+
+    def set_access_handle(self: InferenceStateSameProcess, handle):
+        _handles[handle.id] = handle
+
+    InferenceStateSameProcess.get_or_create_access_handle = get_or_create_access_handle
+    InferenceStateSameProcess.get_access_handle = get_access_handle
+    InferenceStateSameProcess.set_access_handle = set_access_handle

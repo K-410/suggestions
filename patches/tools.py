@@ -66,6 +66,9 @@ state.analysis = collections.deque(maxlen=25)
 state.allow_descriptor_getattr = True
 state.memoize_cache = {}
 
+# Used by _InferenceStateProcess
+state._access_handles = {}
+
 runtime = namespace(context_rna=None, data_rna=None)
 
 
