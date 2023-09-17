@@ -4,7 +4,7 @@ from jedi.inference.compiled.access import ALLOWED_DESCRIPTOR_ACCESS
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter
 from jedi.inference.value.klass import ClassFilter
 
-from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder, inline
+from textension.utils import instanced_default_cache, truthy_noargs, _named_index, Aggregation, lazy_overwrite, _forwarder, inline, Variadic, _variadic_index
 from ..common import _check_flows, AggregateStubName, filter_basenodes, filter_names, filter_funcdefs, filter_params
 from itertools import repeat
 
@@ -505,17 +505,16 @@ def get_stub_values(self: dict, stub_filter: "CachedStubFilter"):
 stub_values_cache = instanced_default_cache(get_stub_values)
 
 
-class CachedStubFilter(StubFilter):
+class CachedStubFilter(Variadic, StubFilter):
     _until_position   = None
     _origin_scope     = None
     _parso_cache_node = None
+
+    parent_context    = _variadic_index(0)
     _parser_scope     = _forwarder("parent_context.tree_node")
     _node_context     = _forwarder("parent_context")
 
     _check_flows = _check_flows
-
-    def __init__(self, parent_context):
-        self.parent_context = parent_context
 
     @lazy_overwrite
     def _used_names(self):
