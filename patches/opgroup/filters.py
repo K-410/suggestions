@@ -509,17 +509,13 @@ class CachedStubFilter(StubFilter):
     _until_position   = None
     _origin_scope     = None
     _parso_cache_node = None
+    _parser_scope     = _forwarder("parent_context.tree_node")
+    _node_context     = _forwarder("parent_context")
 
     _check_flows = _check_flows
 
     def __init__(self, parent_context):
         self.parent_context = parent_context
-        self._node_context  = parent_context
-        self.cache = {}
-
-    @lazy_overwrite
-    def _parser_scope(self):
-        return self.parent_context.tree_node
 
     @lazy_overwrite
     def _used_names(self):
@@ -570,7 +566,7 @@ def optimize_StubModules():
     def stub_filters(self: dict, module_value: StubModuleValue):
         return self.setdefault(module_value, [CachedStubFilter(stub_contexts[module_value])])
 
-    def get_filters(self: StubModuleValue, **kw):
+    def get_filters(self: StubModuleValue, *_, **kw):
         yield from stub_filters[self]
 
     StubModuleValue.get_filters = get_filters
