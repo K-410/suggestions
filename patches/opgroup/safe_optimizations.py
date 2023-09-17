@@ -87,6 +87,7 @@ def apply():
     optimize_HelperValueMixin_is_sub_class_of()
     optimize_numpydocstr()
     optimize_Function_iter_yield_exprs()
+    optimize_iter_nodes_for_param()
     optimize_as_context()
     optimize_get_signatures()
 
@@ -1989,6 +1990,47 @@ def optimize_Function_iter_yield_exprs():
 
     Function.iter_yield_exprs = iter_yield_exprs
 
+
+# Optimize to use cached scope definitions instead of used names.
+def optimize_iter_nodes_for_param():
+    from jedi.inference.star_args import _iter_nodes_for_param, _goes_to_param_name, _to_callables
+    from parso.python.tree import search_ancestor
+    from jedi.inference.arguments import TreeArguments
+    from ..common import get_cached_scope_definitions
+
+    def iter_nodes_for_param(param_name):
+
+        execution_context = param_name.parent_context
+        # Walk up the parso tree to get the FunctionNode we want. We use the parso
+        # tree rather than going via the execution context so that we're agnostic of
+        # the specific scope we're evaluating within (i.e: module or function,
+        # etc.).
+        function_node = search_ancestor(param_name.tree_name, 'funcdef', 'lambdef')
+        module_node = function_node.get_root_node()
+        start = function_node.children[-1].start_pos
+        end = function_node.children[-1].end_pos
+        for name in get_cached_scope_definitions(module_node)[param_name.string_name]:
+            if start <= name.start_pos < end:
+                # Is used in the function
+                argument = name.parent
+                if argument.type == 'argument' \
+                        and argument.children[0] == '*' * param_name.star_count:
+                    trailer = search_ancestor(argument, 'trailer')
+                    if trailer is not None:  # Make sure we're in a function
+                        context = execution_context.create_context(trailer)
+                        if _goes_to_param_name(param_name, context, name):
+                            values = _to_callables(context, trailer)
+
+                            args = TreeArguments.create_cached(
+                                execution_context.inference_state,
+                                context=context,
+                                argument_node=trailer.children[1],
+                                trailer=trailer,
+                            )
+                            for c in values:
+                                yield c, args
+
+    _patch_function(_iter_nodes_for_param, iter_nodes_for_param)
 
 
 def optimize_as_context():
