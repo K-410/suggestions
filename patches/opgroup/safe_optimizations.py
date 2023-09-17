@@ -96,24 +96,29 @@ rep_NO_VALUES = repeat(NO_VALUES).__next__
 
 
 def optimize_imports_iter_module_names():
-    from jedi.inference.imports import ImportName
-    from jedi.inference import imports
     from jedi.inference.compiled.subprocess.functions import get_builtin_module_names, _iter_module_names
-    from textension.utils import _named_index
-    from itertools import chain
+    from jedi.inference.imports import ImportName
+    from textension.utils import _named_index, Aggregation, instanced_default_cache
+    from jedi.inference import imports
+    from itertools import chain, repeat
+    from functools import partial
+
+    @instanced_default_cache
+    def aggregate_map(self: dict, module_class):
+        class AggregateModuleName(Aggregation, module_class):
+            string_name: str     = _named_index(0)
+            _from_module_context = _named_index(1)
+        return self.setdefault(module_class, partial(map, AggregateModuleName))
 
     def iter_module_names(inference_state, module_context, search_path,
                           module_cls=ImportName, add_builtin_modules=True):
-        
-        class module_name(module_cls, tuple):
-            __init__ = tuple.__init__
-            _from_module_context = module_context
-            string_name = _named_index(0)
 
+        map_aggregate = aggregate_map[module_cls]
         ret = _iter_module_names(None, search_path)
+
         if add_builtin_modules:
             ret = chain(get_builtin_module_names(None), ret)
-        return list(map(module_name, zip(ret)))
+        return list(map_aggregate(zip(ret, repeat(module_context))))
 
     _patch_function(imports.iter_module_names, iter_module_names)
 
