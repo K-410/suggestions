@@ -289,14 +289,17 @@ def patch_import_resolutions():
             file_io_or_ns, is_pkg = inference_state.compiled_subprocess.get_module_info(string=import_names[-1], full_name=module_name, sys_path=sys_path, is_global_search=True)
 
         else:
+            is_pkg = None
+            file_io_or_ns = None
             if paths := parent_module_value.py__path__():
                 file_io_or_ns, is_pkg = inference_state.compiled_subprocess.get_module_info(string=import_names[-1], path=paths, full_name=module_name, is_global_search=False)
 
-            else:
-                # No paths means the module is file-less. We need to nudge
-                # things along. Mathutils submodules are like this.
-                is_pkg = None
-                file_io_or_ns = None
+            if file_io_or_ns is is_pkg is None:
+                # No paths means the module is file-less. Or if there are
+                # paths but no ``file_io_or_ns`` it can also mean we're
+                # dealing with cached dotted import paths, which are valid
+                # after the submodules have gone through the import machinery.
+                # In both cases we need to nudge things along.
                 if module_name in sys.modules:
                     is_pkg = False
 
