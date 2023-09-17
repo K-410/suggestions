@@ -4,22 +4,24 @@ from jedi.inference.compiled.value import (
     CompiledValue, CompiledValueFilter, CompiledName, CompiledModule)
 from jedi.inference.value.instance import SelfName, CompiledBoundMethod
 from jedi.inference.value.instance import BoundMethod
+from jedi.inference.value.function import FunctionValue, MethodValue
 from jedi.inference.syntax_tree import tree_name_to_values
 from jedi.inference.value.klass import ClassValue, ClassName
 from jedi.inference.lazy_value import LazyKnownValues, LazyTreeValue
+from jedi.inference.base_value import ValueWrapper
 from jedi.inference.arguments import AbstractArguments, TreeArguments
 from jedi.inference.signature import TreeSignature
 from jedi.inference.compiled import builtin_from_name
-
-from jedi.inference.value.function import FunctionValue, MethodValue
-from jedi.inference.base_value import ValueWrapper
-from jedi.inference.value.instance import CompiledBoundMethod
 from jedi.inference.context import CompiledContext, GlobalNameFilter
 from jedi.inference.imports import Importer
 from jedi.inference.param import ExecutedParamName
 from jedi.api.interpreter import MixedModuleContext, MixedParserTreeFilter
 from jedi.inference.names import TreeNameDefinition, NO_VALUES, ValueSet, StubName
 from jedi.inference.value import CompiledInstance, ModuleValue
+
+from jedi.file_io import FileIOFolderMixin
+from jedi.api import Script, Completion
+
 from parso.python.tree import Name, ClassOrFunc, Lambda
 from parso.file_io import KnownContentFileIO
 from parso.tree import search_ancestor, BaseNode
@@ -829,36 +831,83 @@ def _repr(obj):
     return type.__dict__['__name__'].__get__(type(obj))
 
 
-def get_extended_type(name: "CompiledName"):
+def annotate(obj):
+    if not isinstance(obj, type):
+        obj = type(obj)
 
-    for value in name.infer():
-        if isinstance(value, CompiledBoundMethod):
-            return "method"
-        elif isinstance(value, VirtualValue):
-            obj = value.obj
-        elif isinstance(value, VirtualInstance):
-            obj = value.class_value.obj
+    import inspect
+    ann = inspect.formatannotation(obj)
+    if "bpy_types" in ann:
+        ann = ann.replace("bpy_types", "bpy.types")
+    return ann
+
+
+def get_class_or_instance_type(name) -> str:
+    try:
+        value, = name.infer()
+    except:
+        return name.api_type
+
+    if isinstance(value, CompiledBoundMethod):
+        return "method"
+
+    elif isinstance(value, VirtualValue):
+        obj = value.obj
+
+    elif isinstance(value, VirtualInstance):
+        obj = value.class_value.obj
+
+    else:
+        if isinstance(value, ValueWrapper):
+            value = value._wrapped_value
+
+        if isinstance(value, CompiledValue):
+            obj = value.access_handle.access._obj
+
+        elif isinstance(value, FunctionValue):
+            if isinstance(value, MethodValue):
+                return "method"
+            return "function"
         else:
-            if isinstance(value, ValueWrapper):
-                value = value._wrapped_value
+            name = value.py__name__()
+            return value.get_root_context().py__name__() + "." + name
 
-            if isinstance(value, CompiledValue):
-                obj = value.access_handle.access._obj
-            elif isinstance(value, FunctionValue):
-                if isinstance(value, MethodValue):
-                    return "method"
-                return "function"
-            else:
-                return value.py__name__()
+    return annotate(obj)
 
-        if not isinstance(obj, type):
-            obj = type(obj)
 
-        import inspect
-        ann = inspect.formatannotation(obj)
-        if "bpy_types" in ann:
-            ann = ann.replace("bpy_types", "bpy.types")
-        return ann
+def get_statement_type(name):
+    for value in name.infer():
+        if node := value.tree_node:
+            if isinstance(node, ClassOrFunc):
+                try:
+                    return node.name.value
+                except AttributeError:
+                    assert isinstance(node, Lambda)
+                    return "<lambda>"
+    return name.api_type
+
+def get_extended_type(name):
+    from jedi.inference.names import TreeNameDefinition
+
+    api_type = name.api_type
+
+    # Jedi will just put "module" on any import statement, which is terrible.
+    if isinstance(name, TreeNameDefinition):
+        definition = name.tree_name.get_definition(import_name_always=True)
+        if definition and definition.type in {"import_name", "import_from"}:
+            for value in name.infer():
+                api_type = value.api_type
+                break
+
+    # Try to get the type name.
+    if api_type in {"class", "instance"}:
+        return get_class_or_instance_type(name)
+
+    # Try to get something useful other than "statement".
+    elif api_type == "statement":
+        return get_statement_type(name)
+
+    return api_type
 
 
 class VirtualInstance(Aggregation, CompiledInstance):

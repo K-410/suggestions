@@ -39,11 +39,7 @@ class TEXT_OT_autocomplete(OpOverride):
 def _get_extended_api_type(name):
     from .patches.common import get_extended_type
 
-    api_type = name.api_type
-    if api_type in {"class", "instance"}:
-        if annotation := get_extended_type(name):
-            api_type = annotation
-    return api_type
+    return get_extended_type(name)
 
 
 class Description(ui.widgets.TextView):
