@@ -25,7 +25,8 @@ def apply():
     optimize_ClassMixin()
     optimize_Compiled_methods()
     optimize_CompiledName()
-    optimize_TreeContextMixin()
+    optimize_infer_node()
+    optimize_TreeContextMixin()  # After ``optimize_infer_node``.
     optimize_MergedFilter()
     optimize_shadowed_dict()
     optimize_static_getmro()
@@ -47,7 +48,6 @@ def apply():
     optimize_getattr_static()
     optimize_BaseNode_get_leaf_for_position()
     optimize_remove_del_stmt()
-    optimize_infer_node_if_inferred()
     optimize_try_to_load_stub_cached()
     optimize_imports_iter_module_names()
     optimize_BaseNode_end_pos()
@@ -89,7 +89,7 @@ def apply():
     optimize_numpydocstr()
     optimize_Function_iter_yield_exprs()
     optimize_as_context()
-    optimize_FunctionMixin_get_signatures()
+    optimize_get_signatures()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -146,36 +146,21 @@ def optimize_try_to_load_stub_cached():
     _patch_function(try_to_load_stub_cached, try_to_load_stub_cached_o)
 
 
-def optimize_infer_node_if_inferred():
-    from jedi.inference.syntax_tree import _infer_node, infer_node
+# Jedi has two points of node inference: ``infer_node`` and ``_infer_node``.
+# One takes a questionable detour to intercept ``predefined_names`` which we
+# won't be using, so instead both functions now point to the same one.
+def optimize_infer_node():
     from jedi.inference import syntax_tree
-    from ..common import state, state_cache
+    from ..common import state_cache_default
 
-    cache = state.memoize_cache
+    @state_cache_default(NO_VALUES)  # For recursion protection.
+    @inline
+    def _infer_node(context, element):
+        # The actual ``_infer_node`` function.
+        return syntax_tree._infer_node.__closure__[0].cell_contents.__closure__[0].cell_contents
 
-    # The actual ``_infer_node`` function.
-    _infer_node = _infer_node.__closure__[0].cell_contents.__closure__[0].cell_contents
-
-    @state_cache
-    def _infer_node_if_inferred(context, element):
-        # Unlikely.
-        if predefined_names := context.predefined_names:
-            parent = element
-            while parent := parent.parent:
-                if predefined_names.get(parent):
-                    return _infer_node(context, element)
-                
-        key = context, element
-        if key in memo:
-            return memo[key]
-        memo[key] = NO_VALUES
-        memo[key] = ret = _infer_node(context, element)
-        return ret
-
-    memo = cache[_infer_node] = {}
-
-    _patch_function(syntax_tree._infer_node_if_inferred, _infer_node_if_inferred)
-    _patch_function(infer_node, _infer_node_if_inferred.__closure__[1].cell_contents)
+    _patch_function(syntax_tree._infer_node_if_inferred, _infer_node)
+    _patch_function(syntax_tree.infer_node, _infer_node)
 
 
 def optimize_remove_del_stmt():
@@ -258,10 +243,12 @@ def optimize_ValueSet_methods():
 
     ValueSet.execute = execute
 
-    call_py__class__ = methodcaller("py__class__")
+    @inline
+    def map_py__class__(sequence):
+        return partial(map, methodcaller("py__class__"))
 
     def py__class__(self: ValueSet):
-        return Values(map(call_py__class__, self))
+        return Values(map_py__class__(self))
 
     ValueSet.py__class__ = py__class__
 
@@ -436,7 +423,11 @@ def optimize_create_stub_map():
     from functools import partial
 
     tail = "/__init__.pyi"
-    is_ext = methodcaller("__contains__", ".")
+
+    @inline
+    def map_is_ext(seq):
+        return partial(map, methodcaller("__contains__", "."))
+
     @inline
     def filter_pyi(seq):
         return partial(filter, methodcaller("endswith", ".pyi"))
@@ -458,7 +449,7 @@ def optimize_create_stub_map():
 
         is_third_party = directory_path_info.is_third_party
 
-        has_ext = list(map(is_ext, listed))
+        has_ext = list(map_is_ext(listed))
 
         # Directories.
         for directory in compress(listed, map_not(has_ext)):
@@ -476,17 +467,12 @@ def optimize_create_stub_map():
     _patch_function(_create_stub_map, _create_stub_map_p)
 
 
-# Optimizes _StringComparisonMixin to use a faster check.
+# Optimizes _StringComparisonMixin subclasses to forward equality tests
+# directly to their string values.
 def optimize_StringComparisonMixin__eq__():
     from parso.python.tree import _StringComparisonMixin
-    from builtins import str
 
-    def __eq__(self, other):
-        if other.__class__ is str:
-            return self.value == other
-        return self is other
-
-    _StringComparisonMixin.__eq__   = __eq__
+    _StringComparisonMixin.__eq__   = _forwarder("value.__eq__")
     _StringComparisonMixin.__hash__ = _forwarder("value.__hash__")
 
 
@@ -574,23 +560,24 @@ def optimize_CompiledName():
 def optimize_TreeContextMixin():
     from jedi.inference.syntax_tree import infer_node
     from jedi.inference.context import TreeContextMixin
-    from ..common import state_cache
 
-    TreeContextMixin.infer_node = _unbound_method(state_cache(infer_node))
+    TreeContextMixin.infer_node = _unbound_method(infer_node)
 
 
 # Optimizes MergedFilter methods to use functional style calls.
 def optimize_MergedFilter():
     from jedi.inference.filters import MergedFilter
     from textension.utils import starchain
+    from functools import partial
     from builtins import list, map
     from operator import methodcaller
 
-    call_values = methodcaller("values")
+    @inline
+    def map_values(filters):
+        return partial(map, methodcaller("values"))
 
-    @_unbound_method
     def values(self: MergedFilter):
-        return list(starchain(map(call_values, self._filters)))
+        return list(starchain(map_values(self._filters)))
 
     MergedFilter.values = values
 
@@ -598,9 +585,9 @@ def optimize_MergedFilter():
 def optimize_shadowed_dict():
     from jedi.inference.compiled.getattr_static import _sentinel
     from jedi.inference.compiled import getattr_static
+    from textension.utils import get_mro, get_dict
     from builtins import type
     from types import GetSetDescriptorType
-    from textension.utils import get_mro, get_dict
 
     def _shadowed_dict(klass):
         for entry in get_mro(klass):
@@ -1597,7 +1584,7 @@ def optimize_apply_decorators():
     from jedi.inference.arguments import ValuesArguments
     from parso.python.tree import PythonNode, Class, ClassOrFunc
     from ..common import state, Values
-    from textension.utils import _get_dict
+    from itertools import repeat
 
     class SimplerClassValue(ClassValue):
         inference_state = state
@@ -1633,7 +1620,7 @@ def optimize_apply_decorators():
                 return initial
 
             if values != initial:
-                return Values(Decoratee(c, decoratee_value) for c in values)
+                return Values(map(Decoratee, values, repeat(decoratee_value)))
 
         return values
 
@@ -1956,20 +1943,6 @@ def optimize_HelperValueMixin_is_sub_class_of():
         return next(map(is_same_class, self.py__mro__()), False)
 
     HelperValueMixin.is_sub_class_of = is_sub_class_of
-
-
-# Allow only one TreeSignature instance if the arguments are the same.
-def optimize_TreeSignature():
-    from jedi.inference.signature import TreeSignature
-    from ..common import state_cache_kw, state_cache
-
-    # If creation arguments are same, use cache.
-    @state_cache_kw
-    def __new__(cls: TreeSignature, value, function_value=None, is_bound=False):
-        return object.__new__(cls)
-
-    TreeSignature.__new__ = __new__
-    TreeSignature.matches_signature = state_cache(TreeSignature.matches_signature)
 
 
 # No, we don't have ``numpydoc``. Stop thrashing the disk.
