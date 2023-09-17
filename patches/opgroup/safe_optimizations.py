@@ -1994,6 +1994,7 @@ def optimize_Function_iter_yield_exprs():
 def optimize_as_context():
     from jedi.inference.value.function import FunctionMixin
     from jedi.inference.base_value import HelperValueMixin
+    from jedi.plugins.stdlib import Wrapped
     from textension.utils import lazy_overwrite, _unbound_getter
     from ..common import state_cache
 
@@ -2010,6 +2011,7 @@ def optimize_as_context():
     def as_context(self: FunctionMixin, *arguments):
         return self._as_context(*arguments)
     FunctionMixin.as_context = as_context
+    Wrapped.as_context = as_context
 
 
 def optimize_get_signatures():
