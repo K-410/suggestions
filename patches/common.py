@@ -36,7 +36,7 @@ from functools import partial
 from textension.utils import (
     _forwarder, _named_index, _unbound_getter, consume, falsy_noargs, inline,
      set_name, truthy_noargs, instanced_default_cache, Aggregation, starchain,
-     lazy_overwrite, namespace, filtertrue, get_mro_dict)
+     lazy_overwrite, namespace, filtertrue, get_mro_dict, Variadic, _variadic_index)
 
 from .tools import state, get_handle, factory, ensure_blank_eol
 from .. import settings
@@ -268,8 +268,9 @@ def yield_once(func):
 
 @instanced_default_cache
 def sessions(self: dict, text_id):
-    module = BpyTextModule(Path(f"Text({text_id})"))
-    return self.setdefault(text_id, TextSession((text_id, module)))
+    file_io = BpyTextBlockIO(Path(f"Text({text_id})"))
+    module = BpyTextModule(file_io)
+    return self.setdefault(text_id, TextSession(text_id, module))
 
 
 def register_cache(func):
@@ -1157,14 +1158,14 @@ class VirtualFunction(VirtualValue):
 
 # Implements FileIO for bpy.types.Text so jedi can use diff-parsing on them.
 # This is used by several optimization modules.
-class BpyTextBlockIO(Aggregation, KnownContentFileIO, FileIOFolderMixin):
+class BpyTextBlockIO(Variadic, KnownContentFileIO, FileIOFolderMixin):
     get_last_modified = None.__init__  # Dummy
+
     read = _unbound_getter("_content")
+    path = _variadic_index(0)
 
-    path = _named_index(0)
 
-
-class BpyTextModule(ModuleValue):
+class BpyTextModule(Variadic, ModuleValue):
     string_names = ("__main__",)
 
     inference_state = state
@@ -1175,7 +1176,7 @@ class BpyTextModule(ModuleValue):
     is_package  = falsy_noargs
     is_module   = truthy_noargs
 
-    _path: Path = _forwarder("file_io.path")
+    _path: Path           = _forwarder("file_io.path")
     code_lines: list[str] = _forwarder("file_io._content")
     file_io: BpyTextBlockIO
     context: "BpyTextModuleContext"
@@ -1185,16 +1186,16 @@ class BpyTextModule(ModuleValue):
     # prefixes a drive to the beginning of the path:
     # '/MyText' -> 'C:/MyText'.
     py__file__ = _unbound_getter("_path")
+    as_context = _unbound_getter("context")
 
-    def __init__(self, path):
-        self.context = BpyTextModuleContext(self)        
-        self.file_io = BpyTextBlockIO((path,))
+    file_io    = _variadic_index(0)
 
-    def as_context(self):
-        return self.context
+    @lazy_overwrite
+    def context(self):
+        return BpyTextModuleContext(self)
 
 
-class BpyTextModuleContext(MixedModuleContext):
+class BpyTextModuleContext(Variadic, MixedModuleContext):
     inference_state = state
     mixed_values = ()
     filters = None
@@ -1203,10 +1204,9 @@ class BpyTextModuleContext(MixedModuleContext):
     is_stub   = falsy_noargs
     is_module = truthy_noargs
     is_builtins_module = falsy_noargs
+    predefined_names = types.MappingProxyType({})
 
-    def __init__(self, value: BpyTextModule):
-        self._value = value
-        self.predefined_names = {}
+    _value: BpyTextModule = _variadic_index(0)
 
     def get_filters(self, until_position=None, origin_scope=None):
         if not self.filters:
@@ -1224,9 +1224,9 @@ class BpyTextModuleContext(MixedModuleContext):
         return super().py__getattribute__(name_or_str, name_context, position, analysis_errors)
 
 
-class TextSession(Aggregation):
-    text_id: int            = _named_index(0)
-    module:  BpyTextModule  = _named_index(1)
+class TextSession(Variadic):
+    text_id: int            = _variadic_index(0)
+    module:  BpyTextModule  = _variadic_index(1)
     file_io: BpyTextBlockIO = _forwarder("module.file_io")
 
     @lazy_overwrite
@@ -1336,13 +1336,13 @@ class AggregateLazyTreeValue(Aggregation, LazyTreeValue):
     _predefined_names = types.MappingProxyType({})
 
 
-class AggregateLazyKnownValues(Aggregation, LazyKnownValues):
+class VariadicLazyKnownValues(Variadic, LazyKnownValues):
     __slots__ = ()
 
     min = 1
     max = 1
 
-    data = _named_index(0)
+    data = _variadic_index(0)
 
 
 @inline
@@ -1390,8 +1390,6 @@ class AggregateExecutedParamName(Aggregation, ExecutedParamName):
     @lazy_overwrite
     def parent_context(self):
         return self.function_value.get_default_param_context()
-
-    # __repr__ = _aggregate_name_repr
 
 
 class AggregateCompiledValueFilter(Aggregation, CompiledValueFilter):

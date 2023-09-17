@@ -1519,7 +1519,7 @@ def optimize_py__bases__():
     from itertools import repeat
     from builtins import zip, list, map
 
-    from ..common import state_cache, AggregateLazyKnownValues, AggregateLazyTreeValue, cached_builtins, Values
+    from ..common import state_cache, VariadicLazyKnownValues, AggregateLazyTreeValue, cached_builtins, Values
 
     @state_cache
     def py__bases__(self: ClassValue):
@@ -1547,7 +1547,7 @@ def optimize_py__bases__():
         elif children[1].value == "object" and self.parent_context.is_builtins_module():
             return ()
 
-        return (AggregateLazyKnownValues((Values((cached_builtins.object,)),)),)
+        return (VariadicLazyKnownValues(Values((cached_builtins.object,))),)
 
     ClassValue.py__bases__ = py__bases__
 
@@ -1582,16 +1582,17 @@ def optimize_apply_decorators():
     from jedi.inference.syntax_tree import _apply_decorators, FunctionValue, infer_trailer, Decoratee
     from jedi.inference.value.klass import ClassValue
     from jedi.inference.arguments import ValuesArguments
+    from textension.utils import Variadic, _variadic_index
     from parso.python.tree import PythonNode, Class, ClassOrFunc
     from ..common import state, Values
     from itertools import repeat
 
-    class SimplerClassValue(ClassValue):
+    class SimplerClassValue(Variadic, ClassValue):
         inference_state = state
 
-        def __init__(self, state, parent_context, tree_node):
-            self.parent_context = parent_context
-            self.tree_node = tree_node
+        # Skip index 0 since it's the persistent inference state.
+        parent_context = _variadic_index(1)
+        tree_node      = _variadic_index(2)
 
         def __repr__(self):
             return f"<ClassValue: {self.tree_node!r}>"
@@ -1845,21 +1846,23 @@ def optimize_Sequence_get_wrapped_value():
     from jedi.inference.gradual.generics import TupleGenericManager
     from jedi.inference.value.iterable import Sequence
     from jedi.inference.gradual.base import GenericClass
-    from ..common import get_builtin_value
+    from textension.utils import Variadic, _variadic_index
+    from ..common import get_builtin_value, state, NoArguments
 
-    class DeferredTupleGenericManager(TupleGenericManager):
-        def __init__(self, sequence):
-            self.sequence = sequence
+    class DeferredTupleGenericManager(Variadic, TupleGenericManager):
+        sequence = _variadic_index(0)
 
         @property
         def _tuple(self):
             return self.sequence._get_generics()
-    
+
     def _get_wrapped_value(self):
         sequence_type = get_builtin_value(self.array_type)
         manager = DeferredTupleGenericManager(self)
-        c, = GenericClass(sequence_type, manager).execute_annotation()
-        return c
+        value = GenericClass(sequence_type, manager)
+        for value in state.execute(value, NoArguments):
+            return value
+        assert False, "Unreachable"
 
     Sequence._get_wrapped_value = _get_wrapped_value
 
