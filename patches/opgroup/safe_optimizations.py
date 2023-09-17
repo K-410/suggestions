@@ -85,7 +85,6 @@ def apply():
     optimize_LazyKnownValues_infer()
     optimize_ValueContext_is_builtins_module()
     optimize_HelperValueMixin_is_sub_class_of()
-    optimize_TreeSignature()
     optimize_numpydocstr()
     optimize_Function_iter_yield_exprs()
     optimize_as_context()
