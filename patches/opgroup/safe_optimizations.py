@@ -44,7 +44,7 @@ def apply():
 
     optimize_Node_get_previous_leaf()
     optimize_ValueContext_methods()
-    optimize_ValueSet_methods()
+    optimize_ValueSet()
     optimize_getattr_static()
     optimize_BaseNode_get_leaf_for_position()
     optimize_remove_del_stmt()
@@ -209,7 +209,7 @@ def optimize_BaseNode_get_leaf_for_position():
     BaseNode.get_leaf_for_position = get_leaf_for_position
 
 
-def optimize_ValueSet_methods():
+def optimize_ValueSet():
     from jedi.inference.base_value import ValueSet
     from textension.utils import starchain
     from functools import partial
@@ -284,6 +284,19 @@ def optimize_ValueSet_methods():
         return Values(starchain(map_annotation_classes(self)))
     
     ValueSet.gather_annotation_classes = Values.gather_annotation_classes = gather_annotation_classes
+
+    from types import ModuleType
+    modules = set(filter(ModuleType.__instancecheck__, locals().values()))
+    from jedi.inference.gradual import conversion, typeshed, typing, type_var, base, generics
+    from jedi.inference import imports, base_value, syntax_tree, lazy_value, names, docstrings
+    from jedi.inference.value import dynamic_arrays, decorator, module, klass, function, instance, iterable
+    from jedi.inference.compiled import value, mixed
+    from jedi.plugins import stdlib
+    modules = set(filter(ModuleType.__instancecheck__, locals().values())) - modules
+
+    for m in modules:
+        if "ValueSet" in m.__dict__:
+            m.__dict__["ValueSet"] = Values
 
 
 def optimize_ValueContext_methods():
@@ -1661,14 +1674,6 @@ def optimize_SequenceLiteralValue():
             yield from real_check_array_additions(context, self)
 
     SequenceLiteralValue.py__iter__ = py__iter__
-
-    from jedi.inference.gradual import conversion
-    from jedi.inference import imports
-    from jedi.inference import base_value
-
-    conversion.ValueSet = Values
-    base_value.ValueSet = Values
-    imports.ValueSet = Values
 
 
 # AccessHandle doesn't have ``get_access_path_tuples``, but jedi treats it as
