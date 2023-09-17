@@ -453,8 +453,12 @@ def get_scope_name_definitions(scope):
                 pool += n.children
 
             elif n.type == "del_stmt":
-                del_names = set(map_values(filter_names(n.children[1].children)))
-                selectors = map(del_names.__contains__, map_values(namedefs))
+                name = n.children[1]
+                if name.type == "name":
+                    selectors = map_eq(repeat(name.value), map_values(namedefs))
+                else:
+                    del_names = set(map_values(filter_names(n.children[1].children)))
+                    selectors = map(del_names.__contains__, map_values(namedefs))
                 for index in reversed(list(compress(count(), selectors))):
                     del namedefs[index]
 
