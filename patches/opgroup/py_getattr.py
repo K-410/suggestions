@@ -1,16 +1,7 @@
-# Implements optimizations for various py__getattribute__ methods.
+"Implements optimizations for various py__getattribute__ methods."
 
-from jedi.inference.syntax_tree import tree_name_to_values
-from jedi.inference.value.klass import ClassValue
-
-from itertools import repeat
-from functools import partial
 
 from ..common import get_cached_scope_definitions, state, Values, starchain
-from textension.utils import inline
-
-
-rep_state = repeat(state)
 
 
 def apply():
@@ -20,6 +11,11 @@ def apply():
 
 
 def optimize_ClassValue_py__getattribute__():
+    from jedi.inference.syntax_tree import tree_name_to_values
+    from jedi.inference.value.klass import ClassValue
+    from itertools import repeat
+
+    rep_state = repeat(state)
 
     def py__getattribute__(self: ClassValue,
                         name_or_str,
@@ -42,7 +38,6 @@ def optimize_AbstractContext_py__getattribute__():
     from jedi.inference.context import AbstractContext, _get_global_filters_for_name
     from jedi.inference.finder import filter_name
 
-    from textension.utils import starchain
     from ..common import Values, is_namenode, map_infer
 
     def py__getattribute__(self: AbstractContext,
@@ -71,25 +66,24 @@ def optimize_HelperValueMixin_py__getattribute__():
     from jedi.inference.base_value import HelperValueMixin
     from jedi.inference.analysis import add_attribute_error
     from parso.python.tree import Name
-    from textension.utils import starchain
+    from textension.utils import starchain, filtertrue
     from operator import methodcaller
-    from ..common import Values, NO_VALUES
+    from ..common import NO_VALUES
 
-    @inline
-    def map_infer(names):
-        return partial(map, methodcaller("infer"))
-    
     def py__getattribute__(self: HelperValueMixin,
                            name_or_str,
                            name_context=None,
                            position=None,
                            analysis_errors=True):
 
-        if names := self.goto(name_or_str, name_context or self, analysis_errors):
-            if values := Values(starchain(map_infer(names))):
+        filters = self._get_value_filters(name_or_str)
+        string_name = name_or_str.value if isinstance(name_or_str, Name) else name_or_str
+
+        for name in starchain(filtertrue(map(methodcaller("get", string_name), filters))):
+            if values := name.infer():
                 return values
 
-        elif analysis_errors and isinstance(name_or_str, Name):
+        if analysis_errors and isinstance(name_or_str, Name):
             add_attribute_error(name_context or self, self, name_or_str)
         return NO_VALUES
 
