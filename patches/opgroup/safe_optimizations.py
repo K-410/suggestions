@@ -1075,13 +1075,12 @@ def optimize_tree_name_to_values():
         cn = ContextualizedNode(context, node.children[3])
         is_async = node.parent.type == 'async_stmt'
 
-        for_values = []
         for lazy_value in context.infer_node(node.children[3]):
             for values in lazy_value.iterate(cn, is_async):
-                for_values += values.infer()
-
-        n = TreeNameDefinition(context, tree_name)
-        return check_tuple_assignments(n, Values(for_values))
+                if for_values := values.infer():
+                    n = TreeNameDefinition(context, tree_name)
+                    return check_tuple_assignments(n, for_values)
+        return NO_VALUES
 
     def infer_param(context, name):
         context = context.parent_context
