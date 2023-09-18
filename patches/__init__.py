@@ -280,20 +280,18 @@ def patch_import_resolutions():
         return ImplicitNSInfo.__instancecheck__
 
     def fixed_import_module(inference_state, import_names, parent_module_value, sys_path):
-        # XXX: We don't allow auto imports.
-        # if import_names[0] in settings.auto_import_modules:
-        #     if module := _load_builtin_module(inference_state, import_names, sys_path):
-        #         return Values((module,))
-        #     return NO_VALUES
-
         module_name = '.'.join(import_names)
+
         if parent_module_value is None:
             file_io_or_ns, is_pkg = inference_state.compiled_subprocess.get_module_info(string=import_names[-1], full_name=module_name, sys_path=sys_path, is_global_search=True)
 
         else:
             is_pkg = None
             file_io_or_ns = None
-            if paths := parent_module_value.py__path__():
+            # We might be passing non-ModuleValue objects, as is the case with
+            # ``bpy.app.handlers``, which is a CompiledValue. If so, ``paths``
+            # should be None and we'll check sys.modules instead.
+            if paths := getattr(parent_module_value, "py__path__", None.__init__)():
                 file_io_or_ns, is_pkg = inference_state.compiled_subprocess.get_module_info(string=import_names[-1], path=paths, full_name=module_name, is_global_search=False)
 
             if file_io_or_ns is is_pkg is None:
