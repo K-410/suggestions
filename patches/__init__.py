@@ -589,62 +589,72 @@ def patch_complete_dict():
 def patch_get_importer_names():
     from jedi.inference.imports import SubModuleName, Importer
     from jedi.api.completion import Completion, _gather_nodes
-    from itertools import repeat, compress
-    import sys
+    from textension.utils import filtertrue
     from importlib.util import find_spec
-    from .common import filter_operators, is_namenode, map_startswith
+    from itertools import repeat, compress, filterfalse
+    from functools import partial
+    from operator import methodcaller
+    from .common import filter_operators, is_namenode, map_startswith, state
+    import sys
 
-    modules = sys.modules.keys()
+    @inline
+    def join_dot(strings):
+        return ".".join
+    
+    @inline
+    def map_equals_dot(seq):
+        return partial(map, ".".__eq__)
+    
+    @inline
+    def contains_dot(string):
+        return methodcaller("__contains__", ".")
+    
+    @inline
+    def map_remove_prefix(seq1, seq2):
+        return partial(map, str.removeprefix)
+
+    modules = sys.modules
 
     def get_importer_names(self: Completion, names, level=0, only_modules=True):
         # Assumes Leaf.__str__ optimization.
         string_names = list(map(str, names))
-        i = Importer(self._inference_state, string_names, self._module_context, level)
+        i = Importer(state, string_names, self._module_context, level)
 
-        for module in i.follow():
-            context = module.as_context()
-            # This fix applies only when there's at least 1 import name and 1 dot
-            # operator. In this context, dots, comma and parentheses may appear.
-            for op in names and filter_operators(_gather_nodes(self.stack)):
-                if op.value is ".":
-                    # Compose the import statement and look for it in sys.modules.
-                    comp = ".".join(string_names)
+        # This fix applies only when there's at least 1 import name and 1 dot
+        # operator. In this context, dots, comma and parentheses may appear.
+        if any(filtertrue(map_equals_dot(filter_operators(_gather_nodes(self.stack))))):
+            for module_value in i.follow():
+                # Compose the import statement and look for it in sys.modules.
+                comp = join_dot(string_names)
 
-                    if "." in comp:
-                        if module := sys.modules.get(comp):
-                            spec = getattr(module, "__spec__", None)
-                        else:
-                            spec = find_spec(comp)
+                if "." in comp:
+                    if comp in modules:
+                        spec = getattr(modules[comp], "__spec__", None)
 
-                        # If a module or spec exists, run stock behavior.
-                        if spec:
-                            break
+                    # Try letting importlib find it.
+                    else:
+                        spec = find_spec(comp)
 
-                    # Jedi may omit the trailing part from names. Add it back.
-                    leaf = self._module_node.get_leaf_for_position(self._original_position)
-                    if leaf not in names:
-                        if is_namenode(leaf):
-                            comp += "."
-                        comp += leaf.value
+                    # If a module or spec exists, run stock behavior since
+                    # Jedi can find it on its own.
+                    if spec:
+                        break
 
-                    ret = []
-                    prefix = comp[:comp.rindex(".") + 1]
-                    for name in compress(modules, map_startswith(modules, repeat(comp))):
-                        # Remove the prefix up to and including the leading dot.
-                        name = name.removeprefix(prefix)
+                # Jedi may omit the trailing part from names. Add it back.
+                leaf = self._module_node.get_leaf_for_position(self._original_position)
+                if leaf not in names:
+                    if is_namenode(leaf):
+                        comp += "."
+                    comp += leaf.value
 
-                        # If we're completing ``bpy.a``, we only want ``app`` and not
-                        # ``app.handlers``.
-                        if "." not in name:
-                            ret += name,
-                    if ret:
-                        
-                        return [SubModuleName(context, n) for n in ret]
-                        # return [ImportName(self._module_context, n) for n in ret]
+                # Remove the prefix up to and including the leading dot.
+                names = compress(modules, map_startswith(modules, repeat(comp)))
+                names = map_remove_prefix(names, repeat(comp[:comp.rindex(".") + 1]))
 
-        # TODO: Can we use this? (commented)
-        # return i.completion_names(self._inference_state, only_modules=only_modules)
-        return get_importer_names(self, names, level=level, only_modules=only_modules)
+                # If completing ``bpy.a``, we only want ``app`` and not ``app.handlers``.
+                if ret := list(filterfalse(contains_dot, names)):
+                    return list(map(SubModuleName, repeat(module_value.as_context()), ret))
+        return i.completion_names(state, only_modules=only_modules)
 
     get_importer_names = _patch_function(Completion._get_importer_names, get_importer_names)
 
