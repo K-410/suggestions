@@ -12,7 +12,7 @@ from inspect import Parameter
 from textension.utils import _context, _forwarder, inline, starchain, get_dict, get_mro_dict, lazy_overwrite
 
 from ._mathutils import float_subtypes, MathutilsValue
-from ..common import Values, NoArguments, get_type_name
+from ..common import Values, NoArguments, get_type_name, is_str
 from ..tools import runtime, state, make_compiled_value
 
 import bpy
@@ -89,11 +89,6 @@ def is_property_deferred(obj) -> bool:
 @inline
 def is_operator_subclass(obj) -> bool:
     return bpy.types.Operator.__subclasscheck__
-
-
-@inline
-def is_string(obj) -> bool:
-    return str.__instancecheck__
 
 
 @inline
@@ -401,7 +396,7 @@ class RnaName(common.VirtualName):
                         member = getattr(member, "__func__", member)
 
                     if doc := getattr(member, "__doc__", None):
-                        if is_string(doc):
+                        if is_str(doc):
                             return doc
 
             # The member is defined in bpy_struct.
@@ -409,10 +404,10 @@ class RnaName(common.VirtualName):
                 if value.access_handle.access._obj is StructRNA:
                     member = bpy_struct_magic[name]
 
-                    if is_string(member):
+                    if is_str(member):
                         return member
                     if doc := getattr(member, "__doc__", None):
-                        if is_string(doc):
+                        if is_str(doc):
                             return doc
         return ""
 
@@ -553,7 +548,7 @@ class RnaValue(common.VirtualValue):
 
     def py__doc__(self):
         obj = self.obj
-        if is_operator_subclass(obj.__class__) and is_string(obj.__doc__):
+        if is_operator_subclass(obj.__class__) and is_str(obj.__doc__):
             return obj.__doc__
         if obj.name:
             return f"{obj.name}\n\n{obj.description}"
