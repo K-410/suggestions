@@ -1714,8 +1714,13 @@ def optimize_AccessHandle_get_access_path_tuples():
             tmp += sys_modules[obj.__module__],
 
         except (AttributeError, KeyError):  # AttributeError/KeyError
+
             if not is_module(obj):
-                tmp += builtins,
+                # Only if ``type(obj).__module__`` actually says ``builtins``.
+                while not isinstance(obj, type):
+                    obj = type(obj)
+                if type.__dict__["__module__"].__get__(obj) == "builtins":
+                    tmp += builtins,
 
 
         for obj in tmp[::-1]:
