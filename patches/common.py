@@ -1022,7 +1022,7 @@ class VirtualModule(VirtualMixin, CompiledModule):
         return ".".join(self.string_names)
 
     def py__package__(self):
-        return []
+        return list(self.string_names)
 
     def get_signatures(self):
         return []
