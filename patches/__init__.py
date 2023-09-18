@@ -866,7 +866,7 @@ def patch_BaseName_get_docstring():
 
     @inline
     def match_signature(doc: str):
-        return re.compile(r"^.*?\(.*?\)(?: -> .*?)?[\n]").match
+        return re.compile(r"^.*?\(.*?\)(?: [-]+> .*?)?[\n]").match
 
     @inline
     def match_rst_signature(doc: str):
@@ -945,8 +945,10 @@ def patch_Completion_complete_trailer():
     from jedi.api.completion import Completion, infer_call_of_leaf
 
     def _complete_trailer(self: Completion, previous_leaf):
+
         while previous_leaf.value == ".":
             previous_leaf = previous_leaf.get_previous_leaf()
+
         inferred_context = self._module_context.create_context(previous_leaf)
         values = infer_call_of_leaf(inferred_context, previous_leaf)
 
