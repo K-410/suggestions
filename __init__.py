@@ -276,7 +276,7 @@ class Suggestions(ui.widgets.ListBox):
         bpy.ops.textension.suggestions_commit('INVOKE_DEFAULT')
 
 
-@utils.factory
+@utils.inline
 def get_instance() -> Suggestions:
     return utils.make_space_data_instancer(Suggestions)
 

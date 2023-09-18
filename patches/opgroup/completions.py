@@ -1,4 +1,4 @@
-from textension.utils import _named_index, _forwarder, Aggregation, lazy_class_overwrite, factory, inline
+from textension.utils import _named_index, _forwarder, Aggregation, lazy_class_overwrite, inline, map_not
 from functools import partial
 from operator import methodcaller, attrgetter
 from jedi.api import classes
@@ -27,9 +27,9 @@ def map_strings(sequence) -> map:
 
 
 class CompletionBase(Aggregation, classes.Completion):
-    _like_name: str
     _inference_state = state
     _cached_name = None
+    _like_name: str
 
     string_name            = _named_index(0)
     _string_name_lower     = _named_index(1)
@@ -54,25 +54,18 @@ class CompletionBase(Aggregation, classes.Completion):
     _is_ordered = property(partial(type(settings).use_ordered_fuzzy_search.__get__, settings))
 
 
-@factory
+@inline
 def sort_completions(completions):
+    from .completions import settings
     from itertools import compress, count, repeat
+    from ..common import map_startswith
     from builtins import next
     import operator
-    from .completions import settings
 
     get_lower = operator.attrgetter("_string_name_lower")
     single = repeat("_")
     double = repeat("__")
 
-    @inline
-    def map_startswith(iterable1, iterable2):
-        return partial(map, str.startswith)
-
-    @inline
-    def map_not(iterable) -> map:
-        return partial(map, operator.not_)
-    
     @inline
     def map_get_lower(completions: list[CompletionBase]) -> map:
         return partial(map, operator.itemgetter(1))
@@ -207,6 +200,9 @@ def optimize_Completion_complete():
 
 @inline
 def contains_fuzzy_unordered(query: str, string: str) -> bool:
+    """Returns whether a string contains the all the letters of the query.
+    The order does not matter.
+    """
 
     @inline
     def replace(s):
@@ -224,6 +220,7 @@ def contains_fuzzy_unordered(query: str, string: str) -> bool:
 
 @inline
 def contains_fuzzy_ordered(query: str, string: str):
+    """Same as above but ordered."""
 
     @inline
     def get_index(string, char):
@@ -244,13 +241,12 @@ def contains_fuzzy_ordered(query: str, string: str):
 @inline
 def filter_completions(completions, stack, like_name):
     from textension.utils import defaultdict_list
-    from .completions import contains_fuzzy_unordered
+    from .completions import CompletionBase, map_strings, map_lower, slice_to
     from itertools import compress, repeat
     from operator import itemgetter
     from builtins import map, zip
     from ..common import map_eq
 
-    from .completions import CompletionBase, map_strings, map_lower, slice_to
 
     search_types = (partial(map, contains_fuzzy_unordered),
                     partial(map, contains_fuzzy_ordered))
@@ -288,7 +284,6 @@ def filter_completions(completions, stack, like_name):
 def optimize_Completion_complete_keywords():
     from jedi.api.completion import Completion
     from jedi.api.keywords import KeywordName
-    from ..common import state
 
     class KeywordName2(str, KeywordName):
         inference_state = state

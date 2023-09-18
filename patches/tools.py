@@ -5,10 +5,9 @@ from jedi.inference.compiled.value import create_cached_compiled_value
 from jedi.inference.value.instance import CompiledInstance, ValueSet
 import jedi.api as api
 
-from parso.python.tree import Name, Operator
 from parso.grammar import load_grammar
 
-from textension.utils import factory, namespace, inline, _check_type, consume
+from textension.utils import namespace, inline, _check_type, consume
 import textension
 
 import os
@@ -79,7 +78,7 @@ _value_overrides = {}
 _virtual_overrides = {}
 
 
-@factory
+@inline
 def get_handle(obj: Any):
     return state.compiled_subprocess.get_or_create_access_handle
 

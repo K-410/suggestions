@@ -592,14 +592,13 @@ def patch_get_importer_names():
     from itertools import repeat, compress
     import sys
     from importlib.util import find_spec
-    from .common import filter_operators, is_namenode
+    from .common import filter_operators, is_namenode, map_startswith
 
-    startswith = str.startswith
     modules = sys.modules.keys()
 
     def get_importer_names(self: Completion, names, level=0, only_modules=True):
-        
-        string_names = [n.value for n in names]
+        # Assumes Leaf.__str__ optimization.
+        string_names = list(map(str, names))
         i = Importer(self._inference_state, string_names, self._module_context, level)
 
         for module in i.follow():
@@ -630,7 +629,7 @@ def patch_get_importer_names():
 
                     ret = []
                     prefix = comp[:comp.rindex(".") + 1]
-                    for name in compress(modules, map(startswith, modules, repeat(comp))):
+                    for name in compress(modules, map_startswith(modules, repeat(comp))):
                         # Remove the prefix up to and including the leading dot.
                         name = name.removeprefix(prefix)
 

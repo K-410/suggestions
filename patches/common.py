@@ -38,7 +38,7 @@ from textension.utils import (
      set_name, truthy_noargs, instanced_default_cache, Aggregation, starchain,
      lazy_overwrite, namespace, filtertrue, get_mro_dict, Variadic, _variadic_index)
 
-from .tools import state, get_handle, factory, ensure_blank_eol
+from .tools import state, get_handle, ensure_blank_eol
 from .. import settings
 
 import bpy
@@ -195,6 +195,10 @@ def map_infer(bases):
 def map_eq(sequence1, sequence2) -> map:
     from operator import eq
     return partial(map, eq)
+
+@inline
+def map_startswith(iterable1, iterable2):
+    return partial(map, str.startswith)
 
 
 # Used by VirtualValue.py__call__ and other inference functions where we
@@ -668,7 +672,7 @@ def infer_descriptor(property_obj, context):
     return None
 
 
-@factory
+@inline
 def get_submodule_names():
     from os import listdir
     from sys import modules
