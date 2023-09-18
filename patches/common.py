@@ -882,8 +882,7 @@ def get_class_or_instance_type(name) -> str:
                 return "method"
             return "function"
         else:
-            name = value.py__name__()
-            return value.get_root_context().py__name__() + "." + name
+            return value.py__name__()
 
     return annotate(obj)
 
