@@ -57,6 +57,7 @@ def _apply_patches():
     patch_BaseName_get_signatures()
     patch_CompiledModule_py__package__()
     patch_InferenceStateSameProcess()
+    patch_CompiledModule_string_names()
 
 
 def _apply_optimizations():
@@ -1026,3 +1027,38 @@ def patch_InferenceStateSameProcess():
     InferenceStateSameProcess.get_or_create_access_handle = get_or_create_access_handle
     InferenceStateSameProcess.get_access_handle = get_access_handle
     InferenceStateSameProcess.set_access_handle = set_access_handle
+
+
+# Patches ``CompiledModule.string_names`` to include ``__module__`` as part
+# of its string names when the underlying object isn't a module.
+def patch_CompiledModule_string_names():
+    from jedi.inference.compiled.value import CompiledModule
+    from .common import is_str
+    from types import ModuleType
+
+    @inline
+    def get__module__():
+        return type.__dict__["__module__"].__get__
+    
+    @inline
+    def is_module(obj) -> bool:
+        return ModuleType.__instancecheck__
+
+    @property
+    def string_names(self):
+        name = self.py__name__()
+        if name is None:
+            return ()
+
+        obj = self.access_handle.access._obj
+        if not is_module(obj):
+
+            while not isinstance(obj, type):
+                obj = type(obj)
+
+            module_name = get__module__(obj)
+            if is_str(module_name) and module_name != "builtins":
+                name = ".".join((module_name, name))
+        return tuple(name.split('.'))
+
+    CompiledModule.string_names = string_names
