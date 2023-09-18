@@ -1,4 +1,4 @@
-# This module implements auto-completions.
+"""This module implements auto-completions."""
 
 
 from textension.btypes.defs import OPERATOR_CANCELLED, BLF_BOLD

@@ -1,4 +1,4 @@
-# This module implements various utilities for Suggestions.
+"""This module implements various utilities for Suggestions."""
 
 from jedi.inference.compiled.subprocess import functions
 from jedi.inference.compiled.value import create_cached_compiled_value

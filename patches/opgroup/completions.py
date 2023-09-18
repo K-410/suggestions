@@ -1,3 +1,5 @@
+"""This module optimizes completions."""
+
 from textension.utils import _named_index, _forwarder, Aggregation, lazy_class_overwrite, inline, map_not
 from functools import partial
 from operator import methodcaller, attrgetter

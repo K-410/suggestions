@@ -1,4 +1,4 @@
-# Optimizes ``_defined_names`` and methods that call it .
+"""This module optimizes ``_defined_names`` and methods that call it."""
 
 from textension.utils import _patch_function
 

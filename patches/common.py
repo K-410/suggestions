@@ -1,4 +1,4 @@
-# This module implements classes extending Jedi's inference capability.
+"""This module implements classes extending Jedi's inference capability."""
 
 from jedi.inference.compiled.value import (
     CompiledValue, CompiledValueFilter, CompiledName, CompiledModule)

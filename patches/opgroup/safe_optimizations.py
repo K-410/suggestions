@@ -1,5 +1,4 @@
-# This module implements safe optimizations for jedi.
-# A safe optimization is independent and does not modify behavior.
+"""This module implements general optimizations for various parts of Jedi."""
 
 from textension.utils import (
     _forwarder,

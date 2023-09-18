@@ -1,4 +1,5 @@
-# This module implements optimizations for various filters and stubs.
+"""This module implements optimizations for various filters and stubs."""
+
 from jedi.inference.compiled.getattr_static import getattr_static
 from jedi.inference.compiled.access import ALLOWED_DESCRIPTOR_ACCESS
 from jedi.inference.gradual.stub_value import StubModuleValue, StubModuleContext, StubFilter

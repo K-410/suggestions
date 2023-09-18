@@ -1,4 +1,4 @@
-# This adds optimizations to jedi's caching.
+"""This module adds optimizations to jedi's caching."""
 
 from ..common import state_cache, state_cache_kw, state_cache_default
 

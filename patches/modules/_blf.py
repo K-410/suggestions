@@ -1,3 +1,5 @@
+"""This module implements blf module inference."""
+
 from .. import tools
 import blf
 

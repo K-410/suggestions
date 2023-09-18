@@ -1,4 +1,4 @@
-# This module implements import resolution for bpy.
+"""This module implements import resolution for bpy."""
 
 from jedi.inference.names import SubModuleName
 from jedi.inference.syntax_tree import tree_name_to_values

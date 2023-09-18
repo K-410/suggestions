@@ -1,6 +1,7 @@
-# This module implements optimizations for used names by caching and applying
-# partial updates to module tree nodes. Optimized filter methods that depend
-# on this optimization are also added here.
+"""This module implements optimizations for used names by caching and applying
+partial updates to module tree nodes. Optimized filter methods that depend
+on this optimization are also added here.
+"""
 
 from operator import attrgetter
 

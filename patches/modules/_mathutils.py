@@ -1,4 +1,4 @@
-"""Implements support for mathutils type inference."""
+"""This module implements mathutils type inference."""
 
 from mathutils import Vector, Quaternion, Euler, Matrix, Color
 from jedi.inference.gradual.base import GenericClass

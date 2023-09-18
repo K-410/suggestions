@@ -1,4 +1,4 @@
-"Implements optimizations for various py__getattribute__ methods."
+"""This module implements optimizations for py__getattribute__ methods."""
 
 
 from ..common import get_cached_scope_definitions, state, Values, starchain

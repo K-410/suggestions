@@ -1,4 +1,4 @@
-# This adds fixes for jedi to outright work.
+"""This package adds optimizations and fixes for jedi to outright work."""
 
 from textension.utils import _patch_function, _forwarder, inline
 from .tools import _descriptor_overrides, _value_overrides, _virtual_overrides

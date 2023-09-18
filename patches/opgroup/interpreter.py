@@ -1,15 +1,16 @@
-# This adds optimizations to the various parsers.
-#
-# Add token optimization:
-# - Eliminate token initializers and use direct assignments.
-# - Use heuristics, reordering and class maps.
-# - Use object hashing for PythonTokenType enums.
-#
-# DiffParser optimization:
-# - Skip feeding identical lines to the SequenceMatcher
-#
-# Grammar.parse optimization:
-# - Just removes junk code.
+"""This adds optimizations to the various parsers.
+
+Add token optimization:
+- Eliminate token initializers and use direct assignments.
+- Use heuristics, reordering and class maps.
+- Use object hashing for PythonTokenType enums.
+
+DiffParser optimization:
+- Skip feeding identical lines to the SequenceMatcher
+
+Grammar.parse optimization:
+- Just removes junk code.
+"""
 from textension.utils import _forwarder, _patch_function
 
 
