@@ -969,7 +969,8 @@ def patch_BaseName_get_signatures():
     def _get_signatures(self: BaseName, for_docstring=False):
         api_type = self._name.api_type
 
-        if api_type == 'property':
+        # These have no useful signatures.
+        if api_type in {"property", "module"}:
             return []
 
         elif api_type == "statement" and for_docstring and not self.is_stub():
