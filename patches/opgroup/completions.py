@@ -219,37 +219,31 @@ def contains_fuzzy_unordered(query: str, string: str) -> bool:
 
 
 @inline
-def contains_fuzzy_ordered(query: str, string: str):
-    """Same as above but ordered."""
-
-    @inline
-    def get_index(string, char):
-        return str.index
-
-    def contains_fuzzy_ordered(query: str, string: str):
-        index = -1
-        try:
-            for char in query:
-                index = get_index(string, char, index + 1)
-                continue
-        except:
-            return False
-        return True
-    return contains_fuzzy_ordered
-
-
-@inline
 def filter_completions(completions, stack, like_name):
     from textension.utils import defaultdict_list
     from .completions import CompletionBase, map_strings, map_lower, slice_to
-    from itertools import compress, repeat
-    from operator import itemgetter
+    from itertools import compress, repeat, islice
+    from operator import itemgetter, contains
     from builtins import map, zip
     from ..common import map_eq
 
+    @inline
+    def map_all(seq):
+        return partial(map, all)
+    
+    @inline
+    def map_map_contains(s1, s2):
+        return partial(map, partial(map, contains))
 
-    search_types = (partial(map, contains_fuzzy_unordered),
-                    partial(map, contains_fuzzy_ordered))
+    @inline
+    def map_repeat(seq):
+        return partial(map, repeat)
+
+    @inline
+    def map_islice(seq):
+        return partial(map, islice)
+
+    repeat_None = repeat(None)
 
     def filter_completions(completions, stack, like_name):
 
@@ -265,16 +259,26 @@ def filter_completions(completions, stack, like_name):
                 strings = map_lower(strings)
                 like_name = Completion.test_like_name
 
+            repeat_query = repeat(like_name)
+
             if settings.use_fuzzy_search:
-                map_fuzzy_func = search_types[settings.use_ordered_fuzzy_search]
-                strings = map_fuzzy_func(repeat(like_name), strings)
+                if settings.use_ordered_fuzzy_search:
+                    # Repeat the same islices of strings so string iterables
+                    # get exhausted for each contains test.
+                    strings = map_repeat(map_islice(strings, repeat_None))
+                    strings = map_all(map_map_contains(strings, repeat_query))
+
+                else:
+                    strings = map(contains_fuzzy_unordered, repeat_query, strings)
 
             else:
                 strings = map(itemgetter(slice_to(Completion._like_name_length)), strings)
-                strings = map_eq(repeat(like_name), strings)
+                strings = map_eq(repeat_query, strings)
+
+            completions = compress(completions, strings)
 
         names = defaultdict_list()
-        for name in compress(completions, strings):
+        for name in completions:
             names[name.string_name] += name,
 
         return map(Completion, zip(names, map_lower(names), names.values()))
