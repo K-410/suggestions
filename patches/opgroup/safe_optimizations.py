@@ -90,6 +90,7 @@ def apply():
     optimize_iter_nodes_for_param()
     optimize_as_context()
     optimize_get_signatures()
+    optimize_find_module()
 
 
 rep_NO_VALUES = repeat(NO_VALUES).__next__
@@ -2079,3 +2080,43 @@ def optimize_get_signatures():
 
     BoundMethod.get_signatures = get_method_signatures
     BoundMethod.get_signature_functions = AggregateBoundMethod.get_signature_functions
+
+
+# Optimizes ``_find_module`` to use the module spec of existing modules
+# instead of always trying to find it again, thrashing the disk.
+def optimize_find_module():
+    from jedi.inference.compiled.subprocess.functions import _find_module, \
+        _find_module_py33, ImplicitNSInfo
+    from importlib.machinery import PathFinder
+    from sys import meta_path, modules
+
+    def get_spec(string, full_name, p, finder):
+        if full_name in modules:
+            if spec := getattr(modules[full_name], "__spec__", None):
+                return spec
+        try:
+            return finder.find_spec(string, p)
+        except:  # AttributeError
+            return None
+
+    def find_module(string, path=None, full_name=None, is_global_search=True):
+        for finder in meta_path:
+            if finder != PathFinder and is_global_search:
+                p = None
+            else:
+                p = path
+
+            spec = get_spec(string, full_name, p, finder)
+            if not spec or spec.origin == "frozen":
+                continue
+
+            loader = spec.loader
+            if not loader and not spec.has_location:
+                full_name = string if not path else full_name
+                implicit_ns_info = ImplicitNSInfo(
+                    full_name, spec.submodule_search_locations._path)
+                return implicit_ns_info, True
+            return _find_module_py33(string, path, loader)
+        return None, None
+    
+    _patch_function(_find_module, find_module)
