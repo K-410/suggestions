@@ -680,8 +680,15 @@ def get_submodule_names():
     from jedi.inference.names import SubModuleName
     from textension.utils import get_module_dict, get_module_dir
     from itertools import repeat
-    from .tools import _filter_modules
     from types import ModuleType
+
+    from importlib.machinery import all_suffixes
+    from itertools import compress
+    from builtins import map, len
+
+    suffixes = (tuple(all_suffixes()),)
+    endswith = str.endswith
+    index = str.index
 
     def get_submodule_names(self, only_modules=True):
         result = []
@@ -707,7 +714,9 @@ def get_submodule_names():
             try:
                 # ``__path__`` could be anything.
                 for path in md.get("__path__", ()):
-                    exports.update(_filter_modules(listdir(path)))
+                    names = listdir(path)
+                    for name in compress(names, map(endswith, names, suffixes * len(names))):
+                        exports.add(name[:index(name, ".")])
             except (TypeError, FileNotFoundError):
                 pass
 

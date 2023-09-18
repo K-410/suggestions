@@ -4,6 +4,8 @@ from jedi.inference.compiled.subprocess import functions
 from jedi.inference.compiled.value import create_cached_compiled_value
 from jedi.inference.value.instance import CompiledInstance, ValueSet
 import jedi.api as api
+from jedi.inference.compiled.access import DirectObjectAccess, create_access_path
+from types import GetSetDescriptorType
 
 from parso.grammar import load_grammar
 
@@ -83,54 +85,9 @@ def get_handle(obj: Any):
     return state.compiled_subprocess.get_or_create_access_handle
 
 
-@factory
-def _filter_modules():
-    from importlib.machinery import all_suffixes
-    from itertools import compress
-    from builtins import map, len
-
-    suffixes = (tuple(all_suffixes()),)
-    endswith = str.endswith
-    index = str.index
-
-    def _filter_modules(names: list[str]):
-        for name in compress(names, map(endswith, names, suffixes * len(names))):
-            yield name[:index(name, ".")]
-
-    return _filter_modules
 
 
-# Get the first method using the method resolution order.
-def _get_unbound_super_method(cls, name: str):
-    for base in cls.__mro__[1:]:
-        try:
-            return getattr(base, name)
-        except AttributeError:
-            continue
-    raise AttributeError(f"Method '{name}' not on any superclass")
 
-
-def override_method(cls: type, *, alias=None):
-    def override(func, cls=cls, name=alias):
-        if name is not None:
-            assert isinstance(name, str)
-        elif isinstance(func, property):
-            name = func.fget.__name__
-        else:
-            name = func.__name__
-
-        assert hasattr(cls, name), f"No method on {cls} named ``{name}``."
-        setattr(cls, name, func)
-        return func
-    return override
-
-
-from jedi.inference.compiled.access import DirectObjectAccess, create_access_path, getattr_static
-from types import GetSetDescriptorType
-from jedi.inference.compiled.value import CompiledValue
-
-from itertools import compress, repeat
-from operator import not_, contains
 
 
 class AccessOverride(DirectObjectAccess):
@@ -188,8 +145,8 @@ def _rtype_override(obj, value):
 
 @override_prologue
 def _descriptor_override(obj, value):
-    pass
     # Does nothing for now. The object just needs to exist in _descriptor_overrides.
+    pass
 
 
 def _add_rtype_overrides(data):
@@ -202,22 +159,11 @@ def _add_rtype_overrides(data):
 def _add_descriptor_overrides(data):
     for descriptor, rtype in data:
         _descriptor_overrides[descriptor] = rtype
-        # obj = descriptor.__objclass__
-        # assert obj not in _value_overrides, (obj, _value_overrides)
-        # assert not (obj in _value_overrides or descriptor.__name__ in _descriptor_overrides.get(obj, ()))
-        # _value_overrides[obj] = _descriptor_override
-        # print(obj)
-        # _descriptor_overrides[obj][descriptor.__name__] = rtype
 
 
 def make_compiled_value(obj, context):
     handle = get_handle(obj)
     return create_cached_compiled_value(state, handle, context)
-
-
-def make_instance(obj, context, arguments=None):
-    value = make_compiled_value(obj, context)
-    return CompiledInstance(state, context, value, arguments)
 
 
 def set_virtual_override(obj: object, virtual_type: type):

@@ -13,7 +13,7 @@ from textension.utils import _context, _forwarder, inline, starchain, get_dict, 
 
 from ._mathutils import float_subtypes, MathutilsValue
 from ..common import Values, NoArguments, get_type_name
-from ..tools import runtime, state, make_compiled_value, make_instance
+from ..tools import runtime, state, make_compiled_value
 
 import bpy
 import _bpy
@@ -721,7 +721,7 @@ class RnaFunctionSignature(AbstractSignature):
 class PropArrayValue(common.VirtualValue):
     # Implements subscript for bpy_prop_array types.
     def py__simple_getitem__(self, index):
-        return Values((make_instance(self.obj, self.parent_context),))
+        return make_compiled_value(self.obj, self.parent_context).py__call__(NoArguments)
 
     # Implements for loop variable inference.
     def py__iter__(self, contextualized_node=None):
