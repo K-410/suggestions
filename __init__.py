@@ -66,7 +66,7 @@ class Description(ui.widgets.TextView):
             if entry:
                 api_type = _get_extended_api_type(entry._name)
                 string = f"type: {api_type}\n\n"
-                string += entry.docstring()
+                string += entry.docstring(fast=False)
             else:
                 string = ()
             self.set_from_string(string)
