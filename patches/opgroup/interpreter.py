@@ -172,9 +172,9 @@ def optimize_parser():
 def optimize_diffparser():
     from textension.fast_seqmatch import FastSequenceMatcher
     from parso.python.diff import _get_debug_error_message, DiffParser
-    from itertools import count, compress
-    from builtins import map, next, reversed
-    from operator import ne
+    from textension.utils import map_ne
+    from itertools import compress, count
+    from builtins import min, next, map, reversed
 
     lstlen = list.__len__
 
@@ -189,27 +189,27 @@ def optimize_diffparser():
         blen = lstlen(b)
 
         # Valid head (a and b are equal up to this).
-        head = next(compress(count(), map(ne, a, b)), blen - 1)
+        head = next(compress(count(), map_ne(a, b)), blen - 1)
 
         # Valid tail (a and b are equal from this to end).
-        tail = next(compress(count(), map(ne, reversed(a), reversed(b))), 0)
+        tail = next(compress(count(), map_ne(reversed(a), reversed(b))), 0)
 
         old_end = alen - tail
         new_end = blen - tail
 
         head = min(head, old_end, new_end)
 
-        if head != 0:
+        if head is not 0:
             opcodes += ("equal", 0, head, 0, head),
 
         # Feed only changed lines, then add the offsets to the opcode indices.
         add_offset = head.__add__
-        sm = FastSequenceMatcher((a[head:old_end], b[head:new_end]))
+        sm = FastSequenceMatcher(a[head:old_end], b[head:new_end])
 
         for opcode, *indices in sm.get_opcodes():
             opcodes += (opcode, *map(add_offset, indices)),
 
-        if tail != 0:
+        if tail is not 0:
             j1, j2 = opcodes[-1][2::2]
             opcodes += ("equal", j1, alen, j2, blen),
 
