@@ -1298,7 +1298,6 @@ def optimize_NodesTree_copy_nodes():
                             new_nodes += node,
                         break
 
-                    # with any.measure_total:
                     if node.__class__ in node_types:
 
                         if node.type in {"decorated", "async_funcdef", "async_stmt"}:
