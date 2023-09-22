@@ -518,8 +518,11 @@ def get_scope_name_definitions(scope):
             pool += n.children[1],
 
         elif n.type in {"for_stmt", "if_stmt"}:
-            # Add the suite to pool.
-            pool += n.children[-1].children
+            # Usually the suite, but could be a Name.
+            # Example: ``for x in y: x|<--`` is a Name.
+            suite = n.children[-1]
+            if suite.type == "suite":
+                pool += n.children[-1].children
 
             name = n.children[1]
             if name.type == "comparison":
