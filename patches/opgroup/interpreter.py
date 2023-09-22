@@ -173,8 +173,9 @@ def optimize_diffparser():
     from textension.fast_seqmatch import FastSequenceMatcher
     from parso.python.diff import _get_debug_error_message, DiffParser
     from textension.utils import map_ne
-    from itertools import compress, count
+    from itertools import compress, count, repeat
     from builtins import min, next, map, reversed
+    from operator import add
 
     lstlen = list.__len__
 
@@ -197,17 +198,25 @@ def optimize_diffparser():
         old_end = alen - tail
         new_end = blen - tail
 
+        # It's possible for tails to overlap the head. If so, we need to clamp.
+        # Consider "aaabc" vs "aaaabc"
+        #
+        # Valid head = index 2 (last index where both strings are equal)
+        # Valid tail = len(string) - 5 == index 1
         head = min(head, old_end, new_end)
 
         if head is not 0:
             opcodes += ("equal", 0, head, 0, head),
 
         # Feed only changed lines, then add the offsets to the opcode indices.
-        add_offset = head.__add__
         sm = FastSequenceMatcher(a[head:old_end], b[head:new_end])
 
-        for opcode, *indices in sm.get_opcodes():
-            opcodes += (opcode, *map(add_offset, indices)),
+        repeat_head = repeat(head)
+
+        # data[0]  opcode
+        # data[1:] opcode indices
+        for data in sm.get_opcodes():
+            opcodes += (data[0], *map(add, repeat_head, data[1:])),
 
         if tail is not 0:
             j1, j2 = opcodes[-1][2::2]
