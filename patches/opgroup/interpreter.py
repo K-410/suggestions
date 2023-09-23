@@ -171,59 +171,16 @@ def optimize_parser():
 # Optimize DiffParser to only parse the modified body, skipping the sequence
 # matcher entirely.
 def optimize_diffparser():
-    from textension.fast_seqmatch import FastSequenceMatcher
+    from textension.fast_seqmatch import unified_diff
     from parso.python.diff import _get_debug_error_message, DiffParser
-    from textension.utils import map_ne
-    from itertools import compress, count, repeat
-    from builtins import min, next, map, reversed
-    from operator import add
-
-    lstlen = list.__len__
 
     def update(self: DiffParser, a, b):
         self._module._used_names = None
         self._parser_lines_new = b
         self._reset()
+        blen = len(b)
 
-        opcodes = []
-
-        alen = lstlen(a)
-        blen = lstlen(b)
-
-        # Valid head (a and b are equal up to this).
-        head = next(compress(count(), map_ne(a, b)), blen - 1)
-
-        # Valid tail (a and b are equal from this to end).
-        tail = next(compress(count(), map_ne(reversed(a), reversed(b))), 0)
-
-        old_end = alen - tail
-        new_end = blen - tail
-
-        # It's possible for tails to overlap the head. If so, we need to clamp.
-        # Consider "aaabc" vs "aaaabc"
-        #
-        # Valid head = index 2 (last index where both strings are equal)
-        # Valid tail = len(string) - 5 == index 1
-        head = min(head, old_end, new_end)
-
-        if head is not 0:
-            opcodes += ("equal", 0, head, 0, head),
-
-        # Feed only changed lines, then add the offsets to the opcode indices.
-        sm = FastSequenceMatcher(a[head:old_end], b[head:new_end])
-
-        repeat_head = repeat(head)
-
-        # data[0]  opcode
-        # data[1:] opcode indices
-        for data in sm.get_opcodes():
-            opcodes += (data[0], *map(add, repeat_head, data[1:])),
-
-        if tail is not 0:
-            j1, j2 = opcodes[-1][2::2]
-            opcodes += ("equal", j1, alen, j2, blen),
-
-        for op, i1, i2, j1, j2 in opcodes:
+        for op, i1, i2, j1, j2 in unified_diff(a, b):
             if j2 == blen and b[-1] == "":
                 j2 -= 1
             if op == "equal":
