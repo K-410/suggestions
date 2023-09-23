@@ -1231,7 +1231,7 @@ class BpyTextModuleContext(Variadic, MixedModuleContext):
             # It's pointless since we're already returning A LIST OF FILTERS.
             tree_filter   = MixedParserTreeFilter(self, None, until_position, origin_scope)
             global_filter = GlobalNameFilter(self)
-            self.filters  = [tree_filter, global_filter]
+            self.filters  = [tree_filter, global_filter, *self._value.iter_star_filters()]
         yield from self.filters
 
     def py__getattribute__(self, name_or_str, name_context=None, position=None, analysis_errors=True):
