@@ -48,17 +48,6 @@ class AggregateClassFilter(Aggregation, ClassFilter):
         return f"<AggregateClassFilter: {self.parent_context}"
 
 
-def is_allowed_getattr(obj, name):
-    try:
-        attr, is_get_descriptor = getattr_static(obj, name)
-    except AttributeError:
-        return False, False
-    else:
-        if is_get_descriptor and type(attr) not in ALLOWED_DESCRIPTOR_ACCESS:
-            return True, True
-    return True, False
-
-
 # Optimizes ``values`` to not access attributes off a compiled value when
 # converting them into names. Instead they are read only when inferred.
 def optimize_CompiledValueFilter():
@@ -67,13 +56,10 @@ def optimize_CompiledValueFilter():
     from ..common import state_cache, AggregateCompiledName
     from builtins import dir
 
+    @state_cache
+    @inline
     def cached_dir(obj):
-        try:
-            return _cached_dir(obj)
-        except TypeError:
-            return dir(obj)
-
-    _cached_dir = state_cache(dir)
+        return dir
 
     @state_cache
     def values(self: CompiledValueFilter):
@@ -97,10 +83,9 @@ def optimize_SelfAttributeFilter():
 
         # We only care about classes.
         if scope.__class__ is Class:
-            context = self.parent_context
 
             # Stubs don't have self definitions.
-            if not context.is_stub():
+            if not self.parent_context.is_stub():
                 class_nodes = scope.children[-1].children
 
                 pool  = []
