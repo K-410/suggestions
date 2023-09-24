@@ -255,11 +255,12 @@ class Suggestions(ui.widgets.ListBox):
 
                 x += blf.dimensions(self.font_id, char)[0]
 
-    def dismiss(self):
+    def dismiss(self, update_cursor=True):
         if self.is_visible:
             self.is_visible = False
-            utils.safe_redraw()
-            ui.idle_update()
+            utils.safe_redraw_from_space(self.space_data)
+            if update_cursor:
+                ui.idle_update()
 
     @utils.set_name("hit_test (Suggestions)")
     def hit_test(self, x, y):
