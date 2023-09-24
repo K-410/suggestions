@@ -4,7 +4,17 @@ from functools import partial
 
 
 def apply():
+    optimize_tokenize_compile()
     optimize_tokenize_lines()
+
+
+# Optimizes ``tokenize._compile`` to pass the underlying RegexFlag.UNICODE
+# value to avoid dynamic class attribute access overhead.
+def optimize_tokenize_compile():
+    from parso.python import tokenize
+    import re
+
+    tokenize._compile = partial(re._compile, flags=re.UNICODE.value)
 
 
 def optimize_tokenize_lines() -> None:  # type: ignore
