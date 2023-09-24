@@ -222,7 +222,7 @@ def contains_fuzzy_unordered(query: str, string: str) -> bool:
 
 @inline
 def filter_completions(completions, stack, like_name):
-    from textension.utils import defaultdict_list
+    from textension.utils import defaultdict_list, map_repeat
     from .completions import CompletionBase, map_strings, map_lower, slice_to
     from itertools import compress, repeat, islice
     from operator import itemgetter, contains
@@ -236,10 +236,6 @@ def filter_completions(completions, stack, like_name):
     @inline
     def map_map_contains(s1, s2):
         return partial(map, partial(map, contains))
-
-    @inline
-    def map_repeat(seq):
-        return partial(map, repeat)
 
     @inline
     def map_islice(seq):
