@@ -365,18 +365,16 @@ class TEXTENSION_OT_suggestions_commit(utils.TextOperator):
 
     def execute(self, context):
         instance = get_instance()
-
-        text = context.edit_text
-        line, column = text.cursor_focus
-
         entry = instance.active_entry
 
         if not entry:
             return {'CANCELLED'}
 
-        word_start = column - entry._like_name_length
+        text = context.edit_text
+        line, column = text.cursor_focus
 
         # The name which jedi is being asked to complete.
+        word_start = column - entry._like_name_length
         query = text.lines[line].body[word_start:column]
 
         if settings.use_fuzzy_search:
@@ -385,29 +383,20 @@ class TEXTENSION_OT_suggestions_commit(utils.TextOperator):
         else:
             word = query + entry.complete
 
-        # Whether completing would change the query or not.
-        completable = word != query
-
         # Same as ``word`` except it may append ``=`` for parameters.
         completion_string = entry.name_with_symbols
 
-        # Generate a mousemove.
-        ui.idle_update()
+        instance.dismiss()
+        if word == query == completion_string:
+            # The string completes nothing.
+            return {'PASS_THROUGH'}
 
-        # Complete only if it either adds to, or modifies the query.
-        if completable or word != completion_string:
-            text.cursor_anchor = line, column
-            text.curc = word_start
-            text.write(completion_string)
-            text.cursor = line, column + len(completion_string) - len(query)
-            # TODO: Aren't we supposed to use dismiss?
-            instance.is_visible = False
-            return {'FINISHED'}
+        text.cursor_anchor = line, column
+        text.curc = word_start
+        text.write(completion_string)
+        text.cursor = line, column + len(completion_string) - len(query)
+        return {'FINISHED'}
 
-        # The string completes nothing. If the commit was via return key, pass through the event.
-        # TODO: Aren't we supposed to use dismiss?
-        instance.is_visible = False
-        return {'PASS_THROUGH'}
 
 
 class TEXTENSION_OT_suggestions_dismiss(utils.TextOperator):
