@@ -1,11 +1,12 @@
 
-from textension.utils import _patch_function
+from textension.utils import _patch_function, inline
 from functools import partial
 
 
 def apply():
     optimize_tokenize_compile()
     optimize_tokenize_lines()
+    optimize_tokenize_all_string_prefixes()
 
 
 # Optimizes ``tokenize._compile`` to pass the underlying RegexFlag.UNICODE
@@ -15,6 +16,46 @@ def optimize_tokenize_compile():
     import re
 
     tokenize._compile = partial(re._compile, flags=re.UNICODE.value)
+
+
+def optimize_tokenize_all_string_prefixes():
+    from parso.python.tokenize import _all_string_prefixes
+    from textension.utils import starchain
+    from itertools import product, permutations
+    from functools import reduce
+
+    @inline
+    def map_join(cases):
+        return partial(map, "".join)
+    
+    @inline
+    def map_upper(s):
+        return partial(map, str.upper)
+
+    def different_case_versions(prefix):
+        return map_join(reduce(product, zip(prefix, map_upper(prefix))))
+
+    empty_set = set()
+
+    def all_string_prefixes(*, include_fstring=False, only_fstring=False):
+
+        result = {""}
+        prefixes = ("b", "r", "u", "br")
+
+        if include_fstring:
+            if only_fstring:
+                prefixes = ("f", "fr")
+                result = set()
+            else:
+                prefixes = ("b", "r", "u", "br", "f", "fr")
+        elif only_fstring:
+            return empty_set
+
+        prefixes = starchain(map(permutations, prefixes))
+        result.update(starchain(map(different_case_versions, prefixes)))
+        return result
+
+    _patch_function(_all_string_prefixes, all_string_prefixes)
 
 
 def optimize_tokenize_lines() -> None:  # type: ignore
