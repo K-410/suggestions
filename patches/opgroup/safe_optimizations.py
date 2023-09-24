@@ -733,17 +733,9 @@ def optimize_static_getmro():
 # Optimizes AbstractTreeName to use descriptors for some of its encapsulated properties.
 def optimize_AbstractTreeName_properties():
     from jedi.inference.names import AbstractTreeName
-    from textension.utils import soft_property
 
-    AbstractTreeName.start_pos = _forwarder("tree_name.start_pos")
-
-    @soft_property
-    def string_name(prop, self, cls):
-        name_str = self.tree_name.value
-        self.string_name = name_str
-        return name_str
-
-    AbstractTreeName.string_name = string_name
+    AbstractTreeName.start_pos   = _forwarder("tree_name.start_pos")
+    AbstractTreeName.string_name = _forwarder("tree_name.value")
 
 
 def optimize_BaseName_properties():
