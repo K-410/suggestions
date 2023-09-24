@@ -997,6 +997,10 @@ def enable():
     # Defer loading jedi and applying patches so the plugin is enabled faster.
     bpy.app.timers.register(_setup, first_interval=0.3)
 
+    # Allow accessing Suggestions from space data. For introspection.
+    bpy.types.SpaceTextEditor.suggestions = property(
+        get_instance.__kwdefaults__["cache"].__getitem__)
+
 
 def disable():
     from textension.overrides import default
@@ -1010,3 +1014,5 @@ def disable():
     utils.remove_draw_hook(draw_suggestions)
     utils.unregister_classes(classes)
     get_instance.__kwdefaults__["cache"].clear()
+
+    del bpy.types.SpaceTextEditor.suggestions
