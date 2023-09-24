@@ -22,8 +22,8 @@ def apply() -> None:
     optimize_parser()
     optimize_diffparser()
     optimize_grammar_parse()
-    from .tokenizer import optimize_tokenize_lines  # type: ignore
-    optimize_tokenize_lines()  # type: ignore
+    from . import tokenizer
+    tokenizer.apply()
     _use_new_interpreter[:] = [1]
 
 

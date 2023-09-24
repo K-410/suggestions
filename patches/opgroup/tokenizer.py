@@ -1,5 +1,11 @@
 
 from textension.utils import _patch_function
+from functools import partial
+
+
+def apply():
+    optimize_tokenize_lines()
+
 
 def optimize_tokenize_lines() -> None:  # type: ignore
     from parso.python.tokenize import FStringNode, _close_fstring_if_necessary, \
