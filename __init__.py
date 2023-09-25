@@ -84,6 +84,12 @@ class Description(ui.widgets.TextView):
         self._update_lines()
         utils.safe_redraw()
 
+    @property
+    def position(self):
+        # Position the box so it's flush with Suggestion's top edge.
+        x, y = self.parent.rect.position + self.parent.rect.size
+        return x, y - self.height
+
 
 class Suggestions(ui.widgets.ListBox):
     default_width  = 260
