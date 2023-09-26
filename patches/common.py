@@ -957,11 +957,6 @@ class VirtualInstance(Aggregation, CompiledInstance):
             return Values((LazyKnownValues(instance),))
         return NO_VALUES
 
-    @property
-    def name(self):
-        value = self.class_value
-        return VirtualName((value, value.name.string_name, True))
-
     def __repr__(self):
         return f"{type(self).__name__}({self.class_value._get_object_name()})"
 
