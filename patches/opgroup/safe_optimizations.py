@@ -1153,7 +1153,7 @@ def optimize_ClassMixin_py__mro__():
     from ..common import map_infer, state_cache
 
     @state_cache
-    def py__mro__(self: ClassMixin):
+    def py__mro__list(self: ClassMixin):
         mro = [self]
         iter_bases = iter(self.py__bases__())
 
@@ -1171,6 +1171,9 @@ def optimize_ClassMixin_py__mro__():
                     iter_bases = chain(iter_bases, starchain(cls.iterate()))
 
         return mro
+
+    def py__mro__(self: ClassMixin):
+        yield from py__mro__list(self)
 
     ClassMixin.py__mro__ = py__mro__
 
