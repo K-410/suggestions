@@ -56,10 +56,6 @@ def apply():
 
     add_Object_member_fallbacks()
 
-    from mathutils import Vector, Matrix
-    common.virtual_overrides[Vector] = MathutilsValue
-    common.virtual_overrides[Matrix] = MathutilsValue
-
 
 @inline
 def is_bpy_func(obj) -> bool:
