@@ -1116,10 +1116,6 @@ class VirtualValue(Aggregation, VirtualMixin, CompiledValue):
     def parent_context(self):
         return self.parent_value.as_context()
 
-    @property
-    def api_type(self):
-        return "unknown"
-
     def get_signatures(self):
         return ()
 
