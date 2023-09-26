@@ -1273,14 +1273,16 @@ class interpreter(Script):
     # Needed by self.get_signatures.
     _get_module_context = _unbound_getter("context")
 
+    def set_session(self, text: bpy.types.Text):
+        self.session = sessions[text.id]
+        self.session.update_from_text(text)
+
     def complete(self, text: bpy.types.Text):
         if not runtime.is_reset:
             reset_state()
 
         add_pending_state_reset()
-
-        self.session = sessions[text.id]
-        self.session.update_from_text(text)
+        self.set_session(text)
 
         line, column = text.cursor_focus
         return Completion(
