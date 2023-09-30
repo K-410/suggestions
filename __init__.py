@@ -952,8 +952,8 @@ def enable():
     Suggestions.preferences = prefs.add_settings(TEXTENSION_PG_suggestions)
     update_defaults()
 
-    utils.add_draw_hook(draw_suggestions, draw_index=9)
-    ui.add_hit_test(hit_test_suggestions)
+    ui.add_draw_hook(draw_suggestions, draw_index=9)
+    ui.add_hit_test(hit_test_suggestions, 'TEXT_EDITOR', 'WINDOW')
 
     # Override the default auto complete operator.
     TEXT_OT_autocomplete.apply_override()
@@ -975,7 +975,7 @@ def disable():
 
     prefs.remove_settings(TEXTENSION_PG_suggestions)
     ui.remove_hit_test(hit_test_suggestions)
-    utils.remove_draw_hook(draw_suggestions)
+    ui.remove_draw_hook(draw_suggestions)
     utils.unregister_classes(classes)
     get_instance.__kwdefaults__["cache"].clear()
 
