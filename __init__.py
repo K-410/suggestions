@@ -169,18 +169,16 @@ class Suggestions(ui.widgets.ListBox):
         self.last_position = line_index, self.sync_key[1]
         return None
 
-    def draw(self) -> None:
+    @property
+    def position(self):
         # Align the box below the cursor.
         st = _context.space_data
         x, y = st.region_location_from_cursor(*self.last_position)
-        assert not x is -1 is y, f"last_position: {self.last_position}"
+        y -= self.rect.height - st.offsets.y - round(4 * _system.wu * 0.05)
+        return x, y
 
-        w, h = self.rect.size
-        y_offset = h - st.offsets[1] - round(4 * _system.wu * 0.05)
-
-        self.rect.draw(x, y - y_offset, w, h)
-        super().draw()  # ListBox.draw
-
+    def draw(self) -> None:
+        super().draw()
         if self.show_description:
             self.description.draw()
 
