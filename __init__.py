@@ -108,7 +108,7 @@ class Suggestions(ui.widgets.ListBox):
     show_description          = False
     show_bold_matches         = False
 
-    use_auto_font_size        = True
+    relative_font_size        = -2
     use_fuzzy_search          = True
     use_ordered_fuzzy_search  = True
     use_case_sensitive_search = False
@@ -125,17 +125,14 @@ class Suggestions(ui.widgets.ListBox):
     hover_border_color      = 1.0, 1.0, 1.0, 0.4
     hover_border_width      = 1
 
-    fixed_font_size         = 16
     foreground_color        = 0.4,  0.7,  1.0,  1.0
     match_foreground_color  = 0.87, 0.60, 0.25, 1.0
 
     description_foreground_color = 0.7,  0.7,  0.7,  1.0
     description_background_color = 0.18, 0.18, 0.18, 1.0
-    description_fixed_font_size  = 16
     description_line_padding     = 1.25
     description_use_monospace    = False
     description_use_word_wrap    = True
-    description_use_auto_font_size = True
     description_relative_font_size = -2
 
     def __init__(self, st):
@@ -151,17 +148,11 @@ class Suggestions(ui.widgets.ListBox):
 
     @property
     def font_size(self):
-        if self.use_auto_font_size:
-            return getattr(self.space_data, "font_size", self.fixed_font_size)
-        return self.fixed_font_size
+        return max(1, self.space_data.font_size + self.relative_font_size)
 
     @property
     def description_font_size(self):
-        font_size = self.description_fixed_font_size
-        if self.description_use_auto_font_size:
-            size_offset = self.description_relative_font_size
-            font_size = max(5, getattr(self.space_data, "font_size", font_size) + size_offset)
-        return font_size
+        return max(1, self.space_data.font_size + self.description_relative_font_size)
 
     def poll(self) -> bool:
         if text := self.is_visible and _context.edit_text:
@@ -617,12 +608,6 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
     )
     color_default_kw = {"min": 0, "max": 1, "size": 4, "subtype": 'COLOR_GAMMA'}
 
-    fixed_font_size: bpy.props.IntProperty(
-        default=Suggestions.fixed_font_size,
-        update=update_defaults,
-        max=144,
-        min=1,
-    )
     use_case_sensitive_search: bpy.props.BoolProperty(
         description="Suggestions are case-sensitive to the typed text",
         default=Suggestions.use_case_sensitive_search,
@@ -642,16 +627,6 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
     show_bold_matches: bpy.props.BoolProperty(
         description="Show the matching part of a completion in bold",
         default=Suggestions.show_bold_matches,
-        update=update_defaults,
-    )
-    use_auto_font_size: bpy.props.BoolProperty(
-        description="Completion font size follows the editor's font size",
-        default=Suggestions.use_auto_font_size,
-        update=update_defaults,
-    )
-    description_use_auto_font_size: bpy.props.BoolProperty(
-        description="Description font size follows the editor's font size",
-        default=Suggestions.description_use_auto_font_size,
         update=update_defaults,
     )
     show_resize_handles: bpy.props.BoolProperty(
@@ -796,12 +771,6 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         update=update_defaults,
         default=True
     )
-    description_fixed_font_size: bpy.props.IntProperty(
-        default=Suggestions.description_fixed_font_size,
-        min=7,
-        max=144,
-        update=update_defaults
-    )
     description_relative_font_size: bpy.props.IntProperty(
         description="Relative font size when automatic font size is enabled",
         default=Suggestions.description_relative_font_size,
@@ -888,11 +857,6 @@ def draw_settings(prefs, context, layout):
         c.prop(suggestions, "show_bold_matches", text="Bold Matches")
         c.prop(suggestions, "show_resize_handles", text="Highlight Resizers")
         c.separator()
-        c.prop(suggestions, "use_auto_font_size", text="Automatic Font Size")
-
-        r = c.row()
-        r.prop(suggestions, "fixed_font_size", text="Font Size")
-        r.enabled = not suggestions.use_auto_font_size
 
         c.prop(suggestions, "line_padding", text="Line Height")
 
@@ -941,10 +905,6 @@ def draw_settings(prefs, context, layout):
         r = c.row()
         r.prop(suggestions, "description_relative_font_size", text="Relative Font Size")
         r.enabled = suggestions.description_use_auto_font_size
-
-        r = c.row()
-        r.prop(suggestions, "description_fixed_font_size", text="Font Size")
-        r.enabled = not suggestions.description_use_auto_font_size
 
         c.prop(suggestions, "description_line_padding", text="Line Height")
         c.prop(suggestions, "description_foreground_color", text="Foreground")
