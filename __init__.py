@@ -311,7 +311,7 @@ class TEXTENSION_OT_suggestions_complete(utils.TextOperator):
             return {'FINISHED'}
 
         if not settings.loaded:
-            _setup(force=True)
+            _setup_jedi(force=True)
 
         text = context.edit_text
         nlines = context.space_data.drawcache.total_lines
@@ -909,12 +909,12 @@ def draw_settings(prefs, context, layout):
         c.prop(suggestions, "description_background_color", text="Background")
 
 
-def _setup(force=False):
+def _setup_jedi(force=False):
     if settings.loaded:
         return
 
-    if force and bpy.app.timers.is_registered(_setup):
-        bpy.app.timers.unregister(_setup)
+    if force and bpy.app.timers.is_registered(_setup_jedi):
+        bpy.app.timers.unregister(_setup_jedi)
 
     # Support Reload Scripts.
     for name in ("jedi", "parso"):
@@ -959,7 +959,7 @@ def enable():
     TEXT_OT_autocomplete.apply_override()
 
     # Defer loading jedi and applying patches so the plugin is enabled faster.
-    bpy.app.timers.register(_setup, first_interval=0.3)
+    bpy.app.timers.register(_setup_jedi, first_interval=0.3)
 
     # Allow accessing Suggestions from space data. For introspection.
     bpy.types.SpaceTextEditor.suggestions = property(
