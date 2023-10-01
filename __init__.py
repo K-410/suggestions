@@ -945,6 +945,7 @@ def _setup_jedi(force=False):
 def enable():
     utils.register_classes(classes)
 
+    from . import hover
     from textension.overrides import default
     default.insert_hooks += on_insert,
     default.delete_hooks += on_delete,
@@ -954,6 +955,7 @@ def enable():
 
     ui.add_draw_hook(draw_suggestions, draw_index=9)
     ui.add_hit_test(hit_test_suggestions, 'TEXT_EDITOR', 'WINDOW')
+    hover.enable()
 
     # Override the default auto complete operator.
     TEXT_OT_autocomplete.apply_override()
@@ -967,6 +969,9 @@ def enable():
 
 
 def disable():
+    from . import hover
+    hover.disable()
+
     from textension.overrides import default
     default.insert_hooks.remove(on_insert)
     default.delete_hooks.remove(on_delete)
