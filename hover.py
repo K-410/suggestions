@@ -58,7 +58,7 @@ def hover_handler(x: int, y: int) -> None:
     hover.coord = x, y
     hover.data.area  = _context.area
 
-    register_timer(find_word_and_show, first_interval=0.3)
+    register_timer(find_word_and_show, first_interval=hover_runtime.delay_ms * 0.001)
 
 
 @utils.inline

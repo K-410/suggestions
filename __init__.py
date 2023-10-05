@@ -620,6 +620,8 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         show_theme_listbox=False,
         show_theme_entry=False,
         show_theme_scrollbar=False,
+
+        show_hover_settings=False,
     )
     color_default_kw = {"min": 0, "max": 1, "size": 4, "subtype": 'COLOR_GAMMA'}
 
@@ -813,6 +815,17 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         default=Suggestions.description_use_monospace,
         update=update_defaults
     )
+    show_hover: bpy.props.BoolProperty(
+        description="Show hover information",
+        default=True,
+        update=update_hover_settings
+    )
+    hover_delay_ms: bpy.props.IntProperty(
+        default=300,
+        min=0,
+        max=5000,
+        description="Delay in milliseconds before showing hover"
+    )
 
 
 classes = (
@@ -861,6 +874,7 @@ def draw_settings(prefs, context, layout):
     layout.use_property_split = True
     layout.use_property_decorate = False
 
+    # General settings.
     if c := add_runtime_toggle(layout, "show_general_settings", "General"):
         c.prop(suggestions, "use_case_sensitive_search", text="Match Case")
         c.prop(suggestions, "use_fuzzy_search", text="Fuzzy Search")
@@ -880,9 +894,11 @@ def draw_settings(prefs, context, layout):
         c.prop(suggestions, "scrollbar_width", text="Scrollbar Width")
         c.separator(factor=3)
 
+    # Theme settings.
     if c := add_runtime_toggle(layout, "show_theme_settings", "Theme"):
         c.prop(suggestions, "shadow", text="Shadow Color")
 
+        # ListBox Theme settings.
         if p := add_runtime_toggle(c, "show_theme_listbox", "List Box", emboss=False):
             p.prop(suggestions, "foreground_color", text="Foreground")
             p.prop(suggestions, "background_color", text="Background")
@@ -892,6 +908,7 @@ def draw_settings(prefs, context, layout):
             p.prop(suggestions, "resizer_color", text="Resize Handle")
             p.separator(factor=1)
 
+        # Entry Theme settings.
         if p := add_runtime_toggle(c, "show_theme_entry", "Entry", emboss=False):
             c.prop(suggestions, "active_background_color", text="Active Background")
             c.prop(suggestions, "active_border_color", text="Active Border Color")
@@ -902,6 +919,7 @@ def draw_settings(prefs, context, layout):
             c.prop(suggestions, "hover_border_width", text="Hover Border Width")
             c.separator(factor=1)
 
+        # Scrollbar Theme settings.
         if p := add_runtime_toggle(c, "show_theme_scrollbar", "Scrollbar", emboss=False):
             c.prop(suggestions, "scrollbar_background_color", text="Background")
             c.prop(suggestions, "scrollbar_border_color", text="Border Color")
@@ -912,18 +930,22 @@ def draw_settings(prefs, context, layout):
             c.prop(suggestions, "scrollbar_thumb_border_width", text="Thumb Border Width")
 
         c.separator()
+
+    # Description settings.
     if c := add_runtime_toggle(layout, "show_description_settings", "Description"):
         c.prop(suggestions, "description_use_word_wrap", text="Use Word Wrap")
         c.prop(suggestions, "description_use_monospace", text="Use Monospace")
-        c.prop(suggestions, "description_use_auto_font_size", text="Automatic Font Size")
 
         r = c.row()
         r.prop(suggestions, "description_relative_font_size", text="Relative Font Size")
-        r.enabled = suggestions.description_use_auto_font_size
 
         c.prop(suggestions, "description_line_padding", text="Line Height")
         c.prop(suggestions, "description_foreground_color", text="Foreground")
         c.prop(suggestions, "description_background_color", text="Background")
+
+    if c := add_runtime_toggle(layout, "show_hover_settings", "Hover"):
+        c.prop(suggestions, "show_hover", text="Show Hover")
+        c.prop(suggestions, "hover_delay_ms", text="Delay")
 
 
 def _setup_jedi(force=False):
