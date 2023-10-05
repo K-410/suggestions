@@ -487,7 +487,7 @@ def on_delete(line, column, fmt) -> None:
 
 def deferred_complete(toggle_description=True):
     def wrapper(ctx=_context.copy()):
-        with _context.temp_override(**ctx):
+        with utils.context_override(**ctx):
             bpy.ops.textension.suggestions_complete(toggle_description=toggle_description)
     utils.defer(wrapper)
 
@@ -590,7 +590,7 @@ def update_defaults(self: "TEXTENSION_PG_suggestions" = None, context = None):
                 instance = instance_cache.get(st)
                 if not instance or not instance.is_visible:
                     continue
-                with bpy.context.temp_override(space_data=st, window=window, area=area):
+                with utils.context_override(space_data=st, window=window, area=area):
                     bpy.ops.textension.suggestions_complete(toggle_description=False)
 
 

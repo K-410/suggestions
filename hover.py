@@ -76,7 +76,7 @@ def find_word_and_show():
     hover = get_hover_from_space(space)
     curl, sell, curc, selc = get_dna_cursor(dna)
 
-    with _context.temp_override(**context_dict):
+    with utils.context_override(**context_dict):
         set_cursor_with_offset(*hover.coord)
         line, column = text.cursor_focus
 
@@ -125,8 +125,7 @@ def find_word_and_show():
     word.rect.size = word_width, line_height
     hover.word.cache_key = space.top, space.font_size, text.cursor_focus
 
-    with _context.temp_override(**context_dict):
-        if not word.hit_test(*hover.coord):
+    with utils.context_override(**context_dict):
             return None
         ui.set_hit(word)
 
