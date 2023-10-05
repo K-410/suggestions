@@ -29,9 +29,17 @@ def hover_handler(x: int, y: int) -> None:
         unregister_timer(find_word_and_show)
 
     hover = get_hover_from_space(_context.space_data)
+    word  = hover.word
 
-    if hover.is_visible and hover.hit_test_word(x, y):
-        return hover.word
+    # If a hover is shown, do an occlusion test.
+    if hover.is_visible and ui.runtime.hit is word:
+        if hover.text and word.hit_test(x, y):
+            if not ui.utils.hit_test_skip(x, y, skip_hook=hover_handler):
+                return word
+
+        hover.is_visible = False
+        utils.safe_redraw_from_space(hover.space_data)
+        return None
 
     # Timer callbacks lose all context. We just need to store the area.
     # The coords are stored just for convenience.
@@ -135,6 +143,8 @@ def find_word_and_show():
     hover.word.cache_key = space.top, space.font_size, text.cursor_focus
 
     with utils.context_override(**context_dict):
+        # If a different widget is hit or the word isn't hit, don't show.
+        if ui.runtime.hit or not word.hit_test(*hover.coord):
             return None
         ui.set_hit(word)
 
@@ -224,13 +234,6 @@ class Hover(ui.widgets.Popup):
         self.space_data = st
         self.word = Word(self)
         super().__init__(None)
-
-    def hit_test_word(self, x, y):
-        if self.text and self.word.hit_test(x, y):
-            return True
-        self.is_visible = False
-        utils.safe_redraw_from_space(self.space_data)
-        return False
 
 
 @utils.inline
