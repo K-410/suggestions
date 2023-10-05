@@ -21,6 +21,7 @@ settings = utils.namespace(
 
     use_fuzzy_search          = True,
     use_ordered_fuzzy_search  = True,
+    use_case_sensitive_search = False,
 
     # Whether the hover module is loaded. Regardless of preferences.
     show_hover                = None,
