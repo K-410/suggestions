@@ -565,6 +565,7 @@ def update_defaults(self: "TEXTENSION_PG_suggestions" = None, context = None):
             widget.update_uniforms(corner_radius=Suggestions.corner_radius,
                                    **uniforms)
 
+        Description.scrollbar_width = p.scrollbar_width
         update_scrollbar(Suggestions, instance.scrollbar)
         update_scrollbar(Suggestions, instance.description.scrollbar)
         update_scrollbar(Suggestions, instance.description.scrollbar_h)
