@@ -115,8 +115,8 @@ def find_word_and_show():
     dna.curc = curc
     dna.selc = selc
 
-    if not settings.loaded:
-        _setup_jedi(force=True)
+    from . import _setup_jedi
+    _setup_jedi(force=True)
 
     from .patches.common import interpreter
     interpreter.set_session(text)
