@@ -44,7 +44,7 @@ def hover_handler(x: int, y: int) -> None:
     # Timer callbacks lose all context. We just need to store the area.
     # The coords are stored just for convenience.
     hover.coord = x, y
-    hover.runtime.area  = _context.area
+    hover.data.area  = _context.area
 
     register_timer(find_word_and_show, first_interval=0.3)
 
@@ -75,7 +75,7 @@ def set_cursor_with_offset(x, y):
 # Called by the timer to do hit testing and show the hover.
 def find_word_and_show():
     # Can be None. We can't guarantee the area exists anymore.
-    area = utils.validate_area(Hover.runtime.area)
+    area = utils.validate_area(Hover.data.area)
     try:
         space = area.spaces.active
         text  = space.text
@@ -214,7 +214,7 @@ class Hover(ui.widgets.Popup):
     space_data: bpy.types.SpaceTextEditor
     word:  Word
 
-    runtime = utils.namespace(area=None)
+    data = utils.namespace(area=None)
 
     is_visible = False  # Whether the hover is shown.
     font_id    = 1
