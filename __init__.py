@@ -12,6 +12,8 @@ import sys
 import bpy
 import gc
 
+from . import hover
+
 
 settings = utils.namespace(
     # Plugin dependencies are loaded externally via a timer.
@@ -19,7 +21,9 @@ settings = utils.namespace(
 
     use_fuzzy_search          = True,
     use_ordered_fuzzy_search  = True,
-    use_case_sensitive_search = False
+
+    # Whether the hover module is loaded. Regardless of preferences.
+    show_hover                = None,
 )
 
 
@@ -593,6 +597,19 @@ def update_defaults(self: "TEXTENSION_PG_suggestions" = None, context = None):
                 with utils.context_override(space_data=st, window=window, area=area):
                     bpy.ops.textension.suggestions_complete(toggle_description=False)
 
+    update_hover_settings(p, None)
+
+
+def update_hover_settings(self: "TEXTENSION_PG_suggestions", context):
+    if self.show_hover:
+        if not settings.show_hover:
+            hover.enable()
+
+    elif settings.show_hover:
+        hover.disable()
+
+    settings.show_hover = self.show_hover
+
 
 class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
     runtime = utils.namespace(
@@ -945,7 +962,6 @@ def _setup_jedi(force=False):
 def enable():
     utils.register_classes(classes)
 
-    from . import hover
     from textension.overrides import default
     default.insert_hooks += on_insert,
     default.delete_hooks += on_delete,
@@ -955,7 +971,6 @@ def enable():
 
     ui.add_draw_hook(draw_suggestions, draw_index=9)
     ui.add_hit_test(hit_test_suggestions, 'TEXT_EDITOR', 'WINDOW')
-    hover.enable()
 
     # Override the default auto complete operator.
     TEXT_OT_autocomplete.apply_override()
@@ -969,8 +984,8 @@ def enable():
 
 
 def disable():
-    from . import hover
-    hover.disable()
+    if prefs.suggestions.show_hover:
+        hover.disable()
 
     from textension.overrides import default
     default.insert_hooks.remove(on_insert)

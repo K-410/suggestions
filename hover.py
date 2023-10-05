@@ -14,6 +14,15 @@ from bpy.app.timers import (
 )
 
 
+@utils.inline_class()
+class hover_runtime:
+    delay_ms = utils._forwarder("suggestions.hover_delay_ms")
+
+    def initialize(self):
+        from textension import prefs
+        self.suggestions = prefs.suggestions
+
+
 # Hit test the current word, or find a word on a timer.
 def hover_handler(x: int, y: int) -> None:
     if is_timer_registered(find_word_and_show):
@@ -248,5 +257,6 @@ def disable():
 
 
 def enable():
+    hover_runtime.initialize()
     ui.add_draw_hook(draw_hover, draw_index=12)
     ui.add_hit_test(hover_handler, 'TEXT_EDITOR', 'WINDOW')
