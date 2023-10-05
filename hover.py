@@ -2,16 +2,28 @@
 
 from textension import ui, utils
 
-from . import settings, _setup_jedi, _context
-
 import bpy
 import blf
+import re
 
 from bpy.app.timers import (
     register as register_timer,
     unregister as unregister_timer,
     is_registered as is_timer_registered
 )
+
+
+_context = utils._context
+
+
+@utils.inline
+def match_left_word(string):
+    return re.compile(r".*?(\w+)\.?$").match
+
+
+@utils.inline
+def match_right_word(string):
+    return re.compile(r"^\.?(\w+).*$").match
 
 
 @utils.inline_class()
@@ -162,12 +174,10 @@ def find_word_and_show():
 
 
 def get_word_at(string, column):
-    import re
-
     left_string = string[:column]
     right_string = string[column:]
-    left = re.match(r".*?(\w+)\.?$", left_string)
-    right = re.match(r"^\.?(\w+).*$", right_string)
+    left = match_left_word(left_string)
+    right = match_right_word(right_string)
 
     start = end = column
     if left:
