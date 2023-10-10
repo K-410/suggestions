@@ -653,6 +653,13 @@ class TEXTENSION_PG_suggestions(bpy.types.PropertyGroup):
         update=update_defaults,
         default=True
     )
+    relative_font_size: bpy.props.IntProperty(
+        description="Relative font size when automatic font size is enabled",
+        default=Suggestions.relative_font_size,
+        min=-144,
+        max=144,
+        update=update_defaults
+    )
     line_padding: bpy.props.FloatProperty(
         default=Suggestions.line_padding,
         update=update_defaults,
@@ -890,6 +897,7 @@ def draw_settings(prefs, context, layout):
         c.separator()
 
         c.prop(suggestions, "line_padding", text="Line Height")
+        c.prop(suggestions, "relative_font_size", text="Relative Font Size")
 
         c.separator(factor=3)
         c.prop(suggestions, "corner_radius", slider=True, text="Roundness")
