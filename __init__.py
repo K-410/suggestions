@@ -153,11 +153,11 @@ class Suggestions(ui.widgets.ListBox):
 
     @property
     def font_size(self):
-        return max(1, self.space_data.font_size + self.relative_font_size)
+        return max(1, int((self.space_data.font_size + self.relative_font_size) * ui.runtime.wu_norm))
 
     @property
     def description_font_size(self):
-        return max(1, self.space_data.font_size + self.description_relative_font_size)
+        return max(1, int((self.space_data.font_size + self.description_relative_font_size) * ui.runtime.wu_norm))
 
     def poll(self) -> bool:
         if text := self.is_visible and _context.edit_text:
