@@ -8,6 +8,7 @@ import itertools
 from ..common import NO_VALUES, VirtualValue, VirtualInstance, Values
 from .. import common
 from .. import tools
+import bpy
 
 
 virtuals = (VirtualInstance, VirtualValue)
@@ -182,7 +183,7 @@ vector_swizzles = starchain(
     for i in (2, 3, 4)
 )
 
-descriptor_data = (
+descriptor_data = [
     # matutils.Vector
     (Vector.x, float),
     (Vector.y, float),
@@ -201,7 +202,6 @@ descriptor_data = (
 
     # matutils.Matrix
     (Matrix.is_frozen, bool),
-    (Matrix.is_identity, bool),
     (Matrix.is_negative, bool),
     (Matrix.is_orthogonal, bool),
     (Matrix.is_orthogonal_axis_vectors, bool),
@@ -219,8 +219,13 @@ descriptor_data = (
     (Quaternion.x, float),
     (Quaternion.y, float),
     (Quaternion.z, float),
+]
 
-)
+
+# Versioning.
+if _desc := getattr(Matrix, "is_identity", None):
+    descriptor_data += (_desc, bool),
+
 
 virtual_overrides = (
     *((x, MathutilsValue) for x in (Vector, Euler, Matrix, Quaternion)),

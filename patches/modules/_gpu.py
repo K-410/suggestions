@@ -3,7 +3,7 @@
 import gpu
 
 
-gpu_rtype_data = (
+gpu_rtype_data = [
     (gpu.capabilities.extensions_get, tuple[str]),
 
     (gpu.state.active_framebuffer_get, gpu.types.GPUFrameBuffer),
@@ -11,7 +11,6 @@ gpu_rtype_data = (
     (gpu.state.depth_mask_get, bool),
     (gpu.state.depth_test_get, str),
     (gpu.state.line_width_get, float),
-    (gpu.state.scissor_get, tuple[int]),
     (gpu.state.viewport_get, tuple[int]),
 
     (gpu.shader.from_builtin, gpu.types.GPUShader),
@@ -19,8 +18,16 @@ gpu_rtype_data = (
 
     (gpu.types.GPUFrameBuffer.viewport_get, tuple[int]),
     (gpu.types.GPUTexture.read, gpu.types.Buffer),
-    (gpu.types.GPUShader.attrs_info_get, tuple[tuple[str, str]]),
-)
+]
+
+
+# Versioning.
+if _func := getattr(gpu.state, "scissor_get", None):
+    gpu_rtype_data += (_func, tuple[int]),
+
+
+if _func := getattr(gpu.types, "attrs_info_get", None):
+    gpu_rtype_data += (_func, tuple[tuple[str, str]]),
 
 
 gpu_descriptor_data = (
