@@ -965,6 +965,7 @@ def _setup_jedi(force=False):
     if force and bpy.app.timers.is_registered(_setup_jedi):
         bpy.app.timers.unregister(_setup_jedi)
 
+    utils._suppress_warnings()
     # Support Reload Scripts.
     for name in ("jedi", "parso"):
         if name in sys.modules:
