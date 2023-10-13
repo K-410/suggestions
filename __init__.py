@@ -511,8 +511,6 @@ def _enable_gc():
 
 
 def update_defaults(self: "TEXTENSION_PG_suggestions" = None, context = None):
-    from idprop.types import IDPropertyArray
-
     p = Suggestions.preferences
 
     new_settings = {}
@@ -521,8 +519,8 @@ def update_defaults(self: "TEXTENSION_PG_suggestions" = None, context = None):
         if hasattr(Suggestions, key):
             value = p.path_resolve(key)
 
-            # Float array to tuple.
-            if isinstance(value, IDPropertyArray):
+            # Uniform blocks don't understand bpy prop array sequences.
+            if isinstance(value, utils.bpy_array_types):
                 value = tuple(value)
             new_settings[key] = value
 
